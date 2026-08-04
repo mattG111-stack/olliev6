@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -7,6 +8,8 @@ from .config import settings
 from .db import SessionLocal
 from .routers import admin_metrics, admin_upload, assistant, auth, billing, dashboards, properties, release, wishlists
 from .security import ensure_seed_admin, require_active
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -42,6 +45,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("cors_origins env value: %r", settings.cors_origins)
+logger.info("cors_origin_list parsed: %r", settings.cors_origin_list)
 
 # The product data itself is paywalled: no free access. These routers require an
 # active subscription (or admin / admin-approved account) — an authenticated but
