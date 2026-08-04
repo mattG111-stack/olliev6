@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -8,12 +9,19 @@ from .db import SessionLocal
 from .routers import admin_metrics, admin_upload, assistant, auth, billing, dashboards, properties, release, wishlists
 from .security import ensure_seed_admin, require_active
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_seed_admin(db)
+    except Exception:
+        # Don't block app startup on database errors (e.g. the DB isn't reachable
+        # yet). The app should still boot and serve /health; seeding will be
+        # retried on subsequent requests or operations that need the DB.
+        logger.exception("ensure_seed_admin failed during startup; continuing without it")
     finally:
         db.close()
     # Self-heal any staged batch still holding pre-guard CV-over valuations, in a
