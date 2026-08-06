@@ -144,6 +144,44 @@ def sign_in(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(g
     return TokenOut(access_token=token, expires_at=expires)
 
 
+# Standalone router (no auth, no /api/auth prefix) so this can be hit directly
+# at /api/seed even when the seed admin's credentials are broken.
+seed_router = APIRouter(prefix="/api", tags=["auth"])
+
+
+@seed_router.post("/seed")
+def seed_admin(db: Session = Depends(get_db)) -> dict:
+    """Manually (re)hash the seed admin's password.
+
+    ensure_seed_admin() only runs on startup and only creates the seed admin if
+    no admin exists yet -- it won't fix a plaintext password_hash left behind by
+    a direct database edit on a box that's already running. This endpoint lets
+    an operator trigger the same hashing logic on demand. It requires no auth
+    (there may be no working admin login to authenticate with) and is
+    idempotent: it updates the seed admin if one exists, or creates it if not.
+    """
+    email = settings.seed_admin_email.lower().strip()
+    u = db.query(User).filter(User.email == email).first()
+    hashed = hash_password(settings.seed_admin_password)
+    if u:
+        u.password_hash = hashed
+        u.role = UserRole.ADMIN.value
+        u.status = UserStatus.APPROVED.value
+        db.commit()
+        created = False
+    else:
+        u = User(
+            email=email,
+            password_hash=hashed,
+            full_name="Seed Admin",
+            role=UserRole.ADMIN.value,
+            status=UserStatus.APPROVED.value,
+        )
+        db.add(u); db.commit(); db.refresh(u)
+        created = True
+    return {"ok": True, "created": created, "email": email}
+
+
 @router.get("/me", response_model=MeOut)
 def me(user: User = Depends(current_user)) -> MeOut:
     return _me_out(user)
