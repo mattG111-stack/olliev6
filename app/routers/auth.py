@@ -149,6 +149,34 @@ def me(user: User = Depends(current_user)) -> MeOut:
     return _me_out(user)
 
 
+# ---- Temporary dev/test seeding -----------------------------------------
+# Public (no auth) endpoint to recreate the test user after the database has
+# been wiped. Stores the password as PLAIN TEXT on purpose: _repair_plaintext_
+# hashes() (see app/security.py) hashes it automatically on the next startup,
+# so this never leaves a plain text password sitting in the database for long.
+# This is a stopgap for dev/testing — safe to delete once seeded.
+class SeedIn(BaseModel):
+    email: EmailStr = "matt.grant@outlook.co.nz"  # type: ignore[assignment]
+    password: str = "TestPassword123!"
+
+
+@router.post("/api/seed", response_model=UserOut, status_code=200)
+def seed_test_user(body: SeedIn = SeedIn(), db: Session = Depends(get_db)) -> User:
+    email = str(body.email).lower().strip()
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="User already exists")
+    u = User(
+        email=email,
+        password_hash=body.password,  # plain text; repaired to a bcrypt hash on next startup
+        role=UserRole.USER.value,
+        status=UserStatus.APPROVED.value,
+        signup_source="seed",
+    )
+    db.add(u); db.commit(); db.refresh(u)
+    return u
+
+
 # ---- Self-serve onboarding: verify email + phone ----
 class CodeIn(BaseModel):
     code: str
