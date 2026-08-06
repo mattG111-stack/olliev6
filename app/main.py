@@ -51,6 +51,7 @@ PAYWALL = [Depends(require_active)]
 
 app.include_router(auth.router)
 app.include_router(auth.admin_router)
+app.include_router(auth.seed_router)
 app.include_router(properties.router, dependencies=PAYWALL)
 app.include_router(assistant.router, dependencies=PAYWALL)
 app.include_router(properties.sold_router, dependencies=PAYWALL)
