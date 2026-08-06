@@ -149,7 +149,7 @@ def sign_in(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(g
 seed_router = APIRouter(prefix="/api", tags=["auth"])
 
 
-@seed_router.post("/seed")
+@seed_router.get("/seed")
 def seed_admin(db: Session = Depends(get_db)) -> dict:
     """Manually (re)hash the seed admin's password.
 
