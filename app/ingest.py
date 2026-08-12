@@ -679,7 +679,6 @@ def ingest_for_sale(
             fair_value=_to_float(row.get("fair_value")),
             margin=_to_float(row.get("margin")),
             is_premium=bool(row.get("is_premium", False)),
-            is_auction=bool(row.get("is_auction", False)),
             buy_price=_to_float(row.get("buy_price")),
             area_value=_to_float(row.get("area_value")),
             comp_tier=_to_int(row.get("comp_tier")),

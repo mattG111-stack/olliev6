@@ -68,13 +68,6 @@ def _hold_reason(p: PropertyForSale) -> str | None:
     # homes). Held rather than shown to a customer with a number we can't defend.
     if p.expected_sale_path == "insufficient_comps":
         return "Not enough comparable sales to price confidently"
-    # Auctions lane: a no-price listing we CAN value confidently (three asking-free
-    # views agree — see pipeline AUCTION_AGREE_MAX). It has no real asking, so the
-    # placeholder / margin holds below would drop it; instead it's published and
-    # surfaced in its own lane, kept out of the asking-based feeds by the router.
-    # The data-quality holds above still apply — a broken auction row is still held.
-    if getattr(p, "is_auction", False):
-        return None
     # No real asking (scraper copied the CV or the last sale). Held BEFORE the
     # margin check: fair_value − a placeholder asking is a fake margin that would
     # otherwise mark it a deal (6 Pekanga Rd valued $1.62M vs a guessed $580k ask).

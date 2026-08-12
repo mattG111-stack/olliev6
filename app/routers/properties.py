@@ -87,11 +87,6 @@ class ForSaleRow(BaseModel):
     fair_value: float | None = None
     margin: float | None = None
     is_premium: bool | None = None
-    # Auctions lane: a no-price listing valued off agreeing signals. For these the
-    # estimate is fair_value and the honest "deal" numbers are a comps-based buy
-    # ceiling (what to cap a bid at) and the headroom to our estimate — never a
-    # margin vs an asking the vendor never set.
-    is_auction: bool | None = None
     buy_price: float | None = None
     area_value: float | None = None
     comp_tier: int | None = None
@@ -198,25 +193,6 @@ class ForSaleRow(BaseModel):
     listing_title: str | None = None
     listing_published_date: str | None = None
 
-    # --- Auctions lane derived numbers (no new DB columns; from area_value/fair_value) ---
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def auction_ceiling(self) -> float | None:
-        """Walk-away price for a no-price listing: 0.95 × the comp-cascade value.
-        The most a disciplined buyer should pay at auction."""
-        if self.is_auction and self.area_value:
-            return round(0.95 * self.area_value)
-        return None
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def auction_headroom(self) -> float | None:
-        """Equity to our estimate if you win at the ceiling (estimate − ceiling)."""
-        c = self.auction_ceiling
-        if self.is_auction and self.fair_value and c:
-            return round(self.fair_value - c)
-        return None
-
     class Config:
         from_attributes = True
 
@@ -320,12 +296,9 @@ def suburb_stats(suburb: str, region: str = "Auckland",
     active_listings = 0
     median_asking = None
     if fs_batch:
-        # Exclude auctions: their "asking" is a placeholder (== CV), so counting it
-        # as a list price would skew median_asking. They're valued, just not priced.
         fq = _hide_bad_data(db.query(PropertyForSale)
                             .filter(PropertyForSale.import_batch_id == fs_batch,
-                                    PropertyForSale.suburb.ilike(name),
-                                    PropertyForSale.is_auction.is_(False)))
+                                    PropertyForSale.suburb.ilike(name)))
         asks = [p.asking_price for p in fq.all() if p.asking_price]
         active_listings = len(asks)
         median_asking = _median(asks)
@@ -509,16 +482,10 @@ def _hide_bad_data(q):
     area (incomplete data; bare-land/section types are kept), any row HELD back
     during the pre-publish review, and any placeholder-asking ("fake") listing
     whose price was guessed off the CV or last sale — belt-and-suspenders so a
-    fake listing can never surface even if it wasn't held.
-
-    Auctions lane exception: a listing flagged is_auction is a no-price listing
-    (asking == CV) that we DID value confidently off agreeing signals. It looks
-    like a placeholder to the filter above but is a real, surfaceable listing, so
-    it's allowed through here — the main deal feeds still exclude it via
-    _filtered_query(auction=False); only the Auctions lane shows it."""
+    fake listing can never surface even if it wasn't held."""
     return q.filter(
         PropertyForSale.is_held.is_(False),
-        or_(not_(_is_placeholder_asking()), PropertyForSale.is_auction.is_(True)),
+        not_(_is_placeholder_asking()),
         or_(
             PropertyForSale.floor_area_m2.isnot(None),
             PropertyForSale.property_type.in_(_SECTION_TYPES),
@@ -533,20 +500,15 @@ def _filtered_query(
     suburb=None, type=None, category=None, underpriced=None,
     cashflow_positive=None, subdividable=None, min_margin=None, min_comps=None,
     max_breakeven_deposit=None, min_score=None, min_price=None, max_price=None,
-    min_beds=None, district=None, search=None, auction=False,
+    min_beds=None, district=None, search=None,
 ):
     """The shared filter chain for the listing list and its summary tiles.
 
     Kept in one place so the stat tiles above a deal-finder page can never
     describe a different population than the rows underneath them.
-
-    `auction` splits the no-price lane from the priced feeds: False (default) shows
-    only priced listings — the Auctions lane is excluded; True shows ONLY the
-    no-price auction/tender/by-negotiation listings we valued off agreeing signals.
     """
     q = db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == batch_id)
     q = _hide_bad_data(q)
-    q = q.filter(PropertyForSale.is_auction.is_(bool(auction)))
     if suburb:
         q = q.filter(PropertyForSale.suburb == suburb)
     if type:
@@ -696,8 +658,7 @@ def list_for_sale(
     min_beds: int | None = Query(None, ge=0, le=20),
     district: str | None = None,
     search: str | None = None,
-    auction: bool = Query(False, description="True = the no-price Auctions lane; False = priced feeds"),
-    order_by: str = Query("opportunity_score_pct", pattern="^(opportunity_score_pct|asking_price|market_value|fair_value|buy_price|cash_on_cash|breakeven_deposit_pct|max_addl_lots|predicted_days|days_on_market|address|margin|margin_dollars|auction_headroom)$"),
+    order_by: str = Query("opportunity_score_pct", pattern="^(opportunity_score_pct|asking_price|market_value|fair_value|buy_price|cash_on_cash|breakeven_deposit_pct|max_addl_lots|predicted_days|days_on_market|address|margin|margin_dollars)$"),
     order_dir: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
@@ -707,11 +668,6 @@ def list_for_sale(
     if batch_id is None:
         return ForSaleList(total=0, page=page, page_size=page_size, rows=[])
 
-    # Auctions lane defaults to ranking by buy-side headroom (estimate − ceiling),
-    # the honest analog of "margin" for a no-price listing.
-    if auction and order_by == "opportunity_score_pct":
-        order_by = "auction_headroom"
-
     q = _filtered_query(
         db, batch_id,
         suburb=suburb, type=type, category=category, underpriced=underpriced,
@@ -719,16 +675,13 @@ def list_for_sale(
         min_margin=min_margin, min_comps=min_comps,
         max_breakeven_deposit=max_breakeven_deposit, min_score=min_score,
         min_price=min_price, max_price=max_price,
-        min_beds=min_beds, district=district, search=search, auction=auction,
+        min_beds=min_beds, district=district, search=search,
     )
     total = q.count()
-    # "margin_dollars" is the dollar gap (fair_value − asking); "auction_headroom"
-    # is estimate − 0.95×area_value — both computed on the fly, everything else a
-    # real column.
+    # "margin_dollars" is the dollar gap (fair_value − asking), computed on the
+    # fly, everything else a real column.
     if order_by == "margin_dollars":
         sort_col = PropertyForSale.fair_value - PropertyForSale.asking_price
-    elif order_by == "auction_headroom":
-        sort_col = PropertyForSale.fair_value - 0.95 * PropertyForSale.area_value
     else:
         sort_col = getattr(PropertyForSale, order_by)
     sort_col = desc(sort_col) if order_dir == "desc" else sort_col.asc()

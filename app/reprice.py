@@ -84,7 +84,6 @@ def _apply_outputs(rec: PropertyForSale, row: dict) -> None:
     rec.fair_value = _to_float(row.get("fair_value"))
     rec.margin = _to_float(row.get("margin"))
     rec.is_premium = bool(row.get("is_premium", False))
-    rec.is_auction = bool(row.get("is_auction", False))
     rec.buy_price = _to_float(row.get("buy_price"))
     rec.area_value = _to_float(row.get("area_value"))
     rec.comp_tier = _to_int(row.get("comp_tier"))
