@@ -8,8 +8,6 @@ Output: enriched DataFrame with all model columns ready to write to Postgres.
 
 from __future__ import annotations
 
-import statistics as _stats
-
 import pandas as pd
 
 from . import cashflow as CF
@@ -193,18 +191,6 @@ BAND_MATCHED = 0.20
 # wrong with it. Beyond this we ignore the asking price and value from CV.
 ASK_VS_CV_BAND = 0.20
 
-# "Auctions" lane gate. A no-price listing (auction / tender / by-negotiation) is
-# surfaced only when three independent, asking-free views of its value agree:
-#   V1  CV × the area's sale/CV ratio        ("cv % in that area")
-#   V2  the comp-cascade area value           ("area vs CV")
-#   V3  suburb+type+bed sold median           ("bedrooms and bathrooms")
-# If the widest view sits within this fraction of their median we trust the
-# estimate; wider than that, the signals disagree (a broken CV or thin comps) and
-# the row stays held rather than surfacing a number we can't defend. This reuses
-# signal AGREEMENT as the confidence gate, so no single broken input can produce a
-# fake auction "deal" the way asking==CV once produced fake margins.
-AUCTION_AGREE_MAX = 0.20
-
 # A recent (≤ this many years) prior sale is a strong value anchor in a ~flat
 # market — cap the value near it (× buffer for any renovation since).
 LAST_SOLD_YEARS = 2.0
@@ -271,7 +257,7 @@ OUTPUT_COLS = [
     "comps_used", "confidence",
     "pred_vs_cv", "pred_vs_listing",
     # v4 production AVM diagnostics
-    "fair_value", "margin", "is_premium", "is_auction",
+    "fair_value", "margin", "is_premium",
     "expected_sale", "expected_sale_path", "expected_sale_band",
     "buy_price", "area_value", "comp_tier", "comps_matched",
     "listing_type", "pricing_path", "range_low", "range_high",
@@ -768,36 +754,6 @@ def run(for_sale_df: pd.DataFrame, sold: SoldDataset,
             expected_sale = expected_sale_band = None
             expected_sale_path = INSUFFICIENT_COMPS_PATH
 
-        # ---- Auctions lane: value a no-price listing off agreeing signals ----
-        # A listing with no real asking (auction / tender / by-negotiation — the
-        # scraper leaves asking == CV) can't have a "margin vs asking", so it's
-        # normally held. But if we can value it confidently we surface it in its own
-        # lane instead of dropping it. Confidence = three asking-free views agree:
-        #   V1 = CV × area sale/CV ratio, V2 = comp-cascade area value,
-        #   V3 = suburb+type+bed sold median. Estimate stays display_value (already
-        # CV-anchored); the three-way agreement only decides whether we trust it.
-        is_auction = False
-        no_real_asking = (not asking_v or asking_v <= 0 or asking_is_placeholder)
-        if no_real_asking and not is_premium and display_value and _pos_num(bp.area_value):
-            _v1 = None
-            if cv_v and cv_v > 0:
-                _rr, _ = comp_engine.cv_ratio_for(
-                    suburb=r.get("suburb"), district=r.get("district"),
-                    property_type=r.get("property_type"),
-                    beds=r.get("key_bedrooms"), baths=r.get("key_bathrooms"),
-                    land=land_v)
-                _v1 = cv_v * float(_rr) if _rr else None
-            _v2 = _pos_num(bp.area_value)
-            _v3 = comp_engine.sold_price_cap(
-                suburb=r.get("suburb"), district=r.get("district"),
-                property_type=r.get("property_type"), beds=r.get("key_bedrooms"))
-            _views = [x for x in (_v1, _v2, _v3 and float(_v3)) if x and x > 0]
-            if len(_views) >= 2:
-                _med = _stats.median(_views)
-                _spread = max(abs(x - _med) / _med for x in _views) if _med else 1.0
-                if _spread <= AUCTION_AGREE_MAX:
-                    is_auction = True
-
         # ---- 5) Opportunity score ----
         sig = SC.signals(
             asking_price=r.get("price_numeric"),
@@ -859,7 +815,6 @@ def run(for_sale_df: pd.DataFrame, sold: SoldDataset,
             "expected_sale_band": expected_sale_band,
             "margin": round(margin, 4) if margin is not None else None,
             "is_premium": is_premium,
-            "is_auction": is_auction,
             "listing_type": listing_type,
             "pricing_path": v.pricing_path,
             "range_low": v.range_low,

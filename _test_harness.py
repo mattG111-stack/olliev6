@@ -65,13 +65,6 @@ hr_thin = R._hold_reason(stub(fair_value=805_000, asking_price=800_000, cv_numer
 check("_hold_reason: thin real margin held as BELOW_MARGIN", hr_thin == R.BELOW_MARGIN_REASON, f"got {hr_thin!r}")
 hr_ok = R._hold_reason(stub(fair_value=900_000, asking_price=800_000, cv_numeric=850_000))
 check("_hold_reason: real 100k margin not held", hr_ok is None, f"got {hr_ok!r}")
-# Auctions: a no-price (placeholder-asking) row flagged is_auction is NOT held
-hr_auc = R._hold_reason(stub(fair_value=1_620_000, asking_price=580_000, cv_numeric=582_000, is_auction=True))
-check("_hold_reason: is_auction bypasses NO_ASKING hold", hr_auc is None, f"got {hr_auc!r}")
-# but a broken auction row (missing floor) is still held for the data problem
-hr_auc_bad = R._hold_reason(stub(fair_value=1_620_000, asking_price=580_000, cv_numeric=582_000,
-                                 is_auction=True, floor_area_m2=None))
-check("_hold_reason: is_auction still held on missing floor", hr_auc_bad == "Missing floor area", f"got {hr_auc_bad!r}")
 hr_land = R._hold_reason(stub(fair_value=900_000, asking_price=800_000, cv_numeric=850_000, land_area_flag="tiny"))
 check("_hold_reason: land-area flag held first", hr_land and "Land area" in hr_land, f"got {hr_land!r}")
 
@@ -114,11 +107,6 @@ db.add_all([
     M.PropertyForSale(import_batch_id=fs.id, region="Auckland", suburb="Remuera",
                       address="6 Pekanga Rd", asking_price=582_000, cv_numeric=582_000,
                       floor_area_m2=110, is_held=False),  # placeholder -> hidden by _is_placeholder_asking
-    # Auction: no-price (asking==CV) but valued confidently -> Auctions lane.
-    M.PropertyForSale(import_batch_id=fs.id, region="Auckland", suburb="Remuera",
-                      address="9 Auction Way", asking_price=1_000_000, cv_numeric=1_000_000,
-                      fair_value=1_300_000, area_value=1_200_000, floor_area_m2=160,
-                      latitude=-36.88, longitude=174.80, is_held=False, is_auction=True),
 ])
 # sold: enough at bed levels 3 & 4 to yield a bedroom effect
 for i in range(4):
@@ -172,28 +160,6 @@ if (r.status_code == 200):
 
 r = client.get("/api/properties/map", params={"dataset": "sold", "suburb": "Remuera"}, headers=H)
 check("GET /map sold 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
-
-# --- Auctions lane ---
-r = client.get("/api/properties", params={"auction": "true"}, headers=H)
-check("GET list?auction=true 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
-if r.status_code == 200:
-    rows = r.json().get("rows", [])
-    addrs = [x.get("address") for x in rows]
-    print("  auctions lane ->", addrs)
-    check("auctions lane contains the auction row", any("Auction Way" in (a or "") for a in addrs), f"got {addrs}")
-    check("auctions lane excludes the priced deal", not any("Deal St" in (a or "") for a in addrs))
-    auc = next((x for x in rows if "Auction Way" in (x.get("address") or "")), None)
-    if auc:
-        # ceiling = 0.95*1.2M = 1,140,000 ; headroom = 1.3M - 1.14M = 160,000
-        check("auction_ceiling computed (0.95*area_value)", auc.get("auction_ceiling") == 1_140_000, f"got {auc.get('auction_ceiling')}")
-        check("auction_headroom computed (est-ceiling)", auc.get("auction_headroom") == 160_000, f"got {auc.get('auction_headroom')}")
-
-r = client.get("/api/properties", params={"auction": "false"}, headers=H)
-check("GET list?auction=false 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
-if r.status_code == 200:
-    addrs = [x.get("address") for x in r.json().get("rows", [])]
-    check("priced feed excludes the auction row", not any("Auction Way" in (a or "") for a in addrs), f"got {addrs}")
-    check("priced feed still shows the clean deal", any("Deal St" in (a or "") for a in addrs), f"got {addrs}")
 
 # export.csv must be admin-gated: anon blocked, admin allowed
 r_anon = client.get("/api/properties/export.csv")

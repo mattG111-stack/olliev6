@@ -37,8 +37,6 @@ _ADD_COLUMNS = (
     "ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS rows_filled INTEGER",
     "ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS rows_missed INTEGER",
     "ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS result_json TEXT",
-    # No-price "Auctions" lane: rows we can value without a real asking.
-    "ALTER TABLE properties_for_sale ADD COLUMN IF NOT EXISTS is_auction BOOLEAN DEFAULT FALSE",
 )
 
 

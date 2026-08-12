@@ -396,16 +396,6 @@ class PropertyForSale(_PropertyMixin, Base):
     is_held: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     hold_reason: Mapped[str | None] = mapped_column(String(300))
 
-    # No-price listing (auction / tender / by-negotiation) that we CAN value
-    # confidently: three independent asking-free views of value — CV × the area's
-    # sale/CV ratio, the comp-cascade area value, and a bed/bath-adjusted sold
-    # median — agree closely enough to stand behind an estimate. Such rows are NOT
-    # held (they're publishable) but are kept OUT of the asking-based deal feeds and
-    # surfaced in their own "Auctions" lane instead, where the signal is the estimate
-    # and a comps-based buy ceiling rather than a margin vs a price the vendor never
-    # set. Estimate = fair_value, ceiling = 0.95 × area_value (both existing columns).
-    is_auction: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-
     # CV reconciliation (scripts/reconcile_cv): when our CV and homes' CV disagree,
     # the market (asking vs CV × the suburb sale ratio) decides which is credible.
     # "ok" = our CV is backed; "suspect" = the market sides with homes' CV, so our
