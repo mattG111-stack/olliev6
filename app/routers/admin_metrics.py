@@ -1,0 +1,265 @@
+"""Admin operations dashboard — data pipeline + business metrics.
+
+One endpoint the admin dashboard reads: user/login activity, buyer's-agent
+enquiries, the state of the weekly data loads, and Stripe billing (revenue +
+paying customers). Everything is real except billing, which lights up once a
+Stripe key is set (see app.billing).
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import func, text
+from sqlalchemy.orm import Session
+
+from ..billing import billing_metrics, paying_users
+from ..db import get_db
+from ..models import AgentContact, ImportBatch, PageView, User, UserStatus
+from ..security import find_user_by_email, require_admin
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+class PageUsage(BaseModel):
+    """One feature, and how it is actually used."""
+    path: str
+    views: int
+    users: int              # distinct people, so one heavy user is not a trend
+    # MEDIAN, not mean: one tab left open for twenty minutes would otherwise
+    # make a page look absorbing when nobody reads it.
+    median_seconds: float | None = None
+
+
+class TopUser(BaseModel):
+    """One of the heaviest users of the platform, over the chosen window."""
+    email: str
+    minutes: float          # total time on page
+    views: int
+    # Distinct days they showed up. Separates a habit from a binge: 90 minutes
+    # across 20 days is a user who relies on this, 90 minutes in one sitting is
+    # someone who had a look. Total time alone cannot tell those apart.
+    days_active: int = 0
+    # Only counts pages that reported a duration. A visitor who closes the tab
+    # on the last page of every session gives up that page's time, so this is a
+    # floor on real usage rather than an exact figure.
+    last_seen: str | None = None
+
+
+class Metrics(BaseModel):
+    # people
+    users_total: int
+    users_active: int          # approved
+    users_new_30d: int
+    logins_7d: int             # users seen in last 7 days
+    logins_30d: int
+    total_logins: int
+    # Distinct people who signed in today, not sign-in events: last_login_at
+    # holds only the most recent one, so a second sign-in overwrites the first.
+    # Counting rows would report the same number and imply a precision the
+    # column cannot support.
+    users_signed_in_today: int = 0
+    # Feature usage. Empty until a build that reports page views has been
+    # running for a while — an empty table here means no data yet, not no usage.
+    page_views_today: int = 0
+    active_users_today: int = 0
+    top_pages_7d: list["PageUsage"] = []
+    top_users_30d: list["TopUser"] = []
+    # The window the two activity tables were built over, echoed back so the
+    # screen can state it rather than implying a fixed period it no longer uses.
+    activity_days: int = 7
+    # sign-ups (self-serve)
+    signups_total: int
+    signups_7d: int
+    signups_30d: int
+    # onboarding funnel (self-serve users)
+    onboarding_email_verified: int
+    onboarding_phone_verified: int
+    onboarding_trialing: int
+    onboarding_paying: int
+    # engagement
+    agent_contacts_total: int
+    agent_contacts_30d: int
+    # billing (Stripe)
+    billing_connected: bool
+    paying_customers: int
+    mrr: float
+    income_this_month: float
+    currency: str
+    billing_error: str | None = None
+    # data pipeline
+    sold_rows: int             # accumulated comp database size
+    sold_last_loaded: str | None
+    forsale_rows: int          # current live listings
+    forsale_last_loaded: str | None
+
+
+def _batch(db: Session, batch_type: str):
+    return (db.query(ImportBatch)
+            .filter(ImportBatch.batch_type == batch_type, ImportBatch.is_active.is_(True))
+            .order_by(ImportBatch.id.desc()).first())
+
+
+@router.get("/metrics", response_model=Metrics)
+def metrics(days: int = Query(7, ge=1, le=365),
+            me: User = Depends(require_admin),
+            db: Session = Depends(get_db)) -> Metrics:
+    now = datetime.now(timezone.utc)
+    d30 = now - timedelta(days=30)
+    d7 = now - timedelta(days=7)
+    # The two activity tables run over a window the operator picks; every other
+    # figure keeps its fixed period so the headline numbers stay comparable
+    # between visits.
+    since = now - timedelta(days=days)
+
+    users_total = db.query(func.count(User.id)).scalar() or 0
+    users_active = db.query(func.count(User.id)).filter(User.status == UserStatus.APPROVED.value).scalar() or 0
+    users_new_30d = db.query(func.count(User.id)).filter(User.created_at >= d30).scalar() or 0
+    logins_7d = db.query(func.count(User.id)).filter(User.last_login_at.isnot(None), User.last_login_at >= d7).scalar() or 0
+    logins_30d = db.query(func.count(User.id)).filter(User.last_login_at.isnot(None), User.last_login_at >= d30).scalar() or 0
+    total_logins = db.query(func.coalesce(func.sum(User.login_count), 0)).scalar() or 0
+
+    contacts_total = db.query(func.count(AgentContact.id)).scalar() or 0
+    contacts_30d = db.query(func.count(AgentContact.id)).filter(AgentContact.created_at >= d30).scalar() or 0
+
+    # Self-serve sign-ups (distinct from admin-created accounts).
+    self_signups = db.query(User).filter(User.signup_source == "self")
+    signups_total = self_signups.count()
+    signups_7d = self_signups.filter(User.created_at >= d7).count()
+    signups_30d = self_signups.filter(User.created_at >= d30).count()
+    ob_email = self_signups.filter(User.email_verified_at.isnot(None)).count()
+    ob_phone = self_signups.filter(User.phone_verified_at.isnot(None)).count()
+    ob_trialing = db.query(func.count(User.id)).filter(User.subscription_status == "trialing").scalar() or 0
+    ob_paying = db.query(func.count(User.id)).filter(User.subscription_status == "active").scalar() or 0
+
+    b = billing_metrics()
+
+    sold = _batch(db, "sold")
+    fs = _batch(db, "for_sale")
+    # Sold is the accumulated comp DB — count every sold row across batches.
+    sold_rows = db.execute(text("SELECT COUNT(*) FROM properties_sold")).scalar() or 0
+    fs_rows = fs.rows_inserted if fs else 0
+
+    # ---- who is using what -------------------------------------------------
+    # Midnight UTC, matching every other window on this dashboard. Worth knowing
+    # it is not midnight in Auckland: "today" here ends at noon local.
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    users_signed_in_today = (db.query(func.count(User.id))
+                             .filter(User.last_login_at >= midnight).scalar() or 0)
+    page_views_today = (db.query(func.count(PageView.id))
+                        .filter(PageView.created_at >= midnight).scalar() or 0)
+    active_users_today = (db.query(func.count(func.distinct(PageView.user_id)))
+                          .filter(PageView.created_at >= midnight).scalar() or 0)
+
+    # Medians in Python rather than SQL percentiles, so this runs on SQLite as
+    # well as Postgres — the pattern the market pulse had to be rewritten into
+    # after its Postgres-only query could never be exercised outside production.
+    top_pages: list[PageUsage] = []
+    rows = (db.query(PageView.path, PageView.user_id, PageView.seconds)
+            .filter(PageView.created_at >= since).all())
+    grouped: dict[str, dict] = {}
+    for path, uid, secs in rows:
+        g = grouped.setdefault(path, {"views": 0, "users": set(), "secs": []})
+        g["views"] += 1
+        if uid is not None:
+            g["users"].add(uid)
+        if secs is not None:
+            g["secs"].append(float(secs))
+    for path, g in grouped.items():
+        s = sorted(g["secs"])
+        top_pages.append(PageUsage(
+            path=path, views=g["views"], users=len(g["users"]),
+            median_seconds=(round(s[len(s) // 2], 1) if s else None)))
+    top_pages.sort(key=lambda p: -p.views)
+
+    # Heaviest users by time on the platform. Joined to users so a deleted
+    # account cannot appear as a nameless row of usage.
+    # Aggregated in Python: distinct-days-active needs the date part of a
+    # timestamp, and every portable way to express that in SQL is a dialect
+    # special case. The row count here is one per page view in the window, which
+    # is small enough not to warrant one.
+    top_users: list[TopUser] = []
+    per_user: dict[int, dict] = {}
+    for uid, secs, at in (db.query(PageView.user_id, PageView.seconds, PageView.created_at)
+                          .filter(PageView.created_at >= since,
+                                  PageView.user_id.isnot(None)).all()):
+        u = per_user.setdefault(uid, {"secs": 0.0, "views": 0, "days": set(), "last": None})
+        u["secs"] += float(secs or 0)
+        u["views"] += 1
+        if at:
+            u["days"].add(at.date())
+            if u["last"] is None or at > u["last"]:
+                u["last"] = at
+    if per_user:
+        emails = dict(db.query(User.id, User.email)
+                      .filter(User.id.in_(list(per_user))).all())
+        for uid, u in per_user.items():
+            if uid not in emails:
+                continue          # deleted account: no nameless rows of usage
+            top_users.append(TopUser(
+                email=emails[uid],
+                minutes=round(u["secs"] / 60, 1),
+                views=u["views"],
+                days_active=len(u["days"]),
+                last_seen=u["last"].isoformat() if u["last"] else None))
+        top_users.sort(key=lambda t: -t.minutes)
+        top_users = top_users[:10]
+
+    return Metrics(
+        activity_days=days,
+        top_users_30d=top_users,
+        users_signed_in_today=users_signed_in_today,
+        page_views_today=page_views_today,
+        active_users_today=active_users_today,
+        top_pages_7d=top_pages[:25],
+        users_total=users_total, users_active=users_active, users_new_30d=users_new_30d,
+        logins_7d=logins_7d, logins_30d=logins_30d, total_logins=int(total_logins),
+        signups_total=signups_total, signups_7d=signups_7d, signups_30d=signups_30d,
+        onboarding_email_verified=ob_email, onboarding_phone_verified=ob_phone,
+        onboarding_trialing=ob_trialing, onboarding_paying=ob_paying,
+        agent_contacts_total=contacts_total, agent_contacts_30d=contacts_30d,
+        billing_connected=b.connected, paying_customers=b.active_subscribers,
+        mrr=round(b.mrr, 2), income_this_month=round(b.income_this_month, 2),
+        currency=b.currency, billing_error=b.error,
+        sold_rows=int(sold_rows),
+        sold_last_loaded=sold.created_at.isoformat() if sold and sold.created_at else None,
+        forsale_rows=int(fs_rows),
+        forsale_last_loaded=fs.created_at.isoformat() if fs and fs.created_at else None,
+    )
+
+
+class PayingUserRow(BaseModel):
+    email: str | None
+    name: str | None
+    amount_monthly: float
+    currency: str
+    status: str
+    since: str | None
+    customer_id: str
+    app_user_id: int | None = None      # matched to one of our users, if found
+
+
+class PayingUsers(BaseModel):
+    connected: bool
+    customers: list[PayingUserRow]
+
+
+@router.get("/paying-users", response_model=PayingUsers)
+def paying_users_list(me: User = Depends(require_admin), db: Session = Depends(get_db)) -> PayingUsers:
+    """All active Stripe subscribers, matched to our user records by Stripe
+    customer id or email. Empty (connected=False) until Stripe is configured."""
+    b = billing_metrics()
+    rows = []
+    for c in paying_users():
+        u = None
+        if c.customer_id:
+            u = db.query(User).filter(User.stripe_customer_id == c.customer_id).first()
+        if u is None and c.email:
+            u = find_user_by_email(db, c.email)
+        rows.append(PayingUserRow(
+            email=c.email, name=c.name, amount_monthly=c.amount_monthly, currency=c.currency,
+            status=c.status, since=c.since, customer_id=c.customer_id,
+            app_user_id=u.id if u else None,
+        ))
+    return PayingUsers(connected=b.connected, customers=rows)
