@@ -1,0 +1,529 @@
+"""Admin weekly upload — ASYNC.
+
+Upload endpoint saves files to a temp dir, creates IngestJob rows, fires
+a background thread, returns job IDs immediately. The frontend polls
+/api/admin/jobs/{job_id} every couple seconds for status.
+
+This way the browser never holds a long-running connection — uploads of
+any size become reliable.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+
+import pandas as pd
+import threading
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
+from sqlalchemy import desc
+from sqlalchemy.orm import Session
+
+from .. import ingest
+from ..db import SessionLocal, get_db
+from ..models import BatchType, ImportBatch, IngestJob, PropertySold, User
+from ..release import hold_flagged_rows
+from ..security import require_admin
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+TEMP_DIR = Path(tempfile.gettempdir()) / "ollie_uploads"
+TEMP_DIR.mkdir(exist_ok=True)
+
+
+# ---------- response shapes ----------
+class JobRow(BaseModel):
+    id: int
+    batch_type: str
+    filename: str
+    file_size_bytes: int
+    status: str
+    progress_pct: int
+    stage: str | None
+    rows_total: int | None
+    rows_inserted: int | None
+    rows_rejected: int | None
+    rows_filled: int | None = None
+    rows_missed: int | None = None
+    result_json: str | None = None
+    error_message: str | None
+    audit_warnings: str | None = None
+    batch_id: int | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class HistoryRow(BaseModel):
+    id: int
+    batch_type: str
+    region: str
+    filename: str
+    rows_total: int
+    rows_inserted: int
+    rows_rejected: int
+    is_active: bool
+    uploaded_by_id: int | None
+    created_at: datetime
+    # WHY rows were rejected, not just how many.
+    #
+    # The ingest has always counted this — nine named reasons, tallied as it
+    # goes — and then written it into batch.note, which nothing reads. So a
+    # load reporting "2,141 inserted, 11,773 rejected" gave no way at all to
+    # tell a feed full of apartments from a feed with no council valuations
+    # from a broken column mapping. The answer was in the database the whole
+    # time and there was no way to look at it.
+    note: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- background worker ----------
+def _update(db: Session, job_id: int, **kwargs) -> None:
+    db.query(IngestJob).filter(IngestJob.id == job_id).update(kwargs)
+    db.commit()
+
+
+def _load_active_sold_df(db: Session, region: str):
+    """The sold dataset the for-sale pricing prices against. Prefers the NEWEST
+    loaded sold batch — staged or published — so in a weekly release the fresh
+    for-sale is priced against the fresh (staged) sold, not last week's live one."""
+    import pandas as pd
+
+    # EVERY sold batch, not just the newest. Sold history accumulates: a
+    # 2019-2023 file and a 2023-2026 file are two parts of one dataset, and
+    # pricing against only the most recently uploaded one would throw away
+    # whichever years happened to be loaded first. Ingest already guarantees a
+    # given sale appears once across all batches.
+    batch_ids = [
+        b.id for b in db.query(ImportBatch.id)
+        .filter(
+            ImportBatch.batch_type == BatchType.SOLD.value,
+            ImportBatch.region == region,
+            ImportBatch.status.in_(("staged", "published")),
+        )
+        .order_by(desc(ImportBatch.id))
+        .all()
+    ]
+    if not batch_ids:
+        return None
+    rows = db.query(PropertySold).filter(PropertySold.import_batch_id.in_(batch_ids)).all()
+    return pd.DataFrame([
+        {
+            "address": r.address, "suburb": r.suburb, "district": r.district,
+            "property_type": r.property_type,
+            "key_bedrooms": r.beds, "key_bathrooms": r.baths,
+            "key_floor_area": r.floor_area_m2, "key_land_area": r.land_area_m2,
+            "price_numeric": r.sale_price, "cv_numeric": r.cv_numeric,
+            "land_value_numeric": r.land_value_numeric,
+            "type_of_title": r.type_of_title, "sold_date": r.sold_date,
+            "days_on_market": r.days_on_market,
+        }
+        for r in rows
+    ])
+
+
+def _run_job(job_id: int, region: str) -> None:
+    """Runs in a background thread. Owns its own DB session."""
+    import pandas as pd
+
+    db = SessionLocal()
+    try:
+        job = db.get(IngestJob, job_id)
+        if job is None:
+            return
+
+        _update(db, job_id, status="running", started_at=datetime.now(timezone.utc), stage="loading file", progress_pct=5)
+
+        # Spreadsheets arrive as .xlsx as often as .csv now. read_csv on a
+        # workbook does not fail cleanly — it either throws a codec error or
+        # parses the zip header as one giant garbage column — so pick the reader
+        # from the extension and say plainly which one was used.
+        suffix = Path(job.filename or job.file_path or "").suffix.lower()
+        if suffix in (".xlsx", ".xlsm", ".xls"):
+            df = pd.read_excel(job.file_path)
+        else:
+            df = pd.read_csv(job.file_path, on_bad_lines="skip")
+        _update(db, job_id, rows_total=len(df), stage="ingesting", progress_pct=15)
+
+        # Weekly uploads are STAGED, not published — they land not-live for review,
+        # then an admin publishes them (POST /api/admin/release/publish).
+        if job.batch_type == BatchType.SOLD.value:
+            r = ingest.ingest_sold(db, df, job.filename, region=region, uploaded_by_id=job.uploaded_by_id, publish=False)
+        elif job.batch_type == BatchType.RENT.value:
+            r = ingest.ingest_rent(db, df, job.filename, region=region, uploaded_by_id=job.uploaded_by_id)
+        elif job.batch_type == BatchType.FOR_SALE.value:
+            _update(db, job_id, stage="loading sold dataset for comp matching", progress_pct=20)
+            sold_df = _load_active_sold_df(db, region)
+            if sold_df is None:
+                raise RuntimeError("No sold batch in DB — upload a sold CSV first")
+            # Stage 1 (LOAD) is fast and makes NO external calls: rows are staged
+            # and priced on whatever attributes the scrape carried. CoreLogic
+            # enrichment is now a separate, operator-triggered, re-runnable stage
+            # (POST /api/admin/release/enrich) followed by a re-price
+            # (POST /api/admin/release/price) — so a slow CoreLogic pass can never
+            # block this request and get the container killed.
+            _update(db, job_id, stage="pricing staged rows", progress_pct=40)
+            r = ingest.ingest_for_sale(db, df, sold_df, job.filename, region=region,
+                                       uploaded_by_id=job.uploaded_by_id, publish=False, fill_missing=False)
+            _update(db, job_id, stage="verifying staged data", progress_pct=85)
+            hold_flagged_rows(db, r.batch_id)
+        else:
+            raise RuntimeError(f"unknown batch_type {job.batch_type}")
+
+        _update(
+            db, job_id,
+            status="completed",
+            progress_pct=100,
+            stage="done",
+            rows_inserted=r.rows_inserted,
+            rows_rejected=r.rows_rejected,
+            batch_id=r.batch_id,
+            audit_warnings=getattr(r, "audit_warnings_json", None),
+            completed_at=datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()[:2000]}"
+        _update(
+            db, job_id,
+            status="failed",
+            stage="error",
+            error_message=msg,
+            completed_at=datetime.now(timezone.utc),
+        )
+    finally:
+        # Clean up the temp file regardless of outcome
+        try:
+            job = db.get(IngestJob, job_id)
+            if job and job.file_path and os.path.exists(job.file_path):
+                os.remove(job.file_path)
+        except Exception:
+            pass
+        db.close()
+
+
+def _save_upload(upload: UploadFile, batch_type: str) -> tuple[str, int]:
+    """Stream the upload to a temp file. Returns (path, size_bytes)."""
+    suffix = "_" + (upload.filename or f"{batch_type}.csv")
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=str(TEMP_DIR))
+    os.close(fd)
+    size = 0
+    with open(path, "wb") as f:
+        while True:
+            chunk = upload.file.read(1024 * 1024)  # 1MB
+            if not chunk:
+                break
+            f.write(chunk)
+            size += len(chunk)
+    return path, size
+
+
+# ---------- endpoints ----------
+@router.post("/upload/preflight")
+def preflight_upload(
+    admin: User = Depends(require_admin),
+    region: str = "Auckland",
+    for_sale: UploadFile = File(...),
+):
+    """What this file WOULD do, as a CSV, without doing any of it.
+
+    A load has been a one-way door: 146 MB in, a count out, and the rejected
+    rows gone — not stored, not listed, not recoverable. "Why isn't 36 Lloyd Ave
+    in the system" therefore had no answer, and "10,608 rows not in this region"
+    on a file named auckland_v2.csv was a fact nobody could act on.
+
+    This runs the same rules, in the same order, and returns one line per row of
+    the original saying what would happen to it and why. Nothing is written
+    anywhere — no batch, no job, no listing.
+    """
+    from fastapi.responses import Response
+
+    from ..preflight_file import check
+
+    path, size = _save_upload(for_sale, "for_sale")
+    try:
+        name = (for_sale.filename or "").lower()
+        df = (pd.read_excel(path) if name.endswith((".xlsx", ".xls"))
+              else pd.read_csv(path, on_bad_lines="skip"))
+        data, counts = check(df, region)
+    except Exception as e:
+        raise HTTPException(400, f"Could not read that file: {type(e).__name__}: {e}")
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+    stem = (for_sale.filename or "file").rsplit(".", 1)[0][:60]
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="preflight-{stem}.csv"',
+            # Read by the page so it can say what happened without parsing the
+            # CSV it just handed to the browser.
+            "X-Preflight-Total": str(counts.get("_total", 0)),
+            "X-Preflight-Loaded": str(counts.get("_loaded", 0)),
+        },
+    )
+
+
+@router.post("/upload", response_model=list[JobRow])
+def upload_csvs(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    for_sale: UploadFile | None = File(None),
+    sold: UploadFile | None = File(None),
+    rent: UploadFile | None = File(None),
+    region: str = "Auckland",
+) -> list[IngestJob]:
+    if not any((for_sale, sold, rent)):
+        raise HTTPException(status_code=400, detail="At least one CSV (for_sale / sold / rent) required")
+
+    jobs: list[IngestJob] = []
+
+    # Order matters: sold first (so for-sale comp matching uses the newest sold), then rent, then for-sale.
+    queued: list[tuple[UploadFile, str]] = []
+    if sold is not None:
+        queued.append((sold, BatchType.SOLD.value))
+    if rent is not None:
+        queued.append((rent, BatchType.RENT.value))
+    if for_sale is not None:
+        queued.append((for_sale, BatchType.FOR_SALE.value))
+
+    for upload, btype in queued:
+        path, size = _save_upload(upload, btype)
+        job = IngestJob(
+            batch_type=btype,
+            filename=upload.filename or f"{btype}.csv",
+            file_size_bytes=size,
+            file_path=path,
+            status="pending",
+            uploaded_by_id=admin.id,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        jobs.append(job)
+
+    # Fire background threads. They run sequentially per upload group so for-sale
+    # can use the sold batch we just ingested.
+    job_ids = [j.id for j in jobs]
+
+    def _run_in_order():
+        for jid in job_ids:
+            _run_job(jid, region)
+
+    threading.Thread(target=_run_in_order, daemon=True).start()
+    return jobs
+
+
+@router.get("/jobs/{job_id}", response_model=JobRow)
+def get_job(
+    job_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> IngestJob:
+    job = db.get(IngestJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@router.get("/jobs", response_model=list[JobRow])
+def list_recent_jobs(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    limit: int = 20,
+) -> list[IngestJob]:
+    return db.query(IngestJob).order_by(desc(IngestJob.id)).limit(limit).all()
+
+
+@router.get("/upload/history", response_model=list[HistoryRow])
+def history(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> list[ImportBatch]:
+    return db.query(ImportBatch).order_by(desc(ImportBatch.id)).limit(50).all()
+
+
+@router.get("/section-rates")
+def section_rates(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    region: str = "Auckland",
+):
+    """Per-suburb section $/m² rates the system derived from the active sold batch
+    (council land value ÷ land area, median per suburb). Lets the admin sanity-check
+    the numbers used in subdivision profit. Computed on demand — not stored."""
+    sold_df = _load_active_sold_df(db, region)
+    if sold_df is None:
+        return {"default": None, "suburbs": [], "note": "No active sold batch."}
+    from app.pricing.subdivision import SectionRates
+    sr = SectionRates(sold_df)
+    return {"default": round(sr.default), "count": len(sr.as_table()), "suburbs": sr.as_table()}
+
+
+# ---------- Trade Me: fill the gaps, never set the price ----------
+class TradeMeFillResult(BaseModel):
+    """What one Trade Me upload changed."""
+    rows_seen: int
+    matched: int
+    unmatched: int
+    valuations: int
+    filled: dict[str, int]
+    conflicts: list[str]
+    note: str
+    dry_run: bool
+
+
+@router.post("/trademe-fill", response_model=TradeMeFillResult)
+def trademe_fill(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    file: UploadFile = File(...),
+    region: str = "Auckland",
+    dry_run: bool = False,
+) -> TradeMeFillResult:
+    """Fill gaps in what we already hold from a Trade Me sales export.
+
+    This is NOT an import. It creates no batch and adds no property: rows are
+    matched to ours on address, and only ever fill a field we are missing —
+    floor area, land area, the council valuation and its parts, coordinates,
+    ownership type. Nothing we hold is overwritten, because our own export
+    carries bedrooms, bathrooms, days on market and sale method, and this file
+    carries none of them.
+
+    Their own figure is stored alongside, for display as "Trade Me says" and for
+    nothing else. See app/trademe.py for why it must never reach a valuation.
+
+    dry_run reports what WOULD change without writing anything.
+    """
+    from .. import trademe
+
+    path, _size = _save_upload(file, "trademe")
+    try:
+        frame = trademe.load(path)
+    except ValueError as e:                      # the wrong file, named
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:                       # unreadable, not a crash
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read {file.filename or 'that file'} as a CSV "
+                   f"({type(e).__name__}).")
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    if "_key" not in frame.columns or frame.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="No usable addresses in that file — is it a Trade Me sales export?")
+
+    res = trademe.fill(db, frame, region=region, dry_run=dry_run)
+    return TradeMeFillResult(
+        rows_seen=res.rows_seen, matched=res.matched, unmatched=res.unmatched,
+        valuations=res.valuations, filled=res.filled, conflicts=res.conflicts,
+        note=res.note, dry_run=dry_run,
+    )
+
+
+# ---- deleting one load ------------------------------------------------------
+#
+# Loading the wrong file used to mean wiping every for-sale batch and starting
+# again, because the only tool was scripts/delete-for-sale-data.py and it takes
+# the lot. That is an hour of reloading to undo a five-second mistake.
+#
+# Three things this is careful about, all of them learned from what the FKs
+# actually say rather than from what the model diagram suggests:
+#
+#   The rows go first. properties_for_sale.import_batch_id is NOT NULL, so a
+#   batch cannot be deleted out from under its listings — the delete would fail
+#   on the constraint, in a request, with a 500 and no explanation.
+#
+#   ingest_jobs.batch_id is a nullable FK. The job rows are the upload's history
+#   and are worth keeping, so they are DETACHED rather than deleted: the record
+#   that a file was loaded survives the data being removed.
+#
+#   Deleting the ACTIVE batch would empty the site. Rather than refusing — which
+#   is useless, because the batch you want gone is usually the one you just made
+#   active — the most recent remaining batch of the same type is activated in
+#   its place, and the response says which.
+
+class DeleteBatchResult(BaseModel):
+    deleted_batch_id: int
+    batch_type: str
+    filename: str
+    rows_deleted: int
+    jobs_detached: int
+    was_active: bool
+    now_active_batch_id: int | None
+    now_active_filename: str | None
+    message: str
+
+
+@router.delete("/upload/history/{batch_id}", response_model=DeleteBatchResult)
+def delete_batch(batch_id: int, _: User = Depends(require_admin),
+                 db: Session = Depends(get_db)) -> DeleteBatchResult:
+    """Delete one uploaded file's data, without touching any other load."""
+    from ..models import PropertyForSale, PropertyRent, PropertySold
+
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(404, f"No load with id {batch_id}.")
+
+    model = {"for_sale": PropertyForSale, "sold": PropertySold,
+             "rent": PropertyRent}.get(batch.batch_type)
+    if model is None:
+        raise HTTPException(
+            400, f"Don't know how to delete a '{batch.batch_type}' load.")
+
+    was_active = bool(batch.is_active)
+    btype, fname = batch.batch_type, batch.filename
+
+    rows = db.query(model).filter(model.import_batch_id == batch_id).delete(
+        synchronize_session=False)
+    # Detached, not deleted: the job row is the record that this file was
+    # uploaded, who by and when, and that history outlives its data.
+    jobs = db.query(IngestJob).filter(IngestJob.batch_id == batch_id).update(
+        {"batch_id": None}, synchronize_session=False)
+    db.delete(batch)
+    db.flush()
+
+    now_id = now_name = None
+    if was_active:
+        nxt = (db.query(ImportBatch)
+               .filter(ImportBatch.batch_type == btype,
+                       ImportBatch.region == batch.region)
+               .order_by(desc(ImportBatch.id)).first())
+        if nxt is not None:
+            nxt.is_active = True
+            now_id, now_name = nxt.id, nxt.filename
+    db.commit()
+
+    if not was_active:
+        msg = (f"Deleted {rows:,} rows from '{fname}'. The live data is "
+               f"untouched.")
+    elif now_id:
+        msg = (f"Deleted {rows:,} rows from '{fname}', which was live. "
+               f"'{now_name}' is live again — re-price to apply it.")
+    else:
+        msg = (f"Deleted {rows:,} rows from '{fname}', which was live, and "
+               f"there is no earlier {btype.replace('_', ' ')} load to fall "
+               f"back to. Those pages will be empty until a file is loaded.")
+
+    return DeleteBatchResult(
+        deleted_batch_id=batch_id, batch_type=btype, filename=fname,
+        rows_deleted=int(rows), jobs_detached=int(jobs), was_active=was_active,
+        now_active_batch_id=now_id, now_active_filename=now_name, message=msg)
