@@ -1,0 +1,16 @@
+# Tells Railway's Nixpacks builder to use Python 3.12 (3.13 not yet available there).
+[phases.setup]
+nixPkgs = ["python312", "gcc"]
+
+[phases.install]
+cmds = ["python -m venv /opt/venv", ". /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"]
+
+[start]
+# Self-healing startup. Do NOT run `alembic upgrade head` here: production was
+# stamped at a revision this codebase no longer contains, so alembic aborts with
+# "Can't locate revision", and because it was chained with `&&`, uvicorn never
+# started — the deploy failed and Railway kept serving the OLD image (which is
+# why fixes committed to the repo never went live). db_bootstrap reconciles the
+# schema and resets alembic_version WITHOUT invoking alembic, and the `;` means
+# uvicorn always starts even if bootstrap only warns. Mirrors the Procfile.
+cmd = "/opt/venv/bin/python -m app.db_bootstrap; /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT"
