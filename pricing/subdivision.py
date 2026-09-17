@@ -1,0 +1,839 @@
+"""Subdivision feasibility + profit (client v4 spec, confirmed June 2026).
+
+Feasibility:
+  - Zones that allow only 1 dwelling per lot (Single House, Large Lot, Rural)
+    are NEVER subdividable, regardless of land size
+    (client: "single house zone is exactly that one house cannot be subdivided at all").
+  - Multi-dwelling zones (Mixed Housing, Terrace & Apartment) are land-driven:
+      usable land  = land × (1 − road allowance)        [allowance 10%]
+      sections     = FLOOR(usable land ÷ zone min lot)
+      feasible     = sections ≥ 2
+      subdividable = feasible AND profit > 0   (a site that loses money is not
+                     an opportunity; the figures are still returned so the
+                     detail page can show why the answer is no)
+      dwellings    = sections × max dwellings per lot
+
+Profit (§6):
+      section value  = section $/m² rate × zone min lot
+      gross sales    = sections × section value
+      subdivision cost = (new sections) × $80,000   [new = sections − 1; dev contribution + services]
+      selling cost   = gross sales × 4%   [real-estate cost per site]
+      acquisition cost = buy price × 2%
+      profit = gross sales − buy price − subdivision cost − selling cost − acquisition cost
+
+Section $/m² rate is derived automatically from the sold data (see SectionRates),
+never a manual table — bare section sales first, council land values second,
+$850/m² as a fallback when the suburb has neither.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import pandas as pd
+
+from . import assumptions as A
+from . import zones as Z
+from .comps import parse_area_series
+
+ROAD_ALLOWANCE = 0.10        # legacy flat figure; superseded by _road_allowance()
+SERVICES_PER_SECTION = 130_000   # earthworks + roads + 3-waters + power + consent, per lot
+BUILD_RATE_PER_M2 = 2_800    # replacement build cost $/m² — values the retained house's building
+HOLDING_RATE = 0.07          # finance/holding, PER YEAR, on (buy + services)
+HOLDING_YEARS = 1.0          # money tied up ~1 year before the build sells (editable per deal)
+CONTINGENCY_RATE = 0.03      # contingency on the development spend (editable per deal)
+GST_RATE = 0.15             # net GST on the development margin (NZ 15%)
+SELLING_PCT = 0.04          # real-estate cost per site sold
+ACQUISITION_PCT = 0.02
+# Reality check: if the modelled gross sale of the finished sections towers over
+# the site's current market value (CV) by more than this, the section rate is
+# being applied to bulk/englobo land the market priced far lower — a fantasy gain
+# the market would have bid away if it were real (1 Pleasant Rd: $13.5M gross on a
+# $1.4M CV). Above it, the site is not flagged as an opportunity.
+GROSS_VS_CV_CAP = 4.0
+# Bad-data guard: an urban subdividable site whose CV works out below this per m²
+# has a corrupt land area (or CV) — 1 Pleasant Rd's feed said 21,109 m² for a
+# 2,109 m² site, a 10x digit error giving $66/m². Real urban Auckland land is
+# never this cheap, so a subdivision computed off it is fiction.
+CV_PER_M2_FLOOR = 150.0
+NO_LIMIT_THRESHOLD = 99      # max-dwellings ≥ this = "no per-lot limit" (Terrace/Apartment)
+
+# --- The site floor: under this, no zone is subdividable ----------------------
+# Client rule, and one sentence rather than an emergent property of four other
+# numbers. Measured against what each zone required before it existed:
+#
+#     Single House / Large Lot / Rural       never subdividable, any size
+#     Mixed Housing Suburban / Urban         smallest site that flagged: 670 m²
+#     Terrace Housing & Apartment (THAB)     smallest site that flagged: 283 m²
+#
+# So this changes THAB and nothing else — but it is written as a floor over every
+# zone deliberately. Mixed Housing's 670 m² is not a rule anyone wrote down; it
+# falls out of a 300 m² minimum lot and a 10% road allowance, and if either is
+# ever tuned it moves without anyone deciding it should. A stated floor cannot
+# drift, and it is answerable without reading the arithmetic: under 600 m², a
+# section is a section.
+#
+# 22 Weybridge Crescent is why: 400 m², freehold, already subdivided, and still
+# offered as "+1 lot, build 2 terraces" — demolish the house the last
+# subdivision built. Across 23 staged exports 1,246 flagged rows (4.2%) sat at
+# or under 600 m², every one of them THAB.
+MIN_SUBDIVIDABLE_SITE_M2 = 600.0
+
+# --- Terrace Housing & Apartment Building (THAB) ------------------------------
+# THAB density is built-form driven (height, coverage, HIRB), NOT minimum lot
+# size. Modelling it with the old 1,200 m² "min lot" meant a THAB site needed
+# ~2,670 m² just to register 2 lots, so real terrace sites never flagged — e.g.
+# 42 Cape Road, Mangere: 769 m² consented (LUC60402550 / SUB60402551) to FIVE
+# terraces of 98–119 m² each, which the old model returned as "not subdividable".
+# So THAB is modelled as a build-and-sell TERRACE development, not a bare-section
+# split: yield off a realistic per-dwelling footprint, then a proper pro-forma
+# (land + build → sale). All figures are tunable — override per property via the
+# /subdivision-scenario endpoint.
+THAB_LOT_M2 = 120.0            # fee-simple land per terrace dwelling
+# THAB's own site floor. The 120 m² above is right for what FITS on a site; it
+# was never a statement about which sites are worth developing, and it was being
+# used as both — "does it fit two terraces" is true at 283 m², smaller than a
+# single already-subdivided lot.
+#
+# Now the same number as every other zone (MIN_SUBDIVIDABLE_SITE_M2), kept as
+# its own name because the THAB path checks it separately and its message says
+# so. Above it a site fits at least four terraces, which is what makes a
+# demolish-and-build worth doing; 42 Cape Road (769 m², consented for five)
+# still qualifies.
+THAB_MIN_SITE_M2 = MIN_SUBDIVIDABLE_SITE_M2
+THAB_ACCESS_ALLOWANCE = 0.15  # share of the site lost to shared driveway / access lot
+THAB_TERRACE_FLOOR = 105.0    # typical terrace floor area (m²) built per dwelling
+# Finished-terrace sale price, per m² of floor. This is the value driver and the
+# key tunable — new Auckland terraces sell on $/m², not cost-plus. Suburb-specific
+# ideally (comp-driven); this is a sensible default until wired to sold comps.
+THAB_TERRACE_SALE_PER_M2 = 7_500.0
+THAB_SERVICES_PER_UNIT = 50_000  # consent + connections per terrace (shared civils)
+
+
+def _road_allowance(prelim_lots: int) -> float:
+    """Share of the site lost to roads, access and reserves. A rear-lot split
+    barely touches it; a 15-lot block needs an internal road and stormwater
+    reserves, so the loss climbs with scale."""
+    if prelim_lots <= 2:
+        return 0.10
+    if prelim_lots <= 6:
+        return 0.20
+    return 0.30
+
+
+def _building_value(floor_area, improvements, build_rate: float) -> float | None:
+    """What the house's building is worth. Floor area × replacement rate is far
+    closer to reality than the council 'improvement value', which runs well below
+    real build cost; the council figure is only a fallback when floor is unknown."""
+    if _is_number(floor_area) and float(floor_area) > 0:
+        return float(floor_area) * build_rate
+    if _is_number(improvements):
+        return float(improvements)
+    return None
+
+
+def _is_number(x) -> bool:
+    try:
+        return float(x) == float(x)  # NaN != NaN
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalise_type(property_type: str | None) -> str:
+    if not property_type:
+        return ""
+    return str(property_type).strip().lower()
+
+
+# Multi-unit dwellings can't be subdivided by a single unit-owner (shared lot).
+_NON_SUBDIVIDABLE_TYPES = {
+    "apartment", "unit", "townhouse", "studio", "flat", "duplex",
+    "公寓", "排房", "城市屋", "单元", "联排别墅",
+}
+# Only Freehold gives an owner the dividable land — but "freehold" is written
+# several ways, and this rule used to accept exactly one of them.
+#
+# The rest of the app already knows better. _title_bucket (pricing/buyprice.py,
+# mirrored in ml/features.py) reads "1", "1.0", "freehold" and "fee simple" as
+# the same thing, because the sold file stores a numeric code and the for-sale
+# file stores the word. This set held the single string "freehold", so a
+# listing whose title reads "Fee Simple" — the ordinary legal synonym, and what
+# a good deal of real data actually says — was freehold to the valuation and
+# UNKNOWN to this. Unknown title means not subdividable, which means no
+# subdivision figures, which means the calculator never appears on the property
+# page and there is nothing to edit.
+#
+# Same idea, two spellings, disagreeing. One definition now: this asks the same
+# question the rest of the app asks.
+_SUBDIVIDABLE_TITLE_BUCKETS = {"FH"}
+
+
+def _override_lots(lots_override) -> int | None:
+    """A hand-set lot count, or None to use the model's own reading.
+
+    NOT `if lots_override:`. This value now travels through pandas, and a null
+    in a float column arrives as NaN — which is TRUTHY, so a plain truth test
+    treats "no override" as an override on every row that has none, and then
+    int(NaN) raises and takes the whole pricing run with it.
+
+    Infinity is refused for the same reason. Anything below one lot is refused
+    because a site that takes less than one lot is not a site; the caller's own
+    "fewer than two sections is not a subdivision" rule then handles the rest,
+    so a typed 0 lands on the ordinary not-subdividable answer rather than
+    inventing something.
+    """
+    if lots_override is None:
+        return None
+    try:
+        v = float(lots_override)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / ±inf
+        return None
+    if v < 1.0:
+        return 1                       # refused downstream as "not subdividable"
+    return int(min(v, A.MAX_PRACTICAL_LOTS_TOTAL))
+
+
+def _title_is_subdividable(title_type) -> bool:
+    """Does this title give its owner land they can divide?
+
+    An ABSENT title is not an answer and is not treated as one — a blank stays
+    "unknown" and stays out, because guessing freehold on a cross-lease would
+    invent a subdivision that cannot legally happen.
+    """
+    if title_type is None or str(title_type).strip() == "":
+        return False
+    from .buyprice import _title_bucket
+    return _title_bucket(title_type) in _SUBDIVIDABLE_TITLE_BUCKETS
+
+# Locations never treated as subdivision opportunities, whatever the maths says.
+# Prime streets where the value is in the position rather than the land: the
+# section-rate model prices the dirt at the suburb median, which is nowhere near
+# what these sites actually cost, so any "profit" it reports is an artefact.
+# Matched as a case-insensitive substring of the address. Extend as needed.
+EXCLUDED_LOCATIONS = (
+    "paritai drive",
+)
+
+
+@dataclass
+class Subdivision:
+    zone: str | None
+    min_lot_m2: float | None
+    # "Worth subdividing" — the site splits AND the split makes money at what
+    # you would pay for it. This is the deal signal, and it needs a price.
+    is_subdividable: bool
+    sections: int | None          # number of sections (lots) the site splits into
+    dwellings: int | None         # sections × max dwellings per lot (None for "no limit" zones)
+    section_rate: float | None    # $/m² used (from sold land values)
+    gross_sales: float | None     # sections × section value
+    subdivision_profit: float | None
+    # Legacy fields kept so the rest of the pipeline/DB keep working.
+    max_addl_lots: float | None = None       # sections − 1
+    # "CAN be subdivided" — the zone allows more than one dwelling, the title is
+    # freehold, the land is big enough, and the arithmetic leaves at least one
+    # extra lot. Nothing here needs a price, so it is answerable for the four
+    # listings in five that are sold by auction or negotiation.
+    #
+    # The two were one flag, and the one they were was the profitable one. That
+    # meant a 1,200 m² freehold site in Mixed Housing Urban going to auction was
+    # not merely unrated — it was invisible to anybody hunting development land,
+    # which is the thing this product is for. A developer can decide for
+    # themselves what a site is worth; what they cannot do is find one we never
+    # showed them.
+    can_subdivide: bool = False
+    section_price_per_m2: float | None = None
+    section_value_method: str = "none"
+    services_cost: float = 0.0
+    total_subdivided_value: float | None = None  # = gross_sales
+    uplift_vs_asking: float | None = None
+    best_strategy: str | None = None
+    best_net_gain: float | None = None           # = subdivision_profit (feeds the buy score)
+    subdivision_premium: float | None = None     # = subdivision_profit (kept for older UI)
+    # True when the model's own output failed its sanity check (a gross that
+    # dwarfs the site's value, or a corrupt land area). The figures are BLANKED
+    # in that case — see compute() — so nothing downstream can print a number we
+    # don't believe; this flag is what lets the UI explain the blank.
+    implausible: bool = False
+    # True when the headline plan knocks the house down. The UI leads with the
+    # demolition wording and the works allowance only when this is set.
+    demolish: bool = False
+    # The strategy NOT chosen, and what it would have earned. A headline that
+    # says "demolish" is a big thing to tell somebody; showing the number it
+    # beat is what makes it an argument rather than an instruction. None when
+    # there was no second option — a bare site has nothing to retain.
+    alternative_strategy: str | None = None
+    alternative_profit: float | None = None
+
+
+def _has_dwelling(beds, baths, floor_area=None, improvement_value=None) -> bool:
+    """Is there a building standing on this site?
+
+    Asked of four signals, not two. It used to read beds-or-baths alone, and a
+    record missing both — common enough in the weekly feed — was treated as bare
+    land with a house on it. That is wrong twice over:
+
+      * the THAB path left the demolition allowance out of the profit and told
+        the reader to "Build 2 terraces" on an occupied section
+      * the bare-section path set subdivide_whole, valuing the retained house's
+        land as if it were an empty lot, which the comment there already warns
+        overstates the return
+
+    A floor area or a council improvement value proves a building exists exactly
+    as well as a bed count does, and both were already being passed in.
+    """
+    for v in (beds, baths, floor_area, improvement_value):
+        if _is_number(v) and float(v) > 0:
+            return True
+    return False
+
+
+def _not_subdividable(zone, min_lot, method="none") -> Subdivision:
+    return Subdivision(
+        zone=zone, min_lot_m2=min_lot, is_subdividable=False,
+        sections=None, dwellings=None, section_rate=None,
+        gross_sales=None, subdivision_profit=None,
+        max_addl_lots=None, section_value_method=method,
+    )
+
+
+@dataclass(frozen=True)
+class SubdivisionAssumptions:
+    """Every tunable number behind the profit figure, in one place.
+
+    Defaults are the client's confirmed figures. A developer can override any of
+    them per property (see the /subdivision-scenario endpoint) to run their own
+    numbers without the stored batch values changing.
+    """
+    services_per_section: float = SERVICES_PER_SECTION   # consent + dev contribution + services
+    selling_pct: float = SELLING_PCT                     # real-estate cost per site sold
+    acquisition_pct: float = ACQUISITION_PCT             # legal/finance on the purchase
+    refurb_allowance: float = 100_000                    # subdivision work + refurb on the RETAINED house
+    # Knocking a house down is not the same job as doing one up, and the model
+    # used the refurb figure for both. That made demolition structurally
+    # impossible to choose: the retained lot is already valued at the full
+    # section rate for its land, the building is added on top at replacement
+    # cost, and then the SAME $100k was charged either way — so retaining always
+    # came out ahead by construction, whatever the site looked like.
+    #
+    # Demolition and disposal of a standard timber house is a much smaller job
+    # than a $100k refurbishment. Tunable per deal like everything else here,
+    # and the figure a developer is most likely to want to argue with.
+    demolition_allowance: float = 35_000                 # knock down + cart away
+    house_resale_pct: float = 1.00                       # multiplier on the computed house resale
+    section_rate: float | None = None                    # finished section $/m²; None = suburb rate
+    incidentals_per_section: float = 0.0                 # anything the model doesn't know about
+    build_rate: float = BUILD_RATE_PER_M2                # $/m² replacement cost for the retained building
+    holding_rate: float = HOLDING_RATE                   # finance/holding PER YEAR, on (buy + services)
+    holding_years: float = HOLDING_YEARS                 # how long the money is tied up
+    contingency_rate: float = CONTINGENCY_RATE           # contingency on the development spend
+    gst_rate: float = GST_RATE                           # net GST on the development margin
+    # --- the land/house split (council figures by default, all overridable) ---
+    improvement_value: float | None = None               # what the buildings are worth
+    raw_land_rate: float | None = None                   # $/m² of land INSIDE the parent title
+    market_ratio: float | None = None                    # scales council values to market
+
+    def merged_rate(self, suburb_rate: float | None) -> float:
+        if self.section_rate and self.section_rate > 0:
+            return float(self.section_rate)
+        return float(suburb_rate) if (suburb_rate and suburb_rate > 0) else A.SECTION_RATE_FALLBACK
+
+
+MIN_SALES_FOR_RATE = 3
+
+
+class SectionRates:
+    """Per-suburb section $/m², resolved in priority order:
+
+      1. **Bare section sales** — median (sale price ÷ land area) over vacant-land
+         sold records. What a section in that suburb actually sells for, so it is
+         always preferred when available.
+      2. **Council land values** — median (land value ÷ land area) over all sold
+         records. A rating figure, not a market price, so it is second best.
+      3. **Fallback** — A.SECTION_RATE_FALLBACK ($850/m²), used only when a suburb
+         has neither. Not a floor: a real rate below it is still used as-is.
+
+    Each tier needs MIN_SALES_FOR_RATE records in the suburb to be trusted.
+    Built once per ingest.
+    """
+
+    def __init__(self, sold_df: pd.DataFrame, default_rate: float | None = None):
+        df = sold_df.copy()
+        self._bare: dict[str, float] = {}
+        self._council: dict[str, float] = {}
+        self.default = float(default_rate or A.SECTION_RATE_FALLBACK)
+
+        if "suburb" not in df.columns:
+            return
+        suburb = df["suburb"].astype(str).str.strip()
+
+        land_area = None
+        for c in ("land_area_m2", "key_land_area"):
+            if c in df.columns:
+                land_area = parse_area_series(df[c])
+                break
+        if land_area is None:
+            return
+
+        # --- tier 1: bare section sales ---
+        if "property_type" in df.columns and "price_numeric" in df.columns:
+            is_vacant = df["property_type"].apply(A.is_vacant_type)
+            price = pd.to_numeric(df["price_numeric"], errors="coerce")
+            self._bare = self._median_by_suburb(suburb[is_vacant], (price / land_area)[is_vacant])
+
+        # --- tier 2: council land values ---
+        land_val = None
+        for c in ("land_value_numeric", "land_value"):
+            if c in df.columns:
+                land_val = parse_area_series(df[c])
+                break
+        if land_val is not None:
+            self._council = self._median_by_suburb(suburb, land_val / land_area)
+
+    @staticmethod
+    def _median_by_suburb(suburb: pd.Series, rate: pd.Series) -> dict[str, float]:
+        work = pd.DataFrame({"suburb": suburb, "rate": rate}).dropna()
+        work = work[(work["rate"] > 50) & (work["rate"] < 50_000)]
+        if work.empty:
+            return {}
+        grp = work.groupby("suburb")["rate"]
+        med, counts = grp.median(), grp.size()
+        return {s: float(med[s]) for s in med.index if counts[s] >= MIN_SALES_FOR_RATE}
+
+    def rate_for(self, suburb: str | None) -> float:
+        if suburb:
+            key = str(suburb).strip()
+            return self._bare.get(key) or self._council.get(key) or self.default
+        return self.default
+
+    def source_for(self, suburb: str | None) -> str:
+        """Which tier supplied rate_for() — for display and admin QA."""
+        if suburb:
+            key = str(suburb).strip()
+            if self._bare.get(key):
+                return "bare_section_sales"
+            if self._council.get(key):
+                return "council_land_value"
+        return "fallback"
+
+    def as_table(self) -> list[dict]:
+        """For the admin upload tab — sorted list of suburb rates + their source."""
+        merged = {**self._council, **self._bare}  # bare wins where both exist
+        return [
+            {"suburb": s, "rate": round(r), "source": self.source_for(s)}
+            for s, r in sorted(merged.items(), key=lambda kv: -kv[1])
+        ]
+
+
+def _terrace_development(
+    zone: str | None, min_lot: float, land_area: float, buy: float | None,
+    section_rate: float, has_dwelling: bool, cv: float | None,
+    ap: "SubdivisionAssumptions", rate_source: str | None,
+    lots_override: float | None = None,
+) -> Subdivision:
+    """THAB build-and-sell terrace development.
+
+    Yield is set by a per-dwelling footprint, not the zone min lot: a THAB site
+    fits FLOOR(usable land / THAB_LOT_M2) terraces after a shared-access
+    allowance. Each terrace is built (floor × build rate) and sold at a market
+    uplift over land + build; profit is gross realisation less land, build,
+    services, selling, acquisition, holding, contingency and GST. An existing
+    house is demolished (these are attached party-wall builds, not retain-and-
+    subdivide). Returns the terrace lot size as `min_lot_m2` so the UI shows the
+    real per-dwelling area, not the zone's nominal 1,200 m²."""
+    # Site floor first: a lot this size is the OUTPUT of a subdivision, not a
+    # candidate for one. Checked before the terrace count, because "it fits two
+    # terraces" is true of a 283 m² lot and says nothing about whether anyone
+    # should knock the house down.
+    if land_area < THAB_MIN_SITE_M2:
+        return _not_subdividable(zone, THAB_LOT_M2, "thab_site_too_small")
+
+    usable = land_area * (1.0 - THAB_ACCESS_ALLOWANCE)
+    n = int(usable // THAB_LOT_M2)
+    n = min(n, A.MAX_PRACTICAL_LOTS_TOTAL)
+    _forced = _override_lots(lots_override)
+    if _forced is not None:
+        n = _forced
+    if n < 2:
+        return _not_subdividable(zone, THAB_LOT_M2, "thab_too_small")
+
+    strategy = (f"Demolish and build {n} terraces" if has_dwelling
+                else f"Build {n} terraces")
+    # Feasible, but with no buy price the return is unknowable — flag the yield,
+    # withhold the profit (mirrors the bare-section path).
+    if buy is None:
+        return Subdivision(
+            zone=zone, min_lot_m2=THAB_LOT_M2, is_subdividable=False,
+            can_subdivide=True,
+            sections=n, dwellings=n, section_rate=round(section_rate),
+            gross_sales=None, subdivision_profit=None, max_addl_lots=float(n - 1),
+            section_price_per_m2=round(section_rate), section_value_method="thab_terraces",
+            best_strategy=strategy,
+        )
+
+    # Revenue is the market sale price of each finished terrace ($/m² of floor);
+    # the land is already paid for via `buy`, so it is a cost, not a revenue line.
+    build_per = THAB_TERRACE_FLOOR * ap.build_rate
+    sale_per = THAB_TERRACE_FLOOR * THAB_TERRACE_SALE_PER_M2
+    gross = n * sale_per
+    build_total = n * build_per
+    services = n * THAB_SERVICES_PER_UNIT
+    demolition = ap.demolition_allowance if has_dwelling else 0.0
+    selling = gross * ap.selling_pct
+    acquisition = buy * ap.acquisition_pct
+    holding = (buy + build_total + services) * ap.holding_rate * ap.holding_years
+    profit = gross - buy - build_total - services - selling - acquisition - demolition - holding
+
+    contingency = ap.contingency_rate * (build_total + services + holding + demolition)
+    gst = ap.gst_rate * max(profit - contingency, 0.0)
+    profit = profit - contingency - gst
+
+    dev_cost = round(build_total + services)   # what's spent to build (beyond the land)
+    return Subdivision(
+        zone=zone, min_lot_m2=THAB_LOT_M2, is_subdividable=(profit > 0),
+        can_subdivide=True,
+        sections=n, dwellings=n, section_rate=round(section_rate),
+        gross_sales=round(gross), subdivision_profit=round(profit),
+        # ADDITIONAL lots, not total. The field is "sections - 1" everywhere else
+        # (see the dataclass and the bare-section path), and this returned the
+        # full terrace count. On a two-terrace site that reports one extra title
+        # as two — a 100% overstatement — and the error is a clean +1 on every
+        # THAB row, which is the shape of the +52% bias in the validation report.
+        max_addl_lots=float(n - 1), section_price_per_m2=round(section_rate),
+        section_value_method="thab_terraces", services_cost=dev_cost,
+        total_subdivided_value=round(gross), best_strategy=strategy,
+        best_net_gain=round(profit),
+        subdivision_premium=round(profit) if profit > 0 else None,
+    )
+
+
+def compute(
+    *,
+    zone: str | None,
+    land_area: float | None,
+    buy_price: float | None,
+    section_rate: float | None,
+    property_type: str | None = None,
+    title_type: str | None = None,
+    rate_source: str | None = None,
+    address: str | None = None,
+    improvement_value: float | None = None,
+    land_value: float | None = None,
+    cv: float | None = None,
+    beds: float | None = None,
+    baths: float | None = None,
+    floor_area: float | None = None,
+    force_full_subdivision: bool = False,
+    assumptions: "SubdivisionAssumptions | None" = None,
+    lots_override: float | None = None,
+) -> Subdivision:
+    rule = Z.lookup(zone)
+    if rule is None or rule.min_lot_m2 is None:
+        return _not_subdividable(zone, None)
+
+    # Excluded location — checked before any maths so no figure is ever produced.
+    addr = str(address).strip().lower() if address else ""
+    if addr and any(loc in addr for loc in EXCLUDED_LOCATIONS):
+        return _not_subdividable(zone, float(rule.min_lot_m2), "excluded_location")
+
+    # Multi-unit types and non-freehold titles can't be subdivided.
+    if any(t in _normalise_type(property_type) for t in _NON_SUBDIVIDABLE_TYPES):
+        return _not_subdividable(zone, float(rule.min_lot_m2), "excluded_by_type")
+    # Only freehold gives an owner the dividable land, so the title must be
+    # positively known to be freehold. A missing title previously skipped this
+    # check entirely and was treated as freehold by default — the permissive
+    # direction, on the one attribute that decides eligibility outright.
+    #
+    # Read through the same rule the rest of the app uses, so "Fee Simple" and
+    # the sold file's numeric "1" count as the freehold they are, instead of
+    # being filed as unknown and quietly making the property un-subdividable.
+    if not _title_is_subdividable(title_type):
+        has_title = title_type is not None and str(title_type).strip() != ""
+        reason = "excluded_by_title" if has_title else "unknown_title"
+        return _not_subdividable(zone, float(rule.min_lot_m2), reason)
+
+    min_lot = float(rule.min_lot_m2)
+
+    # 1-dwelling-per-lot zones (Single House, Large Lot, Rural) → never subdividable.
+    if rule.max_dwellings is not None and int(rule.max_dwellings) <= 1:
+        return _not_subdividable(zone, min_lot, "single_dwelling_zone")
+
+    if not _is_number(land_area) or float(land_area) <= 0:
+        return _not_subdividable(zone, min_lot)
+
+    # One site floor, every zone. Below this a section is a section.
+    if float(land_area) < MIN_SUBDIVIDABLE_SITE_M2:
+        return _not_subdividable(zone, min_lot, "site_too_small")
+
+    ap = assumptions or SubdivisionAssumptions()
+    buy0 = float(buy_price) if _is_number(buy_price) and float(buy_price) > 0 else None
+    has_dwelling0 = _has_dwelling(beds, baths, floor_area, improvement_value)
+
+    # THAB (no per-lot limit) is a terrace/apartment development, not a bare-section
+    # split — route it to the build-and-sell pro-forma so small terrace sites are
+    # valued instead of returned as "not subdividable" (see _terrace_development).
+    if rule.max_dwellings is not None and int(rule.max_dwellings) >= NO_LIMIT_THRESHOLD:
+        return _terrace_development(
+            zone, min_lot, float(land_area), buy0, ap.merged_rate(section_rate),
+            has_dwelling0, cv, ap, rate_source, lots_override)
+
+    # --- feasibility (multi-dwelling, land-driven) ---
+    # Road/reserve loss scales with how many lots the site could take: a bigger
+    # block needs an internal road and stormwater reserves, not just a right-of-way.
+    prelim_lots = math.floor(float(land_area) / min_lot)
+    usable = float(land_area) * (1.0 - _road_allowance(prelim_lots))
+    sections = math.floor(usable / min_lot)
+    sections = min(sections, A.MAX_PRACTICAL_LOTS_TOTAL)
+    # The operator's own number, when they have one.
+    #
+    # The count here is land area divided by the zone's minimum lot, less a road
+    # allowance — a floor, not a ceiling. It cannot see a corner site, an
+    # existing right of way, a boundary that already suits three, or a consent
+    # somebody has already been granted. A developer looking at the title knows
+    # things this arithmetic does not, and the profit is close to linear in the
+    # count, so being one lot low understates the deal by a third.
+    #
+    # Still capped at what is practical: an override is local knowledge, not a
+    # licence to put forty houses on a quarter acre.
+    _forced = _override_lots(lots_override)
+    if _forced is not None:
+        sections = _forced
+    if sections < 2:
+        return _not_subdividable(zone, min_lot)
+
+    per_lot = int(rule.max_dwellings) if rule.max_dwellings else 1
+    dwellings = None if per_lot >= NO_LIMIT_THRESHOLD else sections * per_lot
+    addl = sections - 1
+
+    # --- profit ---
+    # Keep the existing house, subdivide the surplus land into new sections,
+    # resell the house on its reduced lot. The new sections are the profit.
+    #
+    # Land and a house on land are not worth the same per m², so the retained
+    # property is rebuilt from its parts rather than from the purchase price:
+    #
+    #   house resale = (improvements + retained land × raw land $/m²)
+    #                  × market ratio × resale% − refurb
+    #   gross        = house resale + new sections × section $/m² × min lot
+    #   profit       = gross − buy − services − selling − acquisition − incidentals
+    #
+    # Costing the house at "buy price − refurb" instead would sell the same land
+    # twice: `buy` already includes all the land, so reselling the house at par
+    # while also selling the sections books that land as revenue on both sides.
+    # That version called ~98% of feasible Auckland sites profitable. Splitting
+    # land from improvements values every m² once, and the profit becomes the
+    # genuine uplift from raw land inside a title to a finished, titled section.
+    ap = assumptions or SubdivisionAssumptions()
+    rate = ap.merged_rate(section_rate)
+    section_value = rate * min_lot
+    new_sections_value = addl * section_value
+    subdivision_cost = addl * ap.services_per_section
+    incidentals = addl * ap.incidentals_per_section
+
+    improvements = ap.improvement_value if ap.improvement_value is not None else improvement_value
+    raw_rate = ap.raw_land_rate
+    if raw_rate is None and _is_number(land_value) and float(land_value) > 0:
+        raw_rate = float(land_value) / float(land_area)
+
+    buy = float(buy_price) if _is_number(buy_price) and float(buy_price) > 0 else None
+
+    # Is there actually a dwelling to keep? A listing with no bedrooms and no
+    # bathrooms — a bare section or building site — has no house to retain and
+    # resell, so the "retain house + sell the surplus" strategy is meaningless.
+    # Booking a house resale for it (and subtracting a refurb on a house that
+    # isn't there) overstates the return. Those sites are subdivided whole: every
+    # lot sells as a bare section.
+    has_dwelling = _has_dwelling(beds, baths, floor_area, improvement_value)
+
+    # Two ways to develop a site with a house on it, and the site decides which
+    # is worth doing — not a checkbox.
+    #
+    #   Retain    keep the house on one lot, sell the surplus as sections.
+    #   Demolish  knock it down and sell every metre as sections, paying a
+    #             demolition allowance for the privilege.
+    #
+    # Demolition used to be modelled only when a developer went looking for it
+    # with `force_full_subdivision`, so the headline was always "retain" — on a
+    # site where a tired 1950s house sits on land worth far more without it,
+    # that is the wrong answer given confidently. Both are costed now and the
+    # bigger number leads, with the other carried alongside so the reader can
+    # see what was given up.
+    #
+    # `force_full_subdivision` still pins the answer to demolition: a developer
+    # modelling one specific scenario wants that scenario, not our opinion.
+
+    # Finance/holding over the ~2-year project life, charged on the money tied up
+    # (purchase + servicing). A real cost every subdivision carries and the model
+    # used to ignore. Identical either way, so it is computed once.
+    holding_cost = ((float(buy) + subdivision_cost) * ap.holding_rate * ap.holding_years
+                    if buy is not None else 0.0)
+
+    def _settle(profit: float | None, demolition: float) -> float | None:
+        """Contingency on the development spend, then net GST on the margin.
+
+        Applied inside each strategy rather than after the winner is picked,
+        because the two carry different spend: comparing a pre-GST demolition
+        profit with a post-GST retain profit would pick the wrong one.
+        """
+        if profit is None:
+            return None
+        contingency = ap.contingency_rate * (subdivision_cost + holding_cost
+                                             + demolition + incidentals)
+        gst = ap.gst_rate * max(profit - contingency, 0.0)
+        return profit - contingency - gst
+
+    def _whole_site(demolition: float) -> tuple[float | None, float | None]:
+        """Every lot sells as a bare section. Whole-site subdivision only needs a
+        buy price to value; there is no retained house, so the improvement split
+        is irrelevant."""
+        if buy is None:
+            return None, None
+        gross = sections * section_value
+        profit = (gross - buy - subdivision_cost - gross * ap.selling_pct
+                  - buy * ap.acquisition_pct - incidentals - demolition - holding_cost)
+        return gross, _settle(profit, demolition)
+
+    def _retain() -> tuple[float | None, float | None]:
+        """Keep the house on a single minimum-sized lot and turn every other
+        usable metre into a section — a 140 m² house does not sit on 1,000+ m².
+        The retained lot is ONE min lot (never the road reserve, which `usable`
+        already excludes), and it is a finished residential section, so its land
+        is worth the section rate rather than the whole block's cheap council
+        $/m². The building is valued at replacement cost (floor × build rate),
+        far closer to reality than the council improvement figure.
+
+        No buy price (typically "by negotiation" with no asking) means the
+        profit is unknowable, not zero-cost; without any building figure it is
+        too. An explicit "buildings worth" override wins; otherwise replacement.
+        """
+        building_value = (float(ap.improvement_value) if ap.improvement_value is not None
+                          else _building_value(floor_area, improvement_value, ap.build_rate))
+        if buy is None or building_value is None:
+            return None, None
+        # The retained house keeps ONE residential lot (plus any sub-lot
+        # remainder) — never the surplus land the practical-lot cap left
+        # undeveloped. On a large block `sections` is capped, so
+        # `usable − addl×min_lot` balloons to tens of thousands of m² and would
+        # book a phantom multi-million-dollar "house". Bound it to two min lots:
+        # uncapped, the remainder is already < 2×min_lot, so normal sites are
+        # unaffected; only the capped monster gets clamped.
+        retained_land = min(max(usable - addl * min_lot, min_lot), 2 * min_lot)
+        house_resale = ((retained_land * rate + building_value)
+                        * ap.house_resale_pct) - ap.refurb_allowance
+        gross = house_resale + new_sections_value
+        profit = (gross - buy - subdivision_cost - gross * ap.selling_pct
+                  - buy * ap.acquisition_pct - incidentals - holding_cost)
+        return gross, _settle(profit, 0.0)
+
+    _KEEP = "Retain house + sell new sections"
+    _DEMO = f"Demolish and subdivide into {sections} sections"
+    _BARE = f"Subdivide into {sections} sections"
+
+    alternative_strategy: str | None = None
+    alternative_profit: float | None = None
+
+    if not has_dwelling:
+        # Nothing to keep and nothing to knock down: a bare section or building
+        # site is subdivided whole, and there is no second strategy to compare.
+        demolish = False
+        best_strategy = _BARE
+        gross_sales, profit = _whole_site(0.0)
+    elif force_full_subdivision:
+        demolish = True
+        best_strategy = _DEMO
+        gross_sales, profit = _whole_site(ap.demolition_allowance)
+        _, keep_profit = _retain()
+        alternative_strategy, alternative_profit = _KEEP, keep_profit
+    else:
+        keep_gross, keep_profit = _retain()
+        demo_gross, demo_profit = _whole_site(ap.demolition_allowance)
+        # Demolition has to WIN, not tie: knocking a house down is irreversible
+        # and carries the risk of the consent, so an equal number is not a
+        # reason to do it.
+        #
+        # And it has to win against a KNOWN number. A site with no
+        # land/improvement split has no computable retain profit — we cannot say
+        # what the house is worth — and demolition's figure does not need that
+        # value at all, so it is always computable. Letting it lead on that
+        # basis would print "Demolish, $420k" for a house we could not value,
+        # which is the single worst recommendation this model could make: if the
+        # place is worth two million, knocking it down is madness and we would
+        # have said to do it precisely BECAUSE we were ignorant. Unknown stays
+        # unknown. The demolition figure still rides along as the alternative,
+        # where it is information rather than advice.
+        take_demo = (demo_profit is not None and keep_profit is not None
+                     and demo_profit > keep_profit)
+        demolish = take_demo
+        if take_demo:
+            best_strategy, gross_sales, profit = _DEMO, demo_gross, demo_profit
+            alternative_strategy, alternative_profit = _KEEP, keep_profit
+        else:
+            best_strategy, gross_sales, profit = _KEEP, keep_gross, keep_profit
+            alternative_strategy, alternative_profit = _DEMO, demo_profit
+
+    demolition_cost = ap.demolition_allowance if demolish else 0.0
+
+    # A site that can legally be split but loses money is not an opportunity, so
+    # the flag means "worth subdividing", not merely "physically splittable".
+    # Feasibility alone flagged 1,141 listings of which 961 lost money; an
+    # unknown profit (no buy price) doesn't qualify either. The sections /
+    # gross_sales / profit figures are still returned for every feasible site,
+    # so the detail page can show the workings behind a negative answer.
+    # A modelled gross that dwarfs the site's own market value isn't credible —
+    # the market would have priced the land up if it were. Keep the figures (the
+    # detail page still shows the workings) but don't call it an opportunity.
+    gross_implausible = (
+        gross_sales is not None and _is_number(cv) and float(cv) > 0
+        and gross_sales > GROSS_VS_CV_CAP * float(cv)
+    )
+    # Corrupt land area (or CV): implausibly cheap urban land per m² — see
+    # CV_PER_M2_FLOOR. The subdivision is computed off a bad size, so drop it.
+    land_data_bad = (
+        _is_number(cv) and float(cv) > 0 and _is_number(land_area) and float(land_area) > 0
+        and float(cv) / float(land_area) < CV_PER_M2_FLOOR
+    )
+    is_profitable = (profit is not None and profit > 0
+                     and not gross_implausible and not land_data_bad)
+
+    # The sanity check failed, so every downstream figure derived from this model
+    # is untrustworthy. Blank them rather than publish them behind a warning: a
+    # "$3M profit" caveated in small print is what a reader remembers, and it is
+    # not a number we can defend (5 Rangeview Rd: 15 lots x $787k in Sunnyvale).
+    # `implausible` still rides along so the detail page can say why it's blank.
+    suspect = gross_implausible or land_data_bad
+    if suspect:
+        gross_sales = None
+        profit = None
+
+    return Subdivision(
+        zone=zone, min_lot_m2=min_lot, is_subdividable=is_profitable,
+        # The site splits. Whether it is worth splitting is the line above, and
+        # that one needs a price; this one does not, and it is what a developer
+        # searching for land is actually asking. Withheld only when the land
+        # figures themselves are corrupt, because then the lot count is built on
+        # a bad size and is not a fact either.
+        can_subdivide=not land_data_bad,
+        sections=sections, dwellings=dwellings,
+        section_rate=round(rate),
+        gross_sales=round(gross_sales) if gross_sales is not None else None,
+        subdivision_profit=round(profit) if profit is not None else None,
+        max_addl_lots=float(addl),
+        section_price_per_m2=round(rate),
+        section_value_method=(rate_source or "section_rate"),
+        services_cost=subdivision_cost,
+        total_subdivided_value=round(gross_sales) if gross_sales is not None else None,
+        uplift_vs_asking=None,
+        best_strategy=best_strategy,
+        best_net_gain=round(profit) if profit is not None else None,
+        subdivision_premium=round(profit) if (profit is not None and profit > 0) else None,
+        implausible=suspect,
+        demolish=demolish,
+        alternative_strategy=alternative_strategy,
+        # Blanked with the rest when the sanity check failed: an alternative we
+        # would not print as a headline is one we cannot stand behind here
+        # either.
+        alternative_profit=(round(alternative_profit)
+                            if alternative_profit is not None and not suspect else None),
+    )
