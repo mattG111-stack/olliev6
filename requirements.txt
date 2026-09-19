@@ -1,0 +1,39 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+alembic==1.13.3
+psycopg[binary]==3.2.3
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+python-multipart==0.0.12
+pandas==2.2.3
+numpy==2.1.1
+python-dotenv==1.0.1
+openpyxl==3.1.5
+email-validator==2.2.0
+# Six of our own modules import httpx directly (notify, verify, geo,
+# external_estimates, propertyvalue, data_probe). It was never declared here and
+# only ever arrived as a dependency of the SDKs below — so when anthropic 1.0.0
+# moved to httpx2, httpx stopped being installed and the app could not boot:
+#
+#   File "/app/app/notify.py", line 14, in <module>
+#       import httpx
+#   ModuleNotFoundError: No module named 'httpx'
+#
+# Eleven healthcheck attempts, then a failed deploy, from a package nobody
+# changed. What we import, we declare.
+httpx>=0.27,<0.29
+
+# Upper bounds because these two moved a major version on their own: 0.116 to
+# 1.0.0 and 1.60 to 3.3.1, picked up by a redeploy that changed no code of ours.
+# A major version of an SDK we call is an upgrade to make deliberately, with the
+# assistant tested after it, not something that arrives with the next build.
+anthropic>=0.116,<1
+openai>=1.60,<2
+cryptography>=42,<48
+# Billing. A major version of this SDK changes call signatures, and it rebuilds
+# on every deploy — the same shape of failure as anthropic above.
+stripe>=7.0,<14
