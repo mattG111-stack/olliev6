@@ -349,6 +349,22 @@ def ensure_seed_admin(db: Session) -> None:
 
 def _ensure_seed_admin(db: Session) -> None:
     """Create missing bootstrap admin; preserve all existing credentials and roles."""
+    # A row whose password_hash holds PLAIN TEXT — which is what a direct edit to
+    # the database leaves behind — can never be logged into. passlib cannot
+    # identify the value, so every attempt is a failed login, and the 401 is the
+    # same one a wrong password gives. There is no screen anywhere that says an
+    # account is in that state, and no way for the person to get out of it.
+    #
+    # This runs before anything else on boot and moves such a row from plain
+    # text to bcrypt, treating the stored text as the intended password. It only
+    # ever goes bad-to-good: a real bcrypt hash starts with $2 and is 60
+    # characters, and anything matching that is left alone, so no existing
+    # credential is weakened or changed.
+    #
+    # It was dropped from this function in review.2 while the function itself
+    # stayed in the file, so it read as live code and was not. That locked out
+    # every account the repair had been covering.
+    _repair_plaintext_hashes(db)
     seed_email = (settings.seed_admin_email or "").strip().lower()
     if not seed_email or not settings.seed_admin_password or settings.seed_admin_password == "changeme":
         log.warning("seed admin skipped: set explicit SEED_ADMIN_EMAIL and a non-default SEED_ADMIN_PASSWORD")
