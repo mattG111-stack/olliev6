@@ -168,7 +168,7 @@ def distinct_values(table: str, column: str, limit: int = 40) -> str:
 
     The single biggest cause of a wrong answer is the model guessing a value
     that isn't spelled the way the data stores it — 'Flatbush' vs 'Flat Bush',
-    'House' vs the Chinese property_type. This lets it check first.
+    English vs Chinese property_type. This lets it check first.
     """
     if table not in ALLOWED_TABLES:
         return f"Table '{table}' is not queryable."
@@ -200,10 +200,11 @@ snapshots together and get inflated counts:
                              WHERE is_active AND batch_type = 'for_sale')
 Use batch_type = 'sold' for properties_sold.
 
-properties_for_sale — live listings (~10,900 in the active batch)
+properties_for_sale — for-sale listings (query the current visible count)
   id, address, suburb, district, region, postcode, latitude, longitude
   property_type, type_of_title, zoning, land_slope_contour
   beds, baths, cars, floor_area_m2, land_area_m2, building_age
+  sale_method, price_display, deal_block_reason
   asking_price            what it is listed at
   cv_numeric              council valuation
   land_value_numeric, improvement_value_numeric
@@ -319,7 +320,11 @@ Notes that will save you a wrong answer:
   a discount too large to believe. A blank margin with a reason beside it is a
   decision; quote the reason instead of saying we could not price it.
 - margin and pred_vs_cv are FRACTIONS (0.15 = 15%), not percentages.
-- asking_price is null on ~0.5% of listings; fair_value is null where we could
+- margin is VALUE UPLIFT OVER ASKING, not percent below value. To get percent
+  below value: 100.0 * (fair_value - asking_price) / NULLIF(fair_value, 0).
+  To get uplift over asking: 100.0 * (fair_value - asking_price) / NULLIF(asking_price, 0).
+  Return explicit aliases and keep their labels distinct.
+- asking_price can be null; fair_value can be null where we could
   not value it. Filter with IS NOT NULL when averaging.
 - A sale_price / cv_numeric ratio outside 0.3-3.0 is a broken council record —
   exclude those when computing anything against CV.
@@ -328,22 +333,19 @@ Notes that will save you a wrong answer:
 CATEGORICAL VALUES — these will trip you up if you guess. When a name or category
 might not match exactly, call distinct_values(table, column) first, or use ILIKE.
 
-- property_type is stored in CHINESE on for-sale listings. Never query
-  property_type = 'House' — it returns nothing. The mapping:
-      独立屋 = House (the vast majority)   城市屋 / 排房 = Townhouse
-      公寓 = Apartment                     单元房 = Unit
-      建地 / Residential - Vacant = Section  乡村别墅 = Lifestyle Property
-      乡村住宅建地 = Lifestyle Section
-  To count houses: WHERE property_type = '独立屋'. To count everything
-  house-like, prefer filtering on beds/land rather than the raw type string.
+- property_type may use English OR Chinese depending on the import. Call
+  distinct_values('properties_for_sale', 'property_type') before raw type filters.
+  Common equivalents: House / 独立屋, Townhouse / 城市屋 / 排房,
+  Apartment / 公寓, Unit / 单元房, Section / 建地 / Residential - Vacant.
+  Do not filter by bedrooms alone when a user explicitly requests houses.
 - district has exactly 9 values: Auckland City, Franklin, Hauraki Gulf Islands,
   Manukau City, North Shore City, Papakura, Rodney, Waitakere City, Waiheke Island.
 - suburb is free text — always match with ILIKE '%name%', never '='.
   ('Flat Bush', 'Browns Bay', 'Mount Albert' — two words, exact spelling matters.)
-- type_of_title on properties_for_sale is a title REFERENCE NUMBER, not a
-  category — do not group by it expecting Freehold/Leasehold.
-- type_of_title on properties_sold is a numeric code: '1.0'=Freehold,
-  '2.0'=Leasehold, '3.0'=Cross-Lease, '4.0'=Unit Title.
+- type_of_title may contain readable categories, codes or references depending on
+  the source. Inspect distinct values; never infer tenure from a title reference.
+  Some sold imports use '1.0'=Freehold, '2.0'=Leasehold, '3.0'=Cross-Lease,
+  '4.0'=Unit Title. Verify which representation is actually present.
 - sale_method on properties_sold: 'A - Auction', 'P - Private Treaty(Neg.)',
   'T - Tender'. Match with LIKE 'A -%' etc.
 - zoning values are like 'Residential - Mixed Housing Suburban Zone',

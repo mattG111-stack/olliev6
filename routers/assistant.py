@@ -144,24 +144,9 @@ class AskOut(BaseModel):
 @router.post("", response_model=AskOut)
 def ask_question(body: AskIn, me: User = Depends(require_active),
                  db: Session = Depends(get_db)) -> AskOut:
-    # Memory: if the client sent no prior turns (a fresh session), seed the context
-    # with this user's own recent Q&A so Ollie remembers what they've been exploring
-    # across visits. Best-effort — never let it block a question.
+    # The browser owns the conversation. Empty history means a fresh chat;
+    # other users' logs and previous visits must not impersonate current turns.
     turns = [Turn(role=t.role, content=t.content) for t in body.history]
-    if not turns:
-        try:
-            turns = _recent_memory(db, me.id)
-        except Exception:
-            turns = []
-    # Everything anyone has asked and had answered is available to draw on, not
-    # just this account's own history. Best-effort in both directions: a lookup
-    # that fails must not cost the reader their answer.
-    try:
-        learned = _similar_answered(db, body.question, exclude_user=me.id)
-    except Exception:
-        log.exception("could not read prior questions; answering without them")
-        learned = []
-    turns = learned + turns
 
     # The daily cap, enforced only on the account-wide key. Someone using their
     # own key is spending their own money and is not counted.
@@ -382,21 +367,9 @@ def _run_ask_job(ask_id: int, user_id: int) -> None:
             log.info("ask %s is no longer ours — standing down", ask_id)
             return
 
-        # Context is gathered here rather than in the request so that the
-        # request stays instant. Both lookups are best-effort in both
-        # directions: neither is worth losing an answer over.
+        # Only this request's conversation is relevant. The admin audit log
+        # remains available, but is not injected into another customer's chat.
         turns: list[Turn] = _stored_turns(row)
-        if not turns:
-            try:
-                turns = _recent_memory(db, user_id)
-            except Exception:                     # noqa: BLE001
-                turns = []
-        try:
-            learned = _similar_answered(db, row.question, exclude_user=user_id)
-        except Exception:                         # noqa: BLE001
-            log.exception("could not read prior questions; answering without them")
-            learned = []
-        turns = learned + turns
 
         rounds = {"n": 0}
 

@@ -209,6 +209,26 @@ def _pct(v) -> str | None:
     return None if v is None else f"{v * 100:+.1f}%"
 
 
+def _pricing_comparison(asking, value) -> dict:
+    """Separate the two denominators and retain exact inputs for explanation."""
+    import math
+    def positive(number):
+        try:
+            number = float(number)
+            return number if math.isfinite(number) and number > 0 else None
+        except (TypeError, ValueError):
+            return None
+    ask, fair = positive(asking), positive(value)
+    valid = ask is not None and fair is not None
+    return {
+        "asking_price": ask, "apex_value": fair,
+        "gap_dollars": round(fair - ask, 2) if valid else None,
+        "value_uplift_over_asking_pct": round(100 * (fair - ask) / ask, 2) if valid else None,
+        "asking_discount_below_value_pct": round(100 * (fair - ask) / fair, 2) if valid else None,
+        "note": "Negative discount means asking is above value. These are estimates, not guaranteed returns.",
+    }
+
+
 def search_listings(
     suburb: str | None = None,
     district: str | None = None,
@@ -314,8 +334,12 @@ def search_listings(
             return _which_filter_emptied(s, batch, where)
         return json.dumps({
             "count": len(rows),
+            "returned_count": len(rows),
+            "total_matches": q.count(),
             "listings": [{
-                "id": r.id, "address": r.address, "suburb": r.suburb,
+                "id": r.id, "apex_url": f"/property/{r.id}", "address": r.address, "suburb": r.suburb,
+                "pricing_comparison": _pricing_comparison(r.asking_price, r.fair_value),
+                "sale_method": r.sale_method, "deal_block_reason": r.deal_block_reason,
                 "district": r.district, "beds": r.beds, "baths": r.baths,
                 "floor_m2": r.floor_area_m2, "land_m2": r.land_area_m2,
                 "asking": _money(r.asking_price), "our_value": _money(r.fair_value),
@@ -386,7 +410,9 @@ def get_property(property_id: int) -> str:
         if not p:
             return f"No listing with id {property_id}."
         return json.dumps({
-            "id": p.id, "address": p.address, "suburb": p.suburb,
+            "id": p.id, "apex_url": f"/property/{p.id}", "address": p.address, "suburb": p.suburb,
+            "pricing_comparison": _pricing_comparison(p.asking_price, p.fair_value),
+            "sale_method": p.sale_method, "deal_block_reason": p.deal_block_reason,
             "district": p.district, "property_type": p.property_type,
             "title": p.type_of_title, "zoning": p.zoning,
             "beds": p.beds, "baths": p.baths, "cars": p.cars,
@@ -411,6 +437,15 @@ def get_property(property_id: int) -> str:
             "min_lot_m2": p.min_lot_m2,
             "subdivision_profit": _money(p.best_net_gain),
             "best_strategy": p.best_strategy,
+            "subdivision_assumptions": {
+                "status": "Screening estimate; not consent or a site-specific quote",
+                "cost_allowances": ["services and consent", "selling", "acquisition",
+                                    "holding and finance", "contingency", "GST",
+                                    "strategy-specific demolition and building"],
+                "not_verified": ["consent", "site access and layout", "overlays and hazards",
+                                 "services capacity", "contractor quotes"],
+                "lot_count_basis": "Model zoning, title, geometry and strategy assumptions; not a guaranteed land/minimum division",
+            },
             "listing_url": p.url,
         }, default=str)
 
