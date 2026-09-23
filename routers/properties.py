@@ -84,7 +84,15 @@ CATEGORY_MAP: dict[str, set[str]] = {
 
 
 # ---------- Pydantic shapes ----------
+class RelatedListing(BaseModel):
+    id: int
+    asking_price: float | None
+    floor_area_m2: float | None
+    days_on_market: float | None
+
+
 class ForSaleRow(BaseModel):
+    related_listings: list[RelatedListing] = Field(default_factory=list)
     id: int
     address: str | None
     suburb: str | None
@@ -2615,6 +2623,21 @@ def get_for_sale(property_id: int, db: Session = Depends(get_db)) -> PropertyFor
     ).first()
     if visible is None:
         raise HTTPException(status_code=404, detail="Not found")
+    # Same-address records are disclosed, never silently merged or assigned a
+    # winning price. Unit numbers remain part of the identity; only case and
+    # leading/trailing whitespace are ignored. Held/staged rows stay private.
+    visible.related_listings = []
+    if visible.address and visible.address.strip() and visible.suburb and visible.suburb.strip():
+        related = _hide_bad_data(db.query(PropertyForSale).filter(
+            PropertyForSale.import_batch_id == active_batch_id,
+            PropertyForSale.id != visible.id,
+            func.lower(func.trim(PropertyForSale.address)) == visible.address.strip().lower(),
+            func.lower(func.trim(PropertyForSale.suburb)) == visible.suburb.strip().lower(),
+        )).order_by(PropertyForSale.id).all()
+        visible.related_listings = [RelatedListing(
+            id=r.id, asking_price=r.asking_price, floor_area_m2=r.floor_area_m2,
+            days_on_market=r.days_on_market,
+        ) for r in related]
     return visible
 
 
