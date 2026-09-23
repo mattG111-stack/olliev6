@@ -268,9 +268,11 @@ def today_brief(
         base = _hide_bad_data(
             db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == batch_id))
         counts = TodayCounts(
-            underpriced=base.filter(PropertyForSale.is_underpriced.is_(True)).count(),
+            underpriced=base.filter(PropertyForSale.is_underpriced.is_(True),
+                                    PropertyForSale.margin >= 0.075,
+                                    PropertyForSale.comps_used >= 2).count(),
             cashflow_positive=base.filter(PropertyForSale.is_cashflow_positive.is_(True)).count(),
-            subdividable=base.filter(PropertyForSale.is_subdividable.is_(True)).count(),
+            subdividable=base.filter(PropertyForSale.can_subdivide.is_(True)).count(),
             total_for_sale=base.count(),
         )
     except Exception as e:
@@ -393,7 +395,7 @@ def today_brief(
                 asking_price=t.asking_price,
                 # "Est" — Ollie's value lives in fair_value, with market_value as a
                 # fallback for premium listings the fair_value pipeline suppresses.
-                market_value=t.market_value if t.market_value is not None else t.fair_value,
+                market_value=t.fair_value if t.fair_value is not None else t.market_value,
                 opportunity_score_pct=t.opportunity_score_pct,
                 is_underpriced=t.is_underpriced,
                 is_cashflow_positive=t.is_cashflow_positive,
@@ -1382,7 +1384,8 @@ def headline(region: str = "Auckland", me: User = Depends(current_user),
     P = PropertyForSale
     gap = P.fair_value - P.asking_price
     base = [P.import_batch_id == batch, P.is_underpriced.is_(True),
-            P.fair_value.isnot(None), P.asking_price.isnot(None)]
+            P.fair_value.isnot(None), P.asking_price.isnot(None),
+            P.margin >= 0.075, P.comps_used >= 2]
     # "Gems" are the deals we would actually stand behind: margin above the
     # model's own median error, backed by enough sold comps to trust.
     gem = base + [P.margin >= 0.15, P.comps_used >= 8]
@@ -1409,14 +1412,14 @@ def headline(region: str = "Auckland", me: User = Depends(current_user),
                            P.best_net_gain.isnot(None)))
         .order_by(P.best_net_gain.desc()).limit(3).all())
 
-    q = lambda f, *w: db.query(f).filter(*w).scalar()
+    q = lambda f, *w: _hide_bad_data(db.query(f).filter(*w)).scalar()
     return Headline(
         gems=q(func.count(P.id), *gem) or 0,
         gems_margin_total=q(func.sum(gap), *gem),
         underpriced=q(func.count(P.id), *base) or 0,
         underpriced_margin_total=q(func.sum(gap), *base),
         subdividable=q(func.count(P.id), P.import_batch_id == batch,
-                       P.is_subdividable.is_(True)) or 0,
+                       P.can_subdivide.is_(True)) or 0,
         subdivision_profit_total=q(func.sum(P.best_net_gain),
                                    P.import_batch_id == batch,
                                    P.is_subdividable.is_(True)),

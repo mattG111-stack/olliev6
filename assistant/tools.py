@@ -405,6 +405,9 @@ def get_property(property_id: int) -> str:
     Args:
         property_id: The listing id, as returned by search_listings.
     """
+    from dataclasses import asdict
+    from pricing.cashflow import CashflowAssumptions
+
     with SessionLocal() as s:
         p = s.get(PropertyForSale, property_id)
         if not p:
@@ -431,6 +434,14 @@ def get_property(property_id: int) -> str:
             "weekly_rent": _money(p.est_weekly_rent),
             "gross_yield": _pct(p.est_gross_yield),
             "annual_cashflow": _money(p.annual_cashflow),
+            "cashflow_assumptions": {
+                **asdict(CashflowAssumptions()),
+                "purchase_price_basis": "estimated buy price",
+                "buy_price": p.buy_price,
+                "weekly_rent": p.est_weekly_rent,
+                "rent_is_estimated": True,
+                "scope": "Current model defaults; stored estimates may predate a change in defaults",
+            },
             "breakeven_deposit": _pct(p.breakeven_deposit_pct),
             "subdividable": p.is_subdividable,
             "extra_lots": p.max_addl_lots,
