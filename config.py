@@ -7,6 +7,9 @@ class Settings(BaseSettings):
 
     database_url: str
     jwt_secret: str
+    # Persist independently of login signing. Initially copy the CURRENT JWT_SECRET
+    # value to preserve existing encrypted credentials; never generate at startup.
+    assistant_key_secret: str = ""
     jwt_algorithm: str = "HS256"
     # Twelve hours, not one. Nothing refreshes a token, so this is the whole
     # session: at 60 minutes anyone who left a tab open over lunch came back to

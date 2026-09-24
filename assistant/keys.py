@@ -3,10 +3,10 @@
 The key belongs to the user, not the deployment: they add it in Settings, it
 persists, and it is used only to answer their own questions.
 
-Encryption uses Fernet with a key derived from the app's existing JWT secret,
-so there is no second secret to provision. That means rotating `jwt_secret`
-makes stored API keys unreadable — decryption fails closed and the user is
-asked to re-enter, which is the right failure mode for a credential.
+Encryption uses a persistent ASSISTANT_KEY_SECRET independent of login signing.
+For compatibility, deployments without it retain the existing JWT_SECRET key.
+Initialize ASSISTANT_KEY_SECRET with the current JWT_SECRET value before rotating
+login signing; existing ciphertext then remains readable without re-entry.
 
 The plaintext key is only ever held in memory for the duration of one request.
 The API exposes whether a key is set and its last four characters; the value
@@ -26,9 +26,10 @@ PROVIDERS = ("anthropic", "openai")
 
 
 def _fernet() -> Fernet:
-    # Fernet needs a 32-byte urlsafe-base64 key; the JWT secret is an arbitrary
-    # string, so hash it to the right shape.
-    digest = hashlib.sha256(settings.jwt_secret.encode()).digest()
+    # No per-process randomness: every replica must use the same persisted value.
+    # An explicitly configured secret never falls back on decryption failure.
+    secret = settings.assistant_key_secret or settings.jwt_secret
+    digest = hashlib.sha256(secret.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
