@@ -317,7 +317,8 @@ def search_listings(
                           and_(P.opportunity_score_pct.isnot(None),
                                P.opportunity_score_pct >= min_buy_score)))
 
-        q = s.query(P).filter(P.import_batch_id == batch,
+        from routers.properties import _hide_bad_data
+        q = _hide_bad_data(s.query(P)).filter(P.import_batch_id == batch,
                               *[c for _, c in where])
 
         order = {
@@ -340,6 +341,8 @@ def search_listings(
                 "id": r.id, "apex_url": f"/property/{r.id}", "address": r.address, "suburb": r.suburb,
                 "pricing_comparison": _pricing_comparison(r.asking_price, r.fair_value),
                 "sale_method": r.sale_method, "deal_block_reason": r.deal_block_reason,
+                "property_type": r.property_type, "title": r.type_of_title,
+                "condition": "not verified", "reason_for_price": "not verified",
                 "district": r.district, "beds": r.beds, "baths": r.baths,
                 "floor_m2": r.floor_area_m2, "land_m2": r.land_area_m2,
                 "asking": _money(r.asking_price), "our_value": _money(r.fair_value),
@@ -367,7 +370,8 @@ def _which_filter_emptied(s, batch: int, where: list) -> str:
     if not where:
         return _no_batch("for_sale")
 
-    count = lambda cs: s.query(func.count(P.id)).filter(  # noqa: E731
+    from routers.properties import _hide_bad_data
+    count = lambda cs: _hide_bad_data(s.query(func.count(P.id))).filter(  # noqa: E731
         P.import_batch_id == batch, *cs).scalar() or 0
 
     opens: list[tuple[str, int]] = []
