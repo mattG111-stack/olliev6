@@ -10,6 +10,38 @@ class InvestigationEvidence:
         self.property_id = int(match[1]) if match else None
         self.verified = False
 
+    def fresh_messages(self, messages):
+        """The explicit ID action can recheck records without recycling old analysis.
+
+        Preserve every user requirement verbatim. Ordinary conversation keeps
+        its full history; only this narrowly identified investigation uses this
+        path. A reply such as 'yes' may need clarification without its question.
+        """
+        if self.property_id is None:
+            return messages
+        return [dict(turn) for turn in messages if turn.get("role") == "user"]
+
+    def answer_guidance(self):
+        if self.property_id is None:
+            return ""
+        return """
+FRESH SELECTED-PROPERTY INVESTIGATION
+Previous assistant analysis is deliberately absent. Preserve requirements in
+the user turns, with later explicit changes taking precedence. If a reply like
+'yes', 'that area' or 'the cheaper one' cannot be resolved from those user turns,
+ask for the missing requirement; do not invent the omitted context.
+Fetch the selected property's current detail and relevant sold evidence. Write
+a fresh brief, not a reconstruction of a previous answer. Use this structure:
+1. Two-sentence assessment with the verified property link and biggest unknown.
+2. One compact facts/estimates table, stating each monetary figure once.
+3. At most three sold examples with dates and measured similarities/limitations.
+4. One priority next check and what remains unresolved.
+Target 250-350 words. The number of examples shown is not the valuation sample.
+Do not claim sale method causes a price difference or determines this home's
+value. Model confidence is a label, not demonstrated accuracy. No single check
+proves suitability. Do not claim all records agree after checking only one.
+"""
+
     def wrap(self, dispatch):
         def run(name, args):
             result = dispatch(name, args)

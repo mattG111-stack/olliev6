@@ -267,8 +267,8 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     source_dispatch = investigation.wrap(dispatch)
     tool_dispatch = bounded_dispatch(source_dispatch, limit, evidence) if limit else source_dispatch
     result = providers.run(
-        provider=provider, api_key=api_key, system=SYSTEM,
-        messages=messages, specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=tool_dispatch,
+        provider=provider, api_key=api_key, system=SYSTEM + investigation.answer_guidance(),
+        messages=investigation.fresh_messages(messages), specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=tool_dispatch,
         deadline=deadline, max_iterations=max_iterations, on_step=on_step,
         workspace_id=workspace_id,
     )
