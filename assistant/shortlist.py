@@ -1,11 +1,11 @@
-"""Bound listing evidence for explicitly sized sales shortlists per request."""
+"""Annotate shortlist evidence without discarding candidates before analysis."""
 import json
 import re
 
 _WORDS = dict(zip(('one','two','three','four','five','six','seven','eight','nine','ten'), range(1,11)))
 
 def requested_limit(question):
-    match = re.search(r'\b(?:find|show|list|recommend|shortlist|give me)\s+(?:me\s+)?(?:up to\s+|exactly\s+|only\s+|the top\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?!bed\b|bedroom\b|bedrooms\b)(?:currently visible\s+)?(?:current\s+)?(?:properties|houses|homes|listings|options)\b', question, re.I)
+    match = re.search(r'\b(?:find|show|list|recommend|shortlist|give me)\s+(?:me\s+)?(?:up to\s+|exactly\s+|only\s+|the top\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?!bed\b|bedroom\b|bedrooms\b)(?:(?:currently visible|current visible|current)\s+)?(?:properties|houses|homes|listings|options)\b', question, re.I)
     if not match:
         return None
     word = match.group(1).lower()
@@ -14,10 +14,10 @@ def requested_limit(question):
 
 
 def bounded_dispatch(dispatch, limit):
-    """Bound each listing sample without inventing an exhaustive match count.
+    """Preserve tool evidence; the requested limit applies to the answer only.
 
-    Aggregate queries and sales-comparable evidence remain intact. This is a
-    display boundary, not a mutation of data or a saved search preference.
+    Underlying tools already have bounded query limits. Truncating them again
+    here can hide candidates or conflicting duplicate records before analysis.
     """
     def run(name, args):
         raw = dispatch(name, args)
@@ -36,37 +36,16 @@ def bounded_dispatch(dispatch, limit):
         # A scalar COUNT/SUM is not a list of properties.
         if not all(isinstance(r, dict) and ('id' in r or 'address' in r) for r in rows):
             return raw
-        # Each query is independent: a later query may refine the criteria.
-        # A global identity budget hid valid candidates from those queries.
-        admitted = set()
-        kept = []
-        for row in rows:
-            identity = str(row['id']) if row.get('id') is not None else (str(row.get('address','')).casefold(),str(row.get('suburb','')).casefold())
-            if identity in admitted or len(admitted) < limit:
-                admitted.add(identity)
-                kept.append(row)
-        data[key] = kept
-        # Preserve the underlying query's count. A display cap must never
-        # rewrite evidence about how many rows the database returned.
-        data['displayed_count'] = len(kept)
-        data['query_rows_before_display_limit'] = len(rows)
-        data['rows_omitted_from_display'] = len(rows) - len(kept)
-        data['source_query_counts'] = {
-            field: data.pop(field) for field in ('count', 'returned_count', 'row_count')
-            if field in data
-        }
+        data['evidence_rows_returned'] = len(rows)
         data['matching_total_verified'] = False
         data['shortlist_limit'] = limit
         data['shortlist_instruction'] = (
             'Choose at most the requested number across ALL tool results. '
-            'This is a display sample, NOT an exhaustive match set. '
+            'These are candidate records for analysis, NOT an exhaustive match set. '
             'Never say these are the only matches or the complete set from these rows. '
-            'query_rows_before_display_limit counts rows before this display cap; '
-            'even that is not a verified total for the user brief. SQL LIMIT and '
+            'evidence_rows_returned is not a verified total for the user brief. SQL LIMIT and '
             'tool filters may omit other matches. Say "Here are N options", '
             'not "Only N qualify". If the user needs a total, run a separate '
             'COUNT with every requested filter; do not count this sample.')
-        if len(kept) < len(rows):
-            data['shortlist_truncated'] = True
         return json.dumps(data)
     return run

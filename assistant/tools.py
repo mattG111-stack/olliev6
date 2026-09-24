@@ -241,6 +241,10 @@ def search_listings(
     min_buy_score: float | None = None,
     sort_by: str = "margin",
     limit: int = 10,
+    asking_price_only: bool = False,
+    fixed_price_only: bool = False,
+    max_price_exclusive: bool = False,
+    min_land_m2: float | None = None,
 ) -> str:
     """Search the live for-sale listings and return matching properties.
 
@@ -267,6 +271,12 @@ def search_listings(
         min_buy_score: Minimum opportunity/buy score, 0-100.
         sort_by: One of "margin", "price", "lots", "days_on_market", "score", "yield".
         limit: How many to return, max 25.
+        asking_price_only: Require a positive recorded asking price; never
+            substitute an estimated value when applying the budget.
+        fixed_price_only: Require a recognised fixed-price sale method and a
+            positive asking price. Excludes auction, negotiation and unknown methods.
+        max_price_exclusive: Exclude the upper boundary for strictly below a price.
+        min_land_m2: Minimum recorded land area; missing areas do not qualify.
     """
     with SessionLocal() as s:
         batch = _active(s, "for_sale")
@@ -291,16 +301,26 @@ def search_listings(
                               P.property_type.in_(matching or ["__none__"])))
         if min_beds is not None:
             where.append((f"{min_beds}+ bedrooms", P.beds >= min_beds))
+        if min_land_m2 is not None:
+            where.append((f"land at least {min_land_m2:g} m2", P.land_area_m2 >= min_land_m2))
+        price = P.asking_price if asking_price_only or fixed_price_only else BUDGET_PRICE
+        if asking_price_only or fixed_price_only:
+            where.append(("positive recorded asking price", P.asking_price > 0))
+        if fixed_price_only:
+            from routers.properties import _method_bucket
+            methods = [m for (m,) in s.query(P.sale_method).filter(
+                P.import_batch_id == batch).distinct() if m and _method_bucket(m) == "fixed"]
+            where.append(("fixed advertised price", P.sale_method.in_(methods)))
         # A budget, measured the way every other budget on the site is: the
         # vendor's price where they named one, our valuation where they did
         # not. Reading asking_price alone would leave Ollie unable to find an
         # auction property in anybody's price range — four listings in five.
         if max_price is not None:
-            where.append((f"under {_money(max_price)}",
-                          BUDGET_PRICE <= max_price))
+            where.append((f"{'below' if max_price_exclusive else 'at most'} {_money(max_price)}",
+                          price < max_price if max_price_exclusive else price <= max_price))
         if min_price is not None:
             where.append((f"over {_money(min_price)}",
-                          BUDGET_PRICE >= min_price))
+                          price >= min_price))
         if underpriced_only:
             where.append(("underpriced only", P.is_underpriced.is_(True)))
         if subdividable_only:
@@ -321,20 +341,24 @@ def search_listings(
 
         order = {
             "margin": P.margin.desc(),
-            "price": BUDGET_PRICE.asc(),
+            "price": price.asc(),
             "lots": P.max_addl_lots.desc(),
             "days_on_market": P.days_on_market.desc(),
             "score": P.opportunity_score_pct.desc(),
             "yield": P.est_gross_yield.desc(),
         }.get(sort_by, P.margin.desc())
 
-        rows = q.order_by(order.nullslast()).limit(min(limit, MAX_ROWS)).all()
+        rows = q.order_by(order.nullslast(), P.id.asc()).limit(max(1, min(limit, MAX_ROWS))).all()
         if not rows:
             return _which_filter_emptied(s, batch, where)
         return json.dumps({
             "count": len(rows),
             "returned_count": len(rows),
             "total_matches": q.count(),
+            "total_match_unit": "listing records; duplicate addresses may be present",
+            "count_scope": "Only the filters passed to this search; not any additional exclusions applied afterwards.",
+            "price_basis": "recorded asking price" if asking_price_only or fixed_price_only else "asking price, falling back to estimated value",
+            "filters_applied": [label for label, _ in where],
             "listings": [{
                 "id": r.id, "apex_url": f"/property/{r.id}", "address": r.address, "suburb": r.suburb,
                 "pricing_comparison": _pricing_comparison(r.asking_price, r.fair_value),
@@ -1207,12 +1231,18 @@ TOOL_SPECS = [
        ["table", "column"]),
     _t("search_listings",
        "Search live for-sale listings by area, type, price, beds, buy score and "
-       "deal flags — the same filters as the site's property finder.",
+       "deal flags. For advertised asking prices use asking_price_only. For fixed "
+       "asking prices excluding auctions/negotiation use fixed_price_only. Apply "
+       "all supported filters here BEFORE limiting rows; total_matches counts "
+       "matching listing records, which may include duplicate addresses.",
        {"suburb": _STR, "district": _STR,
         "property_type": {**_STR, "enum": ["house", "townhouse", "apartment", "unit", "section", "lifestyle"]},
         "min_beds": _INT,
-        "max_price": {**_NUM, "description": "max asking $, e.g. 3000000 for under $3M"},
+        "max_price": {**_NUM, "description": "Budget cap in NZD. By default uses asking price or estimated value when no ask; use asking_price_only to prohibit estimates."},
         "min_price": _NUM,
+        "asking_price_only": _BOOL, "fixed_price_only": _BOOL,
+        "max_price_exclusive": {**_BOOL, "description": "True for strictly below max_price; false for up to/at most."},
+        "min_land_m2": _NUM,
         "underpriced_only": _BOOL, "subdividable_only": _BOOL,
         "cashflow_positive_only": _BOOL,
         "min_margin_pct": {**_NUM, "description": "e.g. 15 for 15%"},
