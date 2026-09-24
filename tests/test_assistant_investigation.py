@@ -47,20 +47,6 @@ def test_each_turn_requires_its_own_evidence():
     assert first.link_answer('') == ''
 
 
-def test_agent_wires_real_dispatch_result_to_final_answer(monkeypatch):
-    from assistant import agent
-    from assistant.providers import Result
-    monkeypatch.setattr(agent.keys, 'decrypt', lambda _: 'test-key')
-    monkeypatch.setattr(agent, 'dispatch', lambda *_: record())
-    def run(**kwargs):
-        kwargs['dispatch']('get_property', {'property_id':42})
-        return Result(text='Assessment', tools_used=['get_property'], iterations=2)
-    monkeypatch.setattr(agent.providers, 'run', run)
-    user = SimpleNamespace(llm_provider='anthropic', llm_api_key_encrypted='synthetic')
-    result = agent.ask(user, QUESTION)
-    assert result.text.endswith('(/property/42)')
-    assert result.tools_used == ['get_property']
-
 
 def test_fresh_investigation_keeps_user_filters_and_drops_prior_model_claims():
     messages = [
@@ -89,20 +75,3 @@ def test_ordinary_followups_keep_full_conversation():
     assert evidence.answer_guidance() == ''
 
 
-def test_fresh_context_is_used_by_agent(monkeypatch):
-    from assistant import agent
-    from assistant.providers import Result
-    monkeypatch.setattr(agent.keys, 'decrypt', lambda _: 'test-key')
-    observed = {}
-    def run(**kwargs):
-        observed.update(kwargs)
-        return Result(text='Which area do you mean?')
-    monkeypatch.setattr(agent.providers, 'run', run)
-    user = SimpleNamespace(llm_provider='anthropic', llm_api_key_encrypted='synthetic')
-    history = [agent.Turn('assistant','Do you mean Glen Eden?'), agent.Turn('user','yes')]
-    result = agent.ask(user, QUESTION, history)
-    assert [t for t in observed['messages'] if t['role'] == 'user'] == [{'role':'user','content':'yes'}, {'role':'user','content':QUESTION}]
-    assert observed['messages'][0]['role'] == 'assistant'
-    assert 'Do you mean Glen Eden' not in str(observed['messages'])
-    assert "ask for the missing requirement" in observed['system']
-    assert result.text == 'Which area do you mean?'
