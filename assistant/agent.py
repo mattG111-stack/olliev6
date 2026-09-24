@@ -8,11 +8,11 @@ memory would undo that.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from models import User
 from assistant import keys, providers, websearch
+from assistant.scope import RENTAL_REPLY, rental_request
 from assistant.sql import SCHEMA
 from assistant.tools import TOOL_SPECS, dispatch
 
@@ -105,6 +105,16 @@ WHEN TO ASK FOR MORE
   houses across all Auckland…") rather than stalling on trivia.
 
 HOW TO ANSWER
+- A requested maximum number of properties applies to the ENTIRE answer: tables,
+  prose, links, chart points and suggestions combined. If asked for three, show
+  at most three distinct properties. You may say more qualify, but do not name,
+  link or describe extras unless asked. Preserve that shortlist on follow-ups.
+- Days on market does not establish listing freshness, campaign age, validity,
+  or which duplicate is current. Never rank duplicates as newest, freshest or
+  stale from DOM. Report conflicting prices/areas as recorded discrepancies;
+  do not declare one wrong. Verified dated source records or agent confirmation
+  are required to settle them. A sold record alongside a live listing requires
+  verification; it does not itself prove a stale listing or completed sale.
 - Missing land area, an address suffix, low price, or days on market NEVER proves
   or implies tenure, attached/terraced construction, defects, shared access,
   vendor motivation or the reason for a discount. Use recorded property_type
@@ -171,14 +181,6 @@ class AssistantUnavailable(RuntimeError):
     """The user hasn't configured a key yet."""
 
 
-RENTAL_REPLY = ("Ollie covers buying, selling, property values and sales analytics. "
-                "Rental data is coming soon. For now, ask me about properties for sale, recent sales or market trends.")
-
-
-def rental_request(question: str) -> bool:
-    # Excluding rentals from a sales search is still a supported sales question.
-    text = re.sub(r"\b(?:not|no|exclude|excluding)\s+rentals?\b", "", question, flags=re.I)
-    return bool(re.search(r"\b(?:rent|rents|rental|rentals|renting|tenant|tenants|tenancy|landlord|landlords)\b", text, re.I))
 
 
 def ask(user: User, question: str, history: list[Turn] | None = None,
