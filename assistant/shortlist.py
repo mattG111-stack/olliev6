@@ -14,12 +14,11 @@ def requested_limit(question):
 
 
 def bounded_dispatch(dispatch, limit):
-    """Do not hand the model extra listing identities to append in prose.
+    """Bound each listing sample without inventing an exhaustive match count.
 
     Aggregate queries and sales-comparable evidence remain intact. This is a
-    per-question boundary, not a mutation of data or a saved search preference.
+    display boundary, not a mutation of data or a saved search preference.
     """
-    admitted = set()
     def run(name, args):
         raw = dispatch(name, args)
         if name not in ('search_listings', 'query_data'):
@@ -37,6 +36,9 @@ def bounded_dispatch(dispatch, limit):
         # A scalar COUNT/SUM is not a list of properties.
         if not all(isinstance(r, dict) and ('id' in r or 'address' in r) for r in rows):
             return raw
+        # Each query is independent: a later query may refine the criteria.
+        # A global identity budget hid valid candidates from those queries.
+        admitted = set()
         kept = []
         for row in rows:
             identity = str(row['id']) if row.get('id') is not None else (str(row.get('address','')).casefold(),str(row.get('suburb','')).casefold())
@@ -44,14 +46,26 @@ def bounded_dispatch(dispatch, limit):
                 admitted.add(identity)
                 kept.append(row)
         data[key] = kept
-        if name == 'search_listings':
-            data['count'] = data['returned_count'] = len(kept)
-        else:
-            data['row_count'] = len(kept)
+        # Preserve the underlying query's count. A display cap must never
+        # rewrite evidence about how many rows the database returned.
+        data['displayed_count'] = len(kept)
+        data['query_rows_before_display_limit'] = len(rows)
+        data['rows_omitted_from_display'] = len(rows) - len(kept)
+        data['source_query_counts'] = {
+            field: data.pop(field) for field in ('count', 'returned_count', 'row_count')
+            if field in data
+        }
+        data['matching_total_verified'] = False
         data['shortlist_limit'] = limit
-        data['shortlist_instruction'] = ('These are the only properties to name in this answer. '
-            'Returned count is not the total qualifying count. Do not claim only this many qualify '
-            'unless a separate total_matches or COUNT proves it. Do not fetch extra identities.')
+        data['shortlist_instruction'] = (
+            'Choose at most the requested number across ALL tool results. '
+            'This is a display sample, NOT an exhaustive match set. '
+            'Never say these are the only matches or the complete set from these rows. '
+            'query_rows_before_display_limit counts rows before this display cap; '
+            'even that is not a verified total for the user brief. SQL LIMIT and '
+            'tool filters may omit other matches. Say "Here are N options", '
+            'not "Only N qualify". If the user needs a total, run a separate '
+            'COUNT with every requested filter; do not count this sample.')
         if len(kept) < len(rows):
             data['shortlist_truncated'] = True
         return json.dumps(data)
