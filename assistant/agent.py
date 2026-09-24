@@ -73,6 +73,12 @@ WHAT YOU KNOW ABOUT THE NUMBERS
   never describe the lot count as simply land divided by minimum size.
 - Verify sale-method comparisons in current sold data. Live sale method is in
   sale_method; do not assume a numeric ask proves a fixed price.
+- For a sales shortlist, apply the requested price basis and sale method in
+  search_listings before selecting properties. Use asking_price_only for
+  advertised asking prices, fixed_price_only when auctions/negotiation must be
+  excluded, and max_price_exclusive for strictly below a budget. Do not search
+  broadly with a tiny limit and then claim that filtering that sample proves
+  no other properties qualify. Returned listing counts can include duplicates.
 
 NEVER DEAD-END — if you can't answer, ask for what's missing
 - A tool that cannot answer returns a block starting "CANNOT ANSWER YET". That
