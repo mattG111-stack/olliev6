@@ -88,7 +88,7 @@ def test_search_distinguishes_result_limit_from_total_matches(db_session):
     db_session.add(batch); db_session.flush()
     for i in range(3):
         db_session.add(PropertyForSale(import_batch_id=batch.id, address=f'{i} Test Road',
-                                       asking_price=700000, fair_value=800000))
+                                       asking_price=700000, fair_value=800000, floor_area_m2=100))
     db_session.commit()
     data = json.loads(search_listings(limit=2))
     assert data['returned_count'] == 2
