@@ -14,6 +14,7 @@ from models import User
 from assistant import keys, providers, websearch
 from assistant.scope import RENTAL_REPLY, rental_request
 from assistant.shortlist import requested_limit, bounded_dispatch, render_shortlist
+from assistant.investigation import InvestigationEvidence
 from assistant.sql import SCHEMA
 from assistant.tools import TOOL_SPECS, dispatch
 
@@ -137,6 +138,25 @@ HOW TO ANSWER
 - A request to confirm preferences is not confirmation. Only the user's reply
   or explicitly completed search form establishes their scope.
 - Lead with the answer, then the evidence. Short and specific.
+- For a single-property investigation, open with a two-sentence assessment of
+  fit and the biggest uncertainty, linking the verified property address.
+  Follow with up to three reasons, the main trade-off, a compact evidence table
+  of up to three relevant sold examples, and one next check. Aim for 250-350
+  words unless the user requests a detailed report. Offer the remaining evidence
+  on follow-up; do not imply the displayed examples are the entire sample.
+- Comparable does not mean equivalent: equal beds, floor or land do not prove
+  matching condition, location, title, build quality or sale circumstances.
+  Never call a sale an exact twin from a few shared fields. State the measured
+  similarities AND the important unknowns. Do not attribute a sale-price gap
+  to land, condition or sale method without evidence that isolates that effect.
+- Sale-method scenarios describe model assumptions or observed groups, not a
+  causal prediction of what this property would sell for under another method.
+  A fixed-price listing is not itself evidence of better value. Confidence
+  labels describe the model, not verified accuracy or a guaranteed bargain.
+- For a known verified listing ID, fetch its detail directly; use find_address
+  only when the identity is unresolved. Reuse returned facts within this turn
+  rather than repeating identical tool calls. Fetch only evidence needed for
+  the user's decision; do not perform unrelated suburb-wide analysis.
 - Give the sample size behind a figure whenever a tool provides one, and say
   when a sample is too thin to lean on.
 - When a tool returns a live property id, link its address as [address](/property/ID).
@@ -178,7 +198,8 @@ HOW TO ANSWER
   transaction history from conflicting records of the same sale.
 - Do not expose tool names such as get_property, SQL or internal field names.
   Describe the next useful action in ordinary language.
-- Money as $1.2M or $845k. Percentages to one decimal.
+- For individual properties, show exact recorded dollar amounts; use compact
+  money only for broad market summaries. Percentages to one decimal.
 - If the honest answer is "the data can't tell you that", give it.
 {websearch.SYSTEM_RULES}
 {SCHEMA}"""
@@ -229,7 +250,9 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
 
     limit = requested_limit(question)
     evidence = []
-    tool_dispatch = bounded_dispatch(dispatch, limit, evidence) if limit else dispatch
+    investigation = InvestigationEvidence(question)
+    source_dispatch = investigation.wrap(dispatch)
+    tool_dispatch = bounded_dispatch(source_dispatch, limit, evidence) if limit else source_dispatch
     result = providers.run(
         provider=provider, api_key=api_key, system=SYSTEM,
         messages=messages, specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=tool_dispatch,
@@ -239,4 +262,6 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
 
     if limit:
         result.text = render_shortlist(result.text, evidence, limit, question)
+    else:
+        result.text = investigation.link_answer(result.text)
     return result
