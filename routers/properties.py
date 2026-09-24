@@ -35,6 +35,7 @@ from pricing.pool import detect_pool
 from pricing.valueadd import value_add
 from pricing.glm import canonical_type
 from periods import (
+    future_sale,
     _months_range,
     _period,
     _shift_period,
@@ -1076,6 +1077,9 @@ def suburb_stats(suburb: str, region: str = "Auckland",
     # So the window is explicit and the caller picks it. Default is the newest
     # year present rather than the calendar year, so a dataset loaded in January
     # — or loaded late — shows the year it actually holds instead of an empty one.
+    # Exclude future records before choosing the default year or computing any
+    # medians. Otherwise one future row selects an empty/fictional market year.
+    rows = [r for r in rows if not future_sale(r.sold_date)]
     years_available = sorted({ym[0] for r in rows
                               if (ym := sold_year_month(r.sold_date))}, reverse=True)
     newest_year = years_available[0] if years_available else None

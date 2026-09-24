@@ -135,3 +135,18 @@ def test_thin_buy_price_engine_still_excludes_future_sales():
     rows = [dict(base, sold_date="2020-06-01"), dict(base, sold_date="2099-06-01")]
     engine = CompEngine(pd.DataFrame(rows))
     assert sum(len(g) for g in engine._by_sub.values()) == 1
+
+
+def test_suburb_medians_do_not_default_to_a_future_year(db_session):
+    from models import PropertySold
+    from routers.properties import suburb_stats
+    batch = ImportBatch(batch_type="sold", region="Auckland", filename="dates.csv", is_active=True)
+    db_session.add(batch); db_session.flush()
+    for when, price in [("2020-06-01", 800000), ("2099-06-01", 5000000)]:
+        db_session.add(PropertySold(import_batch_id=batch.id, region="Auckland",
+            suburb="Massey", sold_date=when, sale_price=price, floor_area_m2=100))
+    db_session.commit()
+    stats = suburb_stats("Massey", "Auckland", from_year=None, to_year=None, ptype=None, db=db_session)
+    assert stats.years_available == [2020]
+    assert stats.median_sold == 800000
+    assert stats.sold_count == 1
