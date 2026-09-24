@@ -18,6 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from addresses import address_key
+from areas import square_metres
 from config import settings
 from db import SessionLocal
 from runlog import record as _record
@@ -308,21 +309,7 @@ class IngestResult:
 
 
 def _parse_area(v):
-    if pd.isna(v):
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
-    s = str(v).strip().lower().replace(",", "")
-    digits = ""
-    for c in s:
-        if c.isdigit() or c == ".":
-            digits += c
-        elif digits:
-            break
-    try:
-        return float(digits) if digits else None
-    except ValueError:
-        return None
+    return square_metres(v)
 
 
 def _to_int(v):
