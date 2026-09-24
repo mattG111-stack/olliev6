@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from models import User
 from assistant import keys, providers, websearch
 from assistant.scope import RENTAL_REPLY, rental_request
+from assistant.shortlist import requested_limit, bounded_dispatch
 from assistant.sql import SCHEMA
 from assistant.tools import TOOL_SPECS, dispatch
 
@@ -214,9 +215,11 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     messages = [{"role": t.role, "content": t.content} for t in (history or [])]
     messages.append({"role": "user", "content": question})
 
+    limit = requested_limit(question)
+    tool_dispatch = bounded_dispatch(dispatch, limit) if limit else dispatch
     return providers.run(
         provider=provider, api_key=api_key, system=SYSTEM,
-        messages=messages, specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=dispatch,
+        messages=messages, specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=tool_dispatch,
         deadline=deadline, max_iterations=max_iterations, on_step=on_step,
         workspace_id=workspace_id,
     )
