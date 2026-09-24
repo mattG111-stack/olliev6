@@ -12,6 +12,7 @@ not a long-lived transaction, and a tool that fails should not poison the others
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pandas as pd
@@ -192,17 +193,14 @@ def _sold_col(df, name: str):
 
 
 def _money(v) -> str | None:
-    """Property-scale money to the nearest $1,000.
+    """Recorded NZD to the nearest dollar, without rounding prices to thousands.
 
-    A valuation quoted as "$907,939" implies a precision we don't have — median
-    error is ~7.9%. Small figures (weekly rent, fees) stay exact.
+    Preserve source precision for comparisons/charts. Model uncertainty belongs
+    in confidence labels, not in silently altered tool values.
     """
-    if v is None:
+    if v is None or not math.isfinite(float(v)):
         return None
-    v = round(v)
-    if abs(v) >= 50_000:
-        v = round(v / 1000) * 1000
-    return f"${v:,}"
+    return f"${round(v):,}"
 
 
 def _pct(v) -> str | None:

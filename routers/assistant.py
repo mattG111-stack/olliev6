@@ -529,6 +529,28 @@ def start_ask(body: AskIn, me: User = Depends(require_active),
     return AskStarted(ask_id=row.id)
 
 
+class RecentAsk(BaseModel):
+    ask_id: int
+    question: str
+    status: str
+    created_at: datetime
+
+
+@router.get("/asks/recent", response_model=list[RecentAsk])
+def recent_asks(me: User = Depends(require_active),
+                db: Session = Depends(get_db)) -> list[RecentAsk]:
+    """Recover a lost start-response without submitting or charging again.
+
+    Even admins see only their own questions here. Opening an entry uses the
+    existing authorized progress endpoint and never starts another worker.
+    """
+    rows = (db.query(AssistantLog).filter(AssistantLog.user_id == me.id)
+            .order_by(AssistantLog.id.desc()).limit(10).all())
+    return [RecentAsk(ask_id=r.id, question=r.question,
+                      status=r.status or "done", created_at=r.created_at)
+            for r in rows]
+
+
 @router.get("/ask/{ask_id}", response_model=AskProgress)
 def read_ask(ask_id: int, me: User = Depends(require_active),
              db: Session = Depends(get_db)) -> AskProgress:
