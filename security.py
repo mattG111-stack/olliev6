@@ -7,7 +7,7 @@ import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
-from jwt.exceptions import PyJWTError as JWTError
+from jwt.exceptions import PyJWTError as JWTError, ExpiredSignatureError, InvalidSignatureError
 from passlib.context import CryptContext
 from passlib.exc import UnknownHashError
 from sqlalchemy import func
@@ -171,10 +171,18 @@ def current_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) ->
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         user_id = int(payload["sub"])
+    except ExpiredSignatureError:
+        log.warning("Session rejected: token_expired")
+        raise _credentials_error()
+    except InvalidSignatureError:
+        log.warning("Session rejected: signature_mismatch")
+        raise _credentials_error()
     except (JWTError, KeyError, ValueError):
+        log.warning("Session rejected: invalid_token")
         raise _credentials_error()
     user = db.get(User, user_id)
     if user is None:
+        log.warning("Session rejected: user_missing")
         raise _credentials_error()
     if user.status in (UserStatus.REJECTED.value, UserStatus.DEACTIVATED.value):
         raise HTTPException(status_code=403, detail=f"Account is {user.status}")

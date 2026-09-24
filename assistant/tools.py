@@ -531,6 +531,7 @@ def get_sold_comparables(property_id: int) -> str:
                 "address": c.address, "beds": c.beds, "baths": c.baths,
                 "floor_m2": c.floor_area_m2, "land_m2": c.land_area_m2,
                 "title": c.type_of_title, "sold_for": _money(c.sale_price),
+                "sale_price": c.sale_price,
                 "cv": _money(c.cv_numeric), "sold_date": c.sold_date,
                 "method": c.sale_method,
             } for c in r.comps],

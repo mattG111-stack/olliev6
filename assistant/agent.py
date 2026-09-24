@@ -246,6 +246,11 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     if rental_request(question):
         return providers.Result(text=RENTAL_REPLY)
 
+    investigation = InvestigationEvidence(question)
+    if investigation.property_id is not None:
+        from assistant.record_report import record_report
+        return record_report(investigation.property_id, dispatch, on_step)
+
     provider = (user.llm_provider or "").strip()
     api_key = keys.decrypt(user.llm_api_key_encrypted)
 
