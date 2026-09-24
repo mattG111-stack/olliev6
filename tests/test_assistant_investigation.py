@@ -72,7 +72,11 @@ def test_fresh_investigation_keeps_user_filters_and_drops_prior_model_claims():
     ]
     evidence = InvestigationEvidence(QUESTION)
     result = evidence.fresh_messages(messages)
-    assert result == [messages[0], messages[2], messages[4]]
+    assert [t for t in result if t['role'] == 'user'] == [messages[0], messages[2], messages[4]]
+    assert [t['role'] for t in result] == [t['role'] for t in messages]
+    assert 'guaranteed profit' not in str(result)
+    assert 'Single check' not in str(result)
+    assert all('already answered' in t['content'] for t in result if t['role'] == 'assistant')
     assert len(messages) == 5  # UI/audit history must not be mutated
     result[0]['content'] = 'modified'
     assert messages[0]['content'].startswith('Glen Eden')
@@ -97,6 +101,8 @@ def test_fresh_context_is_used_by_agent(monkeypatch):
     user = SimpleNamespace(llm_provider='anthropic', llm_api_key_encrypted='synthetic')
     history = [agent.Turn('assistant','Do you mean Glen Eden?'), agent.Turn('user','yes')]
     result = agent.ask(user, QUESTION, history)
-    assert observed['messages'] == [{'role':'user','content':'yes'}, {'role':'user','content':QUESTION}]
+    assert [t for t in observed['messages'] if t['role'] == 'user'] == [{'role':'user','content':'yes'}, {'role':'user','content':QUESTION}]
+    assert observed['messages'][0]['role'] == 'assistant'
+    assert 'Do you mean Glen Eden' not in str(observed['messages'])
     assert "ask for the missing requirement" in observed['system']
     assert result.text == 'Which area do you mean?'
