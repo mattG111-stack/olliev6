@@ -64,10 +64,8 @@ def parse_area_series(series: pd.Series) -> pd.Series:
     arrive already numeric, but is parsed through here too so a future scrape
     that adds units can't reintroduce the same failure.
     """
-    if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce")
-    cleaned = series.astype(str).str.replace(",", "", regex=False)
-    return pd.to_numeric(cleaned.str.extract(r"(\d+\.?\d*)", expand=False), errors="coerce")
+    from areas import square_metres
+    return pd.to_numeric(series.map(square_metres), errors="coerce")
 
 
 def _within_recency_window(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -90,13 +88,16 @@ def _within_recency_window(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """
     if "sold_date" not in df.columns or df.empty:
         return df, 0
+    from periods import future_sale
+    original_count = len(df)
+    df = df[~df["sold_date"].map(future_sale).astype(bool)].copy()
     when = pd.to_datetime(df["sold_date"], errors="coerce", format="mixed")
     newest = when.max()
     if pd.isna(newest):
-        return df, 0
+        return df, original_count - len(df)
     cutoff = newest - pd.DateOffset(years=A.COMP_MAX_AGE_YEARS)
     keep = when.isna() | (when >= cutoff)
-    return df[keep], int((~keep).sum())
+    return df[keep], original_count - int(keep.sum())
 
 
 class SoldDataset:

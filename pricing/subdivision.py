@@ -387,7 +387,10 @@ class SectionRates:
         land_val = None
         for c in ("land_value_numeric", "land_value"):
             if c in df.columns:
-                land_val = parse_area_series(df[c])
+                # Money has no area units; do not apply hectare/acre conversions.
+                land_val = pd.to_numeric(
+                    df[c].astype(str).str.replace(r"[$,]", "", regex=True),
+                    errors="coerce")
                 break
         if land_val is not None:
             self._council = self._median_by_suburb(suburb, land_val / land_area)

@@ -6,6 +6,26 @@ way is a cycle. A leaf module both can depend on is the fix.
 """
 from __future__ import annotations
 
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+
+def future_sale(sold_date, *, today: date | None = None) -> bool:
+    """Flag a known future date without guessing a correction to the source.
+
+    Stored slash dates are the legacy US format; new imports are ISO.
+    Unknown dates retain the existing missing-date policy.
+    """
+    if sold_date is None:
+        return False
+    raw = str(sold_date).strip().split("T")[0].split(" ")[0]
+    try:
+        when = (date.fromisoformat(raw) if "-" in raw[:5]
+                else datetime.strptime(raw, "%m/%d/%Y").date())
+    except (ValueError, TypeError):
+        return False
+    return when > (today or datetime.now(ZoneInfo("Pacific/Auckland")).date())
+
 
 def sold_year_month(sold_date: str | None) -> tuple[int, int] | None:
     """(year, month) from a stored sale date, in either format we hold.
@@ -65,16 +85,19 @@ def recent_sales(rows, years: int, *, attr: str = "sold_date") -> list:
     loaded late does not empty itself. Rows with an unreadable date are kept:
     dropping them would discard everything from a file with no usable dates.
     """
-    dated = [(r, sold_year_month(getattr(r, attr, None))) for r in rows]
+    dated = [(r, sold_year_month(getattr(r, attr, None))) for r in rows
+             if not future_sale(getattr(r, attr, None))]
     months = [ym[0] * 12 + ym[1] for _, ym in dated if ym]
     if not months:
-        return list(rows)
+        return [r for r, _ in dated]
     cutoff = max(months) - years * 12
     return [r for r, ym in dated if ym is None or (ym[0] * 12 + ym[1]) >= cutoff]
 
 
 def _period(sold_date: str | None) -> str | None:
     """'5/14/2026' or '2026-05-14' -> '2026-05'."""
+    if future_sale(sold_date):
+        return None
     ym = sold_year_month(sold_date)
     return f"{ym[0]:04d}-{ym[1]:02d}" if ym else None
 

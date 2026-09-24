@@ -134,10 +134,51 @@ def validate(sql: str) -> str:
     return cleaned
 
 
+def scope_live_listings(sql: str, dialect=None) -> str:
+    """Apply the property page's visibility rule before any SQL aggregation.
+
+    A non-recursive CTE shadows the physical table, including references in
+    subqueries and joins. Reuse the actual page predicate rather than keeping
+    a second, gradually diverging list of hidden-row conditions in the prompt.
+    Historical batch metadata remains available through import_batches.
+    """
+    # Ignore literal text when detecting identifiers/control words.
+    identifiers = re.sub(r"'(?:''|[^'])*'", "''", sql)
+    if not re.search(r'\bproperties_for_sale\b', identifiers, re.I):
+        return sql
+    if re.match(r"\s*WITH\s+RECURSIVE\b", identifiers, re.I):
+        raise UnsafeQuery("Use a non-recursive query for current listings.")
+    if re.search(r'[\w\"]\s*\.\s*\"?properties_for_sale\b', identifiers, re.I):
+        raise UnsafeQuery("Use the unqualified properties_for_sale table for current visible listings.")
+    if re.search(r'\bproperties_for_sale\"?\s*(?:\([^)]*\)\s*)?AS\s*\(', identifiers, re.I):
+        raise UnsafeQuery("properties_for_sale is reserved for current visible listings; choose another CTE name.")
+
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from models import ImportBatch, PropertyForSale
+    from routers.properties import _hide_bad_data
+
+    visible = _hide_bad_data(select(text("properties_for_sale.*")).select_from(PropertyForSale)).where(
+        PropertyForSale.import_batch_id.in_(select(ImportBatch.id).where(
+            ImportBatch.is_active.is_(True), ImportBatch.batch_type == "for_sale")))
+    dialect = dialect or postgresql.dialect()
+    body = str(visible.compile(dialect=dialect,
+                               compile_kwargs={"literal_binds": True}))
+    # Qualify trusted physical tables so the CTE cannot resolve to itself or
+    # a caller's similarly named CTE. The application uses the default schema.
+    schema = "main" if dialect.name == "sqlite" else "public"
+    body = body.replace("FROM properties_for_sale", f"FROM {schema}.properties_for_sale")
+    body = body.replace("FROM import_batches", f"FROM {schema}.import_batches")
+    prefix = f"WITH properties_for_sale AS ({body}) "
+    if re.match(r"\s*WITH\b", sql, re.I):
+        return prefix.rstrip() + ", " + re.sub(r"^\s*WITH\s+", "", sql, count=1, flags=re.I)
+    return prefix + sql
+
+
 def run(sql: str) -> str:
     """Validate then execute inside a read-only, time-limited transaction."""
     try:
-        safe = validate(sql)
+        safe = scope_live_listings(validate(sql))
     except UnsafeQuery as exc:
         return f"Query rejected: {exc}"
 
@@ -200,7 +241,13 @@ snapshots together and get inflated counts:
                              WHERE is_active AND batch_type = 'for_sale')
 Use batch_type = 'sold' for properties_sold.
 
-properties_for_sale — for-sale listings (query the current visible count)
+properties_for_sale — current VISIBLE for-sale listings, automatically scoped
+  to the active batch and the same visibility rules as the property pages.
+  Held, delisted, sold, placeholder-price and invalid-margin records are excluded
+  before filtering or counting. Use this table without a schema qualifier.
+  Historical or held listing rows are not available through this table.
+  Counts are listing records, not unique homes: deduplicate by normalized full
+  address AND suburb when asked for homes, preserving unit numbers.
   id, address, suburb, district, region, postcode, latitude, longitude
   property_type, type_of_title, zoning, land_slope_contour
   beds, baths, cars, floor_area_m2, land_area_m2, building_age

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from periods import sold_year_month
+from periods import sold_year_month, future_sale
 from pricing.glm import POOL_PREMIUM, canonical_type, predict, title_code
 from pricing.pool import PoolPremium, pool_flags, to_pool_status
 
@@ -214,6 +214,9 @@ class CompEngine:
         date_col = next((c for c in ("sold_date", "sold_listing_date") if c in df.columns), None)
         yy = mm = None
         if date_col is not None:
+            # A future date is not evidence of a completed sale, even when the
+            # region is too thin to apply the normal recency cutoff.
+            df = df[~df[date_col].map(future_sale).astype(bool)].copy()
             ym = df[date_col].map(sold_year_month)
             yy = pd.to_numeric(ym.map(lambda v: v[0] if v else None), errors="coerce")
             mm = pd.to_numeric(ym.map(lambda v: v[1] if v else None), errors="coerce")
