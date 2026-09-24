@@ -215,14 +215,21 @@ def distinct_values(table: str, column: str, limit: int = 40) -> str:
         return f"Table '{table}' is not queryable."
     if not re.fullmatch(r"[a-zA-Z_][\w]*", column or ""):
         return "Invalid column name."
-    # Scope to the active batch so the counts are honest, not summed across six
-    # historical snapshots.
-    bt = "sold" if table == "properties_sold" else "for_sale"
-    batch = (
-        "import_batch_id = (SELECT id FROM import_batches "
-        f"WHERE is_active AND batch_type = '{bt}')"
-        if table in ("properties_for_sale", "properties_sold") else "TRUE"
-    )
+    # Live/rental imports are snapshots; sold imports accumulate history.
+    # Match ingest.sold_batch_ids, including its accepted batch statuses.
+    if table == "properties_sold":
+        batch = (
+            "import_batch_id IN (SELECT id FROM import_batches "
+            "WHERE batch_type = 'sold' AND status IN ('staged', 'preview', 'published'))"
+        )
+    elif table in ("properties_for_sale", "properties_rent"):
+        kind = "rent" if table == "properties_rent" else "for_sale"
+        batch = (
+            "import_batch_id IN (SELECT id FROM import_batches "
+            f"WHERE is_active AND batch_type = '{kind}')"
+        )
+    else:
+        batch = "TRUE"
     sql = (
         f"SELECT {column} AS value, COUNT(*) AS n FROM {table} "
         f"WHERE {batch} AND {column} IS NOT NULL GROUP BY {column} "
@@ -235,11 +242,18 @@ def distinct_values(table: str, column: str, limit: int = 40) -> str:
 
 SCHEMA = """You can query these Postgres tables directly with read-only SQL.
 
-IMPORTANT — always filter to the active batch, or you will mix six historical
-snapshots together and get inflated counts:
-    WHERE import_batch_id = (SELECT id FROM import_batches
-                             WHERE is_active AND batch_type = 'for_sale')
-Use batch_type = 'sold' for properties_sold.
+DATASET SCOPE — imports have different meanings:
+- For-sale and rental imports are snapshots. Use current batches:
+    WHERE import_batch_id IN (SELECT id FROM import_batches
+                              WHERE is_active AND batch_type = 'for_sale')
+  Use batch_type = 'rent' for properties_rent. Never mix old rental snapshots.
+- Sold imports accumulate transaction history. Do NOT restrict sales to the
+  newest or active batch; that would discard earlier sales used by valuations:
+    WHERE import_batch_id IN (SELECT id FROM import_batches
+      WHERE batch_type = 'sold' AND status IN ('staged', 'preview', 'published'))
+  These statuses match the valuation engine's eligible sold deliveries.
+- Apply the requested region/suburb and date range as additional filters.
+  Counts are records, not necessarily unique properties or transactions.
 
 properties_for_sale — current VISIBLE for-sale listings, automatically scoped
   to the active batch and the same visibility rules as the property pages.

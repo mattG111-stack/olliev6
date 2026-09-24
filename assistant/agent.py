@@ -42,8 +42,9 @@ HOW TO WORK A QUESTION
   including English and Chinese values. If unsure, call distinct_values first, or match
   with ILIKE '%name%'. A query that returns zero rows usually means the value
   was spelled wrong, NOT that there are none — check before reporting "none".
-- Always filter to the active batch (the schema shows how). Forgetting it mixes
-  six historical snapshots and inflates every count.
+- Follow the schema's dataset scope: current snapshots for listings and rentals,
+  accumulated eligible deliveries for sold history. Never mix old rental
+  snapshots or discard older sales just because their batch is not active.
 - If a query fails or returns nothing, read the error and try again — you have
   several attempts. Don't give up after one.
 - Sanity-check against fresh tool results, not memorized market counts or prices.
