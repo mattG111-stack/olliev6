@@ -26,6 +26,7 @@ import logging
 import time
 
 import httpx
+from addresses import address_key
 
 log = logging.getLogger("ollie.propertyvalue")
 
@@ -267,16 +268,41 @@ def close_client() -> None:
         _CLIENT = None
 
 
+def _matched_suggestion(address: str, suggestions: list) -> dict | None:
+    """Require one exact normalized street/unit and, if supplied, suburb.
+
+    Search ranking is not identity: the first suggestion can be a neighbouring
+    house or the parent site of a unit. Ambiguous IDs remain unresolved.
+    """
+    parts = [p.strip() for p in address.split(",")]
+    suburb = parts[1] if len(parts) > 1 else None
+    wanted = address_key(parts[0], suburb)
+    matches = {}
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict) or not suggestion.get("propertyId"):
+            continue
+        label = suggestion.get("suggestion")
+        if not label:
+            continue
+        label_parts = str(label).split(",")
+        candidate_suburb = suggestion.get("suburbName") or (
+            label_parts[1].strip() if len(label_parts) > 1 else None)
+        key = address_key(label_parts[0], candidate_suburb if suburb else None)
+        if key == wanted:
+            matches[str(suggestion["propertyId"])] = suggestion
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
 def _lookup_once(address: str) -> tuple[dict | None, str]:
     c = _client()
     rs = c.get(f"{_BASE}/api/public/clapi/suggestions",
-               params={"q": address, "suggestionTypes": "address", "limit": 1})
+               params={"q": address, "suggestionTypes": "address", "limit": 5})
     if rs.status_code in _BLOCK_CODES:
         return None, PV_BLOCKED
     if rs.status_code != 200:
         return None, PV_ERROR
-    sugg = ((rs.json() or {}).get("suggestions") or [None])[0]
-    if not sugg or not sugg.get("propertyId"):
+    sugg = _matched_suggestion(address, (rs.json() or {}).get("suggestions") or [])
+    if not sugg:
         return None, PV_NOT_FOUND
     r = c.get(f"{_BASE}/api/public/clapi/properties/{sugg['propertyId']}")
     if r.status_code in _BLOCK_CODES:
