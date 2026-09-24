@@ -8,6 +8,8 @@ assistant 500ing on a boot ordering problem.
 """
 from __future__ import annotations
 
+from assistant.scope import RENTAL_REPLY
+
 import logging
 from datetime import datetime, time, timedelta, timezone
 
@@ -204,6 +206,7 @@ def used_today(db: Session, user_id: int | None) -> int:
                 .filter(AssistantLog.user_id == user_id,
                         AssistantLog.ok.is_(True),
                         AssistantLog.answer.isnot(None),
+                        AssistantLog.answer != RENTAL_REPLY,
                         AssistantLog.created_at >= _day_start())
                 .count())
     except Exception:
