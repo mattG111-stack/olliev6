@@ -19,13 +19,19 @@ class InvestigationEvidence:
         """
         if self.property_id is None:
             return messages
-        return [dict(turn) for turn in messages if turn.get("role") == "user"]
+        return [dict(turn) if turn.get("role") == "user" else {
+            "role": "assistant",
+            "content": "[Earlier answer omitted. This earlier request was already answered; retain user-stated requirements as context, not outstanding tasks.]",
+        } for turn in messages if turn.get("role") in ("user", "assistant")]
 
     def answer_guidance(self):
         if self.property_id is None:
             return ""
         return """
 FRESH SELECTED-PROPERTY INVESTIGATION
+Answer ONLY the final user request about the selected property. Earlier requests
+have already been answered: they supply constraints, not a queue of tasks.
+Do not recap the shortlist, redraw earlier charts or mention repeated requests.
 Previous assistant analysis is deliberately absent. Preserve requirements in
 the user turns, with later explicit changes taking precedence. If a reply like
 'yes', 'that area' or 'the cheaper one' cannot be resolved from those user turns,
