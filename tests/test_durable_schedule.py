@@ -24,3 +24,16 @@ def test_second_worker_does_not_enter_running_job(db_session):
         assert not run_due(engine,'same',86400,lambda:calls.append('duplicate'))
     assert run_due(engine,'same',86400,outer)
     assert not calls
+
+
+def test_dedicated_scraper_worker_excludes_legacy_live_maintenance():
+    from scraper_worker import jobs
+    assert {job.name for job in jobs()}=={'new listings sweep','sold sweep','daily validated pricing'}
+
+
+def test_unfinished_saved_pass_resumes_without_waiting_a_day(db_session):
+    engine=db_session.get_bind();calls=[];now=datetime(2026,9,26,tzinfo=timezone.utc)
+    def partial():calls.append(1);return {'merged':{'pending':2}}
+    assert run_due(engine,'partial',86400,partial,now=now)
+    assert run_due(engine,'partial',86400,partial,now=now+timedelta(minutes=5))
+    assert len(calls)==2

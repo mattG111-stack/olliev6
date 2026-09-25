@@ -27,7 +27,8 @@ def collect_and_stage(db, *, sources, kind, cap):
         if kind=='sold':
             from portals.sold_acceptance import accept
             result=accept(db,merged)
-            result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=0)
+            result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=0,
+                          pending=sum(len(s.get('pending_urls',[])) for s in progress.values()))
             summary['merged']=result
             for source,state in progress.items():checkpoints.save(db,source,kind,state)
             run.status='complete';run.finished_at=datetime.now(timezone.utc)
@@ -38,7 +39,8 @@ def collect_and_stage(db, *, sources, kind, cap):
         new,skipped=record(db,rows,refresh_pending=True,stats=stats,commit=False)
         result={'found':len(rows),'new':new,'skipped':skipped,
                 'excluded':len(merged)-len(rows),'run_id':run_id,
-                'refreshed':stats.get('refreshed',0)}
+                'refreshed':stats.get('refreshed',0),
+                'pending':sum(len(s.get('pending_urls',[])) for s in progress.values())}
         summary['merged']=result
         for source,state in progress.items():checkpoints.save(db,source,kind,state)
         run.status='complete';run.finished_at=datetime.now(timezone.utc)

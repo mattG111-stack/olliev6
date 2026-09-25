@@ -97,3 +97,15 @@ def test_checkpoint_commits_only_after_all_sources_and_staging_succeed(db_sessio
     collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
     assert checkpoints.load(db_session,'oneroof','for_sale')['pending_urls']==['https://www.oneroof.co.nz/next']
     assert db_session.query(PortalListing).count()==1
+
+
+def test_checkpoint_write_failure_rolls_back_new_review_rows(db_session,monkeypatch):
+    from portals import checkpoints
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**kw:[sample(price_numeric=900000)])
+    def fail(*a,**kw):raise RuntimeError('synthetic checkpoint write failure')
+    monkeypatch.setattr(checkpoints,'save',fail)
+    with pytest.raises(RuntimeError,match='checkpoint'):
+        collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    assert db_session.query(PortalListing).count()==0
+    assert db_session.query(PortalObservation).count()==1
+    assert checkpoints.load(db_session,'oneroof','for_sale')=={}

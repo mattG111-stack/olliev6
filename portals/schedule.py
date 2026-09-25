@@ -27,6 +27,8 @@ def run_due(engine, name, every, fn, *, now=None):
                 db.commit()
                 result=fn()
                 if result=={}:raise RuntimeError('Scheduled collector reported failure')
+                if isinstance(result,dict) and any(isinstance(v,dict) and v.get('pending',0)>0 for v in result.values()):
+                    return True  # Saved partial progress; resume next poll, not tomorrow.
                 # Mark success only after work finishes. A killed process releases
                 # its database lock and the next attempt replays idempotently.
                 state=db.get(AppSetting,key)
