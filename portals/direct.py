@@ -225,25 +225,6 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                     continue
                 validate_url(record_url, source)
                 row = canonical(source, kind, record_url, raw)
-                # Fetch the detail page and retain the search snapshot too. Match
-                # exact source URL; never take an unrelated recommendation card.
-                if record_url != url and record_url not in seen and fetched < page_limit:
-                    detail_text = transport.get(record_url)
-                    fetched += 1
-                    seen.add(record_url)
-                    detail = page_data.extract(detail_text, source).get(record_url)
-                    if detail is None:
-                        raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
-                    enriched = canonical(source, kind, record_url, detail)
-                    # Preserve conflict evidence; detail is not automatically truth.
-                    conflicts = {k: [row[k], v] for k, v in enriched.items()
-                                 if page_data.present(row.get(k)) and page_data.present(v)
-                                 and row[k] != v and k not in ('raw_source', 'provenance', 'scraped_at')}
-                    for key, value in enriched.items():
-                        if not page_data.present(row.get(key)):
-                            row[key] = value
-                    row['raw_source'] = {'search': raw, 'detail': detail}
-                    row['source_conflicts'] = conflicts
                 if str(row.get('region', '')).strip().casefold() != 'auckland':
                     continue
                 if suburb and page_data.text_key(row.get('suburb', '')) != page_data.text_key(suburb):
@@ -254,8 +235,34 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                     break
             for target in next_pages(text,url,source):
                 if target not in seen and target not in queue:queue.append(target)
+        # Discover search pages first. Detail enrichment must not spend the
+        # entire request budget on the first page and starve pagination.
+        pending_details = []
+        for record_url, row in rows.items():
+            if record_url in seen:
+                continue
+            if fetched >= page_limit:
+                pending_details.append(record_url)
+                continue
+            detail_text = transport.get(record_url)
+            fetched += 1
+            seen.add(record_url)
+            detail = page_data.extract(detail_text, source).get(record_url)
+            if detail is None:
+                raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
+            enriched = canonical(source, kind, record_url, detail)
+            conflicts = {k: [row[k], value] for k, value in enriched.items()
+                         if page_data.present(row.get(k)) and page_data.present(value)
+                         and row[k] != value and k not in ('raw_source', 'provenance', 'scraped_at')}
+            for key, value in enriched.items():
+                if not page_data.present(row.get(key)):
+                    row[key] = value
+                    if key in enriched['provenance']:
+                        row['provenance'][key] = enriched['provenance'][key]
+            row['raw_source'] = {'search': row['raw_source'], 'detail': detail}
+            row['source_conflicts'] = conflicts
         for row in rows.values():
-            row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'complete_coverage_verified': False}
+            row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
         return list(rows.values())
     finally:
         if owned:
