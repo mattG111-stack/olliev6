@@ -6,16 +6,17 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import httpx
 from config import settings
 from portals.direct import Transport, CollectorUnavailable, USER_AGENT
-from portals.rendered import property_links
+from portals.rendered import property_links, discovery_info
 
 settings.scraper_render_homes=True
 # Observed from the public search UI, not a guessed internal endpoint.
-url='https://homes.co.nz/map/auckland/mount-wellington/mount-wellington-highway?searchLoc=tsh%60Fmocj%60@&filter=type:sold'
+url='https://homes.co.nz/map/auckland?filter=type:sold'
 transport=Transport('homes',client=httpx.Client(timeout=30,follow_redirects=False,headers={'User-Agent':USER_AGENT}))
 try:
     html=transport.get(url)
     links=property_links(html,url)
-    print(json.dumps({'ok':True,'discovered':len(links),'scope':'sold near Mount Wellington Highway','production_writes':False}))
+    print(json.dumps({'ok':True,'discovered':len(links),'scope':'bounded Auckland sold search',
+                      'coverage':discovery_info(html),'production_writes':False}))
 except CollectorUnavailable as exc:
     print(json.dumps({'ok':False,'reason':str(exc),'production_writes':False}))
     sys.exit(1)
