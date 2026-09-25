@@ -14,7 +14,7 @@ from models import User
 from preferences import assistant_brief
 from assistant import keys, providers, websearch
 from assistant.scope import RENTAL_REPLY, rental_request
-from assistant.shortlist import requested_limit, conversation_limit, bounded_dispatch, render_shortlist
+from assistant.shortlist import requested_limit, conversation_limit, bounded_dispatch, render_shortlist, shortlist_context
 from assistant.investigation import InvestigationEvidence
 from assistant.sql import SCHEMA
 from assistant.tools import TOOL_SPECS, dispatch
@@ -291,12 +291,9 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     )
 
     if limit:
-        previous_ids = None
-        if requested_limit(question) is None:
-            import re
-            previous = next((t.content for t in reversed(history or []) if t.role == "assistant"), "")
-            previous_ids = {int(m) for m in re.findall(r'\]\(/property/(\d+)\)', previous)}
-        result.text = render_shortlist(result.text, evidence, limit, question, previous_ids)
+        preference_context, previous_ids = shortlist_context(question, history)
+        result.text = render_shortlist(result.text, evidence, limit, question, previous_ids,
+                                       preference_context=preference_context)
     else:
         result.text = investigation.link_answer(result.text)
     return result
