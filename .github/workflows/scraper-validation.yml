@@ -14,7 +14,7 @@ jobs:
       - name: Verify disabled startup without database or collection
         run: >-
           docker run --rm --network none
-          -e DATABASE_URL=sqlite:///:memory:
+          -e DATABASE_URL=postgresql+psycopg://synthetic:unused@127.0.0.1:5432/no_database
           -e JWT_SECRET=synthetic-image-test-only
           -e SCRAPER_ENABLED=false -e PORTALS_DAILY=false
           -e SCRAPER_DAILY_PRICING=false apex-scraper-check
