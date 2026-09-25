@@ -54,3 +54,26 @@ def test_undisclosed_sold_price_stored_as_evidence_not_comparable(db_session,mon
     assert result['excluded']==1 and result['new']==0
     assert db_session.query(PortalObservation).count()==1
     assert db_session.query(PropertySold).count()==0
+
+
+def test_collection_migration_roundtrip_preserves_existing_tables(db_session):
+    import importlib.util
+    from pathlib import Path
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect
+    path=next((Path(__file__).resolve().parents[1]/'alembic'/'versions').glob('c8d9e0f1a2b3*'))
+    spec=importlib.util.spec_from_file_location('collection_migration',path)
+    migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+    engine=db_session.get_bind()
+    with engine.begin() as conn:
+        PortalObservation.__table__.drop(conn)
+        PortalCollectionRun.__table__.drop(conn)
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.upgrade()
+            assert 'portal_observations' in inspect(conn).get_table_names()
+            assert inspect(conn).get_foreign_keys('portal_observations')[0]['referred_table']=='portal_collection_runs'
+            migration.downgrade()
+            assert 'portal_observations' not in inspect(conn).get_table_names()
+            assert 'properties_sold' in inspect(conn).get_table_names()
+            migration.upgrade()
