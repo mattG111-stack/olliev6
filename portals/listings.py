@@ -826,6 +826,8 @@ def approve(db: Session, listing_id: int, *, user_id: int | None = None,
                 setattr(prop, high, row.estimate_high)
             if url_col and row.url:
                 setattr(prop, url_col, row.url)
+    from portals.evidence import apply_to_property
+    apply_to_property(prop, row.raw_json)
     prop.asking_price = row.price_numeric
     db.add(prop)
     db.flush()

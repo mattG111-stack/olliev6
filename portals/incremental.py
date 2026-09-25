@@ -11,6 +11,7 @@ def start(state, source, kind, seeds, *, now=None):
     if state.get('pending_urls'):
         return
     now = now or datetime.now(timezone.utc)
+    state['scan_started_at'] = now.isoformat()
     state['recent_old_pages'] = 0
     state['recent_cutoff'] = None
     if kind != 'for_sale' or len(seeds) != 1:
@@ -22,7 +23,7 @@ def start(state, source, kind, seeds, *, now=None):
         return
     try:
         full = datetime.fromisoformat(state['last_full_pass_at'])
-        previous = datetime.fromisoformat(state['last_completed_pass_at'])
+        previous = datetime.fromisoformat(state.get('last_successful_scan_started_at') or state['last_completed_pass_at'])
         if now - full >= timedelta(days=7) or previous > now:
             return
         state['recent_cutoff'] = (previous - timedelta(days=7)).date().isoformat()
@@ -43,3 +44,15 @@ def stop_after_page(state, rows):
         old = False
     state['recent_old_pages'] = state.get('recent_old_pages', 0) + 1 if old else 0
     return state['recent_old_pages'] >= 2
+
+
+def finish(state, completed_at):
+    """Anchor the next cutoff to scan START, not its potentially much later end."""
+    if state.get('pending_urls'):
+        return
+    state['last_completed_pass_at'] = completed_at
+    if state.get('discovery_coverage',{}).get('complete') is False:
+        return  # A bounded Homes window is not a successful region-wide pass.
+    state['last_successful_scan_started_at'] = state.get('scan_started_at',completed_at)
+    if not state.get('recent_cutoff'):
+        state['last_full_pass_at'] = completed_at

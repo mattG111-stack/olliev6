@@ -299,10 +299,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             row['source_conflicts'] = conflicts
         state['pending_urls'] = list(dict.fromkeys(pending_details + queue))
         state['last_saved_at'] = page_data.now()
-        if not state['pending_urls']:
-            state['last_completed_pass_at'] = state['last_saved_at']
-            if not state.get('recent_cutoff'):
-                state['last_full_pass_at'] = state['last_saved_at']
+        incremental.finish(state,state['last_saved_at'])
         for row in rows.values():
             row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
             if state.get('discovery_coverage'):
@@ -325,7 +322,7 @@ def merge_records(rows):
         group = (key or (row['source'], row['url']), row['kind'], row.get('sold_date') if row['kind']=='sold' else None)
         grouped.setdefault(group, []).append(row)
     result = []
-    metadata = {'source','url','source_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct'}
+    metadata = {'source','url','source_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
     for group in grouped.values():
         merged = dict(group[0]); provenance = {}; conflicts = {}
         for row in group:
@@ -340,6 +337,13 @@ def merge_records(rows):
                     provenance.setdefault(key,[]).append(origin)
                 else:
                     conflicts.setdefault(key,[]).append({'value':value,**origin})
+        from portals.evidence import history
+        sales=history(group)
+        if sales:
+            merged['sale_history']=sales
+            for when in {s['saleDate'] for s in sales}:
+                prices={s['salePrice'] for s in sales if s['saleDate']==when and s['salePrice'] is not None}
+                if len(prices)>1:conflicts.setdefault('sale_history',[]).append({'date':when,'prices':sorted(prices)})
         merged['provenance']=provenance
         merged['conflicts']=conflicts
         merged['source_snapshots']=group

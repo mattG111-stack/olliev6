@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from portals.incremental import start, stop_after_page
+from portals.incremental import start, stop_after_page, finish
 
 NOW=datetime(2026,9,26,tzinfo=timezone.utc)
 SEED='https://www.oneroof.co.nz/search/houses-for-sale/region_auckland-35_order_latest-0_page_1'
@@ -70,3 +70,20 @@ def test_collector_stops_search_after_overlap_and_retains_unread_details(monkeyp
     assert calls==[SEED,second]
     assert s['pending_urls']==details
     assert s['last_full_pass_at']=='2026-09-25T00:00:00+00:00'
+
+
+def test_next_cutoff_uses_scan_start_so_changes_during_long_run_are_revisited():
+    s={};start(s,'oneroof','for_sale',[SEED],now=NOW)
+    finish(s,'2026-09-28T00:00:00+00:00')
+    assert s['last_successful_scan_started_at']==NOW.isoformat()
+    start(s,'oneroof','for_sale',[SEED],now=datetime(2026,9,29,tzinfo=timezone.utc))
+    assert s['recent_cutoff']=='2026-09-19'
+
+
+def test_unfinished_or_partial_discovery_never_advances_successful_watermark():
+    for extra in ({'pending_urls':['https://www.oneroof.co.nz/next']},
+                  {'discovery_coverage':{'loaded':60,'total':4943,'complete':False}}):
+        s={'scan_started_at':NOW.isoformat(),**extra}
+        finish(s,NOW.isoformat())
+        assert 'last_successful_scan_started_at' not in s
+        assert 'last_full_pass_at' not in s

@@ -45,7 +45,8 @@ def normalise_public(n, raw):
                  land_value_numeric=number(p.get('land_value')),improvement_value_numeric=number(p.get('improvement_value')),
                  homes_estimate=number(p.get('display_estimated_value_short')),homes_estimate_low=number(p.get('display_estimated_lower_value_short')),
                  homes_estimate_high=number(p.get('display_estimated_upper_value_short')),homes_estimate_date=date(p.get('estimated_value_revision_date')),
-                 building_age_decade=p.get('decade_built'),legal_description=p.get('legal_description'),type_of_title=p.get('ownership_type'))
+                 building_age_decade=p.get('decade_built'),legal_description=p.get('legal_description'),type_of_title=p.get('ownership_type'),
+                 land_slope_contour=p.get('contour'),garage_spaces=number(p.get('garage_parking')))
         # Only accept explicitly displayed district/region; don't equate city with district.
         if len(address)==4:n.update(district=address[2].strip(),region=address[3].strip())
         elif len(address)==3 and address[2].strip().casefold()=='auckland' and str(p.get('city','')).casefold()=='auckland':
