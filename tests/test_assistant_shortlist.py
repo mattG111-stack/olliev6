@@ -1,6 +1,37 @@
 import json
 import pytest
 from assistant.shortlist import requested_limit, bounded_dispatch
+from assistant.shortlist import conversation_limit
+from types import SimpleNamespace
+
+
+@pytest.mark.parametrize('q,n', [
+    ('Find my three best options and explain why each fits', 3),
+    ('Show me my top three houses', 3),
+    ('Find my three-bedroom home in Henderson', None),
+    ('Find my 3 best properties under $900,000', 3),
+])
+def test_customer_limit_phrasing(q,n):
+    assert requested_limit(q) == n
+
+
+def test_budget_followup_preserves_limit_and_explicit_changes_win():
+    history = [SimpleNamespace(role='user', content='Find my three best options'),
+               SimpleNamespace(role='assistant', content='Here are ten properties')]
+    assert conversation_limit('Drop my budget to $800,000 and keep everything else the same. Which options remain?', history) == 3
+    assert conversation_limit('Show me 2 properties instead', history) == 2
+    assert conversation_limit('What are median prices in Remuera?', history) is None
+    assert conversation_limit('Start over, same area but show all matches', history) is None
+    history.append(SimpleNamespace(role='user', content='New search in Remuera'))
+    assert conversation_limit('Keep my budget the same', history) is None
+
+
+def test_no_unverified_garage_or_condition_claim_survives_shortlist():
+    answer = '[One](/property/1) is safest, has a garage and needs no renovation.'
+    out = render_shortlist(answer, candidates(), 3, 'Find my three best homes with a garage and no renovation')
+    assert 'is safest' not in out
+    assert 'needs no renovation' not in out
+    assert 'car spaces do not confirm an enclosed garage' in out
 
 @pytest.mark.parametrize('q,n', [('Find up to three currently visible houses for sale',3),('Show me 2 properties under $800000',2),('Show 3 bedroom houses',None),('What are prices for 3 homes?',None),('Find rentals',None),('Once the scope is clear, shortlist up to three current visible properties.',3)])
 def test_explicit_result_limit(q,n):
