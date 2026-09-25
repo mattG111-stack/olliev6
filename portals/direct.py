@@ -215,6 +215,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
     # Resume unfinished pages before starting another pass. Cursor URLs are
     # checked like every other source URL, never treated as trusted input.
     state = checkpoint if checkpoint is not None else {}
+    from portals import incremental
+    incremental.start(state, source, kind, seeds)
     pending = state.get('pending_urls', [])
     for pending_url in pending:validate_url(pending_url, source)
     rows, seen, queue = {}, set(), list(dict.fromkeys(pending or seeds))
@@ -240,11 +242,13 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             if not extracted:
                 raise CollectorUnavailable('No recognisable listing data; source adapter needs checking')
             extracted_items = list(extracted.items())
+            page_rows = []
             for item_index, (record_url, raw) in enumerate(extracted_items):
                 if raw.get('_apex_kind', kind) != kind:
                     continue
                 validate_url(record_url, source)
                 row = canonical(source, kind, record_url, raw)
+                page_rows.append(row)
                 if str(row.get('region', '')).strip().casefold() != 'auckland':
                     continue
                 if suburb and page_data.text_key(row.get('suburb', '')) != page_data.text_key(suburb):
@@ -257,7 +261,11 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                         validate_url(remaining_url, source)
                         if remaining_url not in seen and remaining_url not in queue:queue.append(remaining_url)
                     break
-            for target in next_pages(text,url,source):
+            following = next_pages(text,url,source)
+            # Only assess whole search pages, never truncated pages or details.
+            boundary = bool(following and len(page_rows) == len(extracted_items)
+                            and incremental.stop_after_page(state, page_rows))
+            for target in ([] if boundary else following):
                 if target not in seen and target not in queue:queue.append(target)
         if not rows and queue:
             raise CollectorUnavailable('Collection budget exhausted before any property details were read')
@@ -289,7 +297,10 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             row['source_conflicts'] = conflicts
         state['pending_urls'] = list(dict.fromkeys(pending_details + queue))
         state['last_saved_at'] = page_data.now()
-        if not state['pending_urls']:state['last_completed_pass_at'] = state['last_saved_at']
+        if not state['pending_urls']:
+            state['last_completed_pass_at'] = state['last_saved_at']
+            if not state.get('recent_cutoff'):
+                state['last_full_pass_at'] = state['last_saved_at']
         for row in rows.values():
             row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
         return list(rows.values())
