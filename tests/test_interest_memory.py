@@ -76,3 +76,15 @@ def test_history_is_bounded_and_stale_rows_pruned_on_next_view(db_session):
     assert db_session.query(PropertyInterest).filter_by(user_id=users[0].id).count() == 100
     assert db_session.get(PropertyInterest,(users[0].id,9999)) is None
     assert db_session.get(PropertyInterest,(users[0].id,p[0].id)) is not None
+
+
+def test_account_deletion_removes_owned_interest_history(db_session):
+    from routers.auth import delete_user
+    c,h,p,users = setup(db_session)
+    c.put('/api/activity/interests',headers=h[1],json={'enabled':True})
+    c.post('/api/activity/property',headers=h[1],json={'property_id':p[0].id})
+    removed_id = users[1].id
+    delete_user(removed_id, me=users[0], db=db_session)
+    assert db_session.get(User,removed_id) is None
+    assert db_session.get(InterestMemorySetting,removed_id) is None
+    assert db_session.query(PropertyInterest).filter_by(user_id=removed_id).count() == 0

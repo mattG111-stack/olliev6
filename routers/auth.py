@@ -460,7 +460,8 @@ def delete_user(
 
     from models import (AgentContact, AppSetting, AssistantLog, BuildingOverride,
                           Commission, ImportBatch, IngestJob, Promoter, Referral,
-                          ReferralClick, VerificationCode, WishList)
+                          ReferralClick, VerificationCode, WishList,
+                          InterestMemorySetting, PropertyInterest)
 
     # A promoter with earnings is not deletable. Deleting them would take the
     # record of what they were paid — and what they are still owed — with it,
@@ -504,7 +505,8 @@ def delete_user(
     # missed reference makes the delete fail with a constraint violation, which
     # reaches the browser as a bare 500.
     OWNED = ((WishList, "user_id"), (VerificationCode, "user_id"),
-             (Referral, "user_id"))
+             (Referral, "user_id"), (PropertyInterest, "user_id"),
+             (InterestMemorySetting, "user_id"))
     DETACH = ((AssistantLog, "user_id"), (AgentContact, "user_id"),
               (ImportBatch, "uploaded_by_id"), (IngestJob, "uploaded_by_id"),
               (BuildingOverride, "updated_by"), (AppSetting, "updated_by"))
