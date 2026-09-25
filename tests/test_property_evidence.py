@@ -49,3 +49,13 @@ def test_same_date_price_conflict_retained_but_different_dates_not_combined():
     item=merge_records(source)[0]
     assert item['conflicts']['sale_history']==[{'date':'2017-01-01','prices':[650000,700000]}]
     assert len(item['sale_history'])==3 and item['price_flag']
+
+
+def test_disputed_history_is_not_presented_as_an_agreed_transaction():
+    from portals.evidence import apply_to_property
+    source=rows();source[1]['sale_history'][0]['salePrice']=700000
+    item=merge_records(source)[0]
+    prop=PropertyForSale()
+    apply_to_property(prop,json.dumps(item))
+    assert json.loads(prop.sale_history_json)==[{'saleDate':'2022-03-01','salePrice':850000}]
+    assert len(item['sale_history'])==3  # Full conflicting evidence remains.

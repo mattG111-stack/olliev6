@@ -54,7 +54,13 @@ def apply_to_property(prop, raw_json):
         origin=next((o for o in origins if o.get('source')==source),None)
         if url_col and origin and origin.get('url'):setattr(prop,url_col,origin['url'])
     sales=history([data])
-    if sales:prop.sale_history_json=json.dumps(sales,ensure_ascii=False)
+    disputed={s['saleDate'] for s in sales if len({x['salePrice'] for x in sales
+              if x['saleDate']==s['saleDate'] and x['salePrice'] is not None})>1}
+    # Source provenance stays in approved review evidence; the customer-facing
+    # timeline contains only unambiguous dates and disclosed prices.
+    if sales:prop.sale_history_json=json.dumps([
+        {'saleDate':s['saleDate'],'salePrice':s['salePrice']} for s in sales
+        if s['saleDate'] not in disputed],ensure_ascii=False)
     # Keep source assertions in the timeline. Only an unambiguous disclosed
     # transaction may fill the single latest-sale summary.
     disclosed=[s for s in sales if s['salePrice'] is not None]
