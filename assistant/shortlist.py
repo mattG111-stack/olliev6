@@ -17,7 +17,7 @@ def requested_limit(question):
         r'(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)[\s-]+'
         r'(?:bedrooms?|beds?)\s+(?=houses\b|homes\b|properties\b|listings\b)',
         r'\1 ', question, flags=re.I)
-    match = re.search(r'\b(?:find|show|list|recommend|shortlist|give me)\s+(?:me\s+)?(?:up to\s+|exactly\s+|only\s+|the top\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?!bed\b|bedroom\b|bedrooms\b)(?:(?:currently visible|current visible|current)\s+)?(?:properties|houses|homes|listings|options)\b', question, re.I)
+    match = re.search(r'\b(?:find|show|list|recommend|shortlist|give me)\s+(?:me\s+)?(?:up to\s+|exactly\s+|only\s+|the top\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?!bed\b|bedroom\b|bedrooms\b)(?:(?!bed\b|bedroom\b|bedrooms\b|beds\b)[A-Za-z][A-Za-z-]*\s+){0,6}(?:properties|houses|homes|listings|options)\b', question, re.I)
     if not match:
         return None
     word = match.group(1).lower()
@@ -59,11 +59,11 @@ def conversation_limit(question, history):
     for turn in reversed(history or []):
         if turn.role != 'user':
             continue
-        if re.search(r'\b(new search|start over|forget (?:that|the|my)|show all|all matches)\b', turn.content, re.I):
-            return None
         limit = requested_limit(turn.content)
         if limit is not None:
             return limit
+        if re.search(r'\b(new search|start over|forget (?:that|the|my)|show all|all matches)\b', turn.content, re.I):
+            return None
     return None
 
 
@@ -202,10 +202,12 @@ def render_shortlist(answer, evidence, limit, question='', previous_ids=None, pr
 
     selected = selected[:limit]
     lines = [f'Here {"is" if len(selected) == 1 else "are"} {len(selected)} option{"" if len(selected) == 1 else "s"} from the checked listing records.', '',
-             '| Property | Asking price | Apex estimate | Beds / baths | Land | Floor |',
-             '| --- | ---: | ---: | --- | ---: | ---: |']
+             '| Property | Asking price | Apex estimate | Estimated gap vs ask | Beds / baths | Land | Floor |',
+             '| --- | ---: | ---: | ---: | --- | ---: | ---: |']
     chart = []
     decision_rows = []
+    evidence_notes = []
+    development = bool(re.search(r'\b(developer|development|subdiv\w*)\b', preference_context or question, re.I))
     for identity, rid in selected:
         rows = groups[identity]
         # Prefer the linked record's label; all fetched duplicate values remain
@@ -219,13 +221,42 @@ def render_shortlist(answer, evidence, limit, question='', previous_ids=None, pr
         baths = _display([_number(r.get('baths')) for r in rows])
         land = _display([_number(_field(r, 'land_area_m2', 'land_m2')) for r in rows], ' m²')
         floor = _display([_number(_field(r, 'floor_area_m2', 'floor_m2')) for r in rows], ' m²')
-        lines.append(f'| {label} | {asking} | {value} | {beds} / {baths} | {land} | {floor} |')
+        values = {_price(r, True) for r in rows} - {None}
         prices = {_price(r) for r in rows} - {None}
+        gap = 'Not recorded'
+        if len(prices) > 1 or len(values) > 1:
+            gap = 'Conflicting records'
+        elif len(prices) == 1 and len(values) == 1:
+            delta = round(next(iter(values)) - next(iter(prices)), 2)
+            gap = ('+' if delta > 0 else '-' if delta < 0 else '') + _display([abs(delta)], '$')
+        lines.append(f'| {label} | {asking} | {value} | {gap} | {beds} / {baths} | {land} | {floor} |')
+        comps = _display([_number(r.get('comps_used')) for r in rows])
+        note = f'**{address}:** '
+        if comps not in ('Not recorded', 'Conflicting records'):
+            note += f'{comps} recorded valuation comparables; review their sale dates, similarity and outliers. '
+        else:
+            note += 'Comparable-sale support is not verified in these records; inspect the valuation evidence. '
+        if development:
+            flags = {_field(r, 'subdividable', 'is_subdividable') for r in rows} - {None}
+            lots = _display([_number(_field(r, 'extra_lots', 'max_addl_lots')) for r in rows])
+            if flags == {True}:
+                note += f'Subdivision screening flag recorded. Additional lots (modelled): {lots}. '
+            else:
+                note += 'Subdivision eligibility is not consistently confirmed in these records. '
+            note += 'Check zoning, title, access, hazards, services and site-specific costs before relying on the screen.'
+        elif land == 'Not recorded':
+            note += 'Land area is missing; confirm it before judging site suitability.'
+        else:
+            note += 'Confirm condition and title; these can change the apparent value gap.'
+        evidence_notes.append(note)
         floors = {_number(_field(r, 'floor_area_m2', 'floor_m2')) for r in rows} - {None}
         if len(prices) == 1 and len(floors) == 1:
             decision_rows.append((address, next(iter(prices)), next(iter(floors))))
         if len(prices) == 1:
             chart.append({'label': row['address'], 'value': next(iter(prices))})
+    lines += ['', '**Evidence and next checks**', *['- ' + note for note in evidence_notes]]
+    if development:
+        lines += ['', 'Subdivision flags and lot counts are screening estimates, not consent or confirmed feasibility. The value gap above compares the existing property estimate with asking price; it is not development profit.']
     if previous_ids:
         retained = sum(rid in previous_ids for _, rid in selected)
         lines += ['', f'Compared with the previous shortlist: {retained} retained and {len(selected) - retained} new in this selection.']
