@@ -14,7 +14,7 @@ from models import User
 from preferences import assistant_brief
 from assistant import keys, providers, websearch
 from assistant.scope import RENTAL_REPLY, rental_request
-from assistant.shortlist import requested_limit, bounded_dispatch, render_shortlist
+from assistant.shortlist import requested_limit, conversation_limit, bounded_dispatch, render_shortlist
 from assistant.investigation import InvestigationEvidence
 from assistant.sql import SCHEMA
 from assistant.tools import TOOL_SPECS, dispatch
@@ -114,6 +114,12 @@ WHEN TO ASK FOR MORE
   houses across all Auckland…") rather than stalling on trivia.
 
 HOW TO ANSWER
+- Car spaces are parking capacity, not verified garaging. Never label cars as
+  garage spaces without explicit garage evidence. Land area alone does not
+  verify a usable garden or outdoor space. Build year/decade does not establish
+  condition, renovation need, or a statistical renovation-risk ranking. Do not
+  claim the newest home is safest or lowest renovation risk. A stated no-renovation
+  requirement remains unverified unless explicit condition evidence supports it.
 - A requested maximum number of properties applies to the ENTIRE answer: tables,
   prose, links, chart points and suggestions combined. If asked for three, show
   at most three distinct properties. You may say more qualify, but do not name,
@@ -272,7 +278,7 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     messages = [{"role": t.role, "content": t.content} for t in (history or [])]
     messages.append({"role": "user", "content": question})
 
-    limit = requested_limit(question)
+    limit = conversation_limit(question, history)
     evidence = []
     investigation = InvestigationEvidence(question)
     source_dispatch = investigation.wrap(dispatch)
