@@ -171,6 +171,7 @@ def _run_anthropic(
     *, deadline: Any = _UNSET, max_iterations: int = MAX_ITERATIONS,
     on_step: Callable[[str, str], None] | None = None,
     workspace_id: str | None = None,
+    effort: str = "xhigh",
 ) -> Result:
     import anthropic
 
@@ -221,7 +222,7 @@ def _run_anthropic(
             return _timed(client, min(per_call, budget)).messages.create(
                 model=ANTHROPIC_MODEL, max_tokens=MAX_TOKENS, system=system,
                 thinking={"type": "adaptive"},
-                output_config={"effort": "xhigh"},
+                output_config={"effort": effort},
                 tools=send, messages=convo,
             )
 
@@ -393,7 +394,7 @@ def run(provider: str, api_key: str, system: str, messages: list[dict],
         *, deadline: Any = _UNSET,
         max_iterations: int = MAX_ITERATIONS,
         on_step: Callable[[str, str], None] | None = None,
-        workspace_id: str | None = None) -> Result:
+        workspace_id: str | None = None, effort: str = "xhigh") -> Result:
     """Answer one question.
 
     `deadline=None` means take as long as it takes — only correct when nothing
@@ -413,6 +414,7 @@ def run(provider: str, api_key: str, system: str, messages: list[dict],
         # Anthropic only — OpenAI has no such header and would reject the kwarg.
         if provider == "anthropic":
             kw["workspace_id"] = workspace_id
+            kw["effort"] = effort if effort in {"high", "xhigh"} else "xhigh"
         return runner(api_key, system, messages, specs, dispatch, **kw)
     except ImportError as exc:
         # The SDK is in requirements.txt, so this means a deploy installed

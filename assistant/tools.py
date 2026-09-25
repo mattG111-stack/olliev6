@@ -433,11 +433,17 @@ def get_property(property_id: int) -> str:
     """
     from dataclasses import asdict
     from pricing.cashflow import CashflowAssumptions
+    from routers.properties import _active_batch, _hide_bad_data
 
     with SessionLocal() as s:
         p = s.get(PropertyForSale, property_id)
         if not p:
             return f"No listing with id {property_id}."
+        active = _active_batch(s, "for_sale", p.region or "Auckland")
+        if active is None or _hide_bad_data(s.query(PropertyForSale).filter(
+                PropertyForSale.id == property_id,
+                PropertyForSale.import_batch_id == active)).first() is None:
+            return "This listing is not currently available in the visible active records."
         return json.dumps({
             "id": p.id, "apex_url": f"/property/{p.id}", "address": p.address, "suburb": p.suburb,
             "pricing_comparison": _pricing_comparison(p.asking_price, p.fair_value),
