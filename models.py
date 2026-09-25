@@ -99,6 +99,7 @@ class User(Base):
     hunt_min_price: Mapped[float | None] = mapped_column(Float)
     hunt_max_price: Mapped[float | None] = mapped_column(Float)
     hunt_min_beds: Mapped[int | None] = mapped_column(Integer)
+    hunt_brief: Mapped[str | None] = mapped_column(Text)
     # First time they told us anything — never moves again, so the admin page
     # can tell a new answer from a re-confirmed one.
     preferences_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

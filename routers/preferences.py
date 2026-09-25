@@ -40,7 +40,16 @@ PREVIEW_ROWS = 3
 
 
 # ---------- schemas ----------
+class CustomerBrief(BaseModel):
+    must_haves: str = Field(default="", max_length=400)
+    nice_to_haves: str = Field(default="", max_length=400)
+    deal_breakers: str = Field(default="", max_length=400)
+    timing: str = Field(default="", max_length=400)
+    trade_offs: str = Field(default="", max_length=400)
+
+
 class PreferencesIn(BaseModel):
+    brief: CustomerBrief | None = None
     goals: list[str] = Field(default_factory=list)
     suburbs: list[str] = Field(default_factory=list)
     districts: list[str] = Field(default_factory=list)
@@ -50,6 +59,7 @@ class PreferencesIn(BaseModel):
 
 
 class PreferencesOut(BaseModel):
+    brief: dict[str, str] = Field(default_factory=dict)
     goals: list[str]
     suburbs: list[str]
     districts: list[str]
@@ -211,6 +221,7 @@ def put_preferences(
     """Store a stated preference. Saving counts as confirming."""
     prefs.apply(
         user,
+        brief=body.brief.model_dump() if body.brief is not None else None,
         goals=body.goals,
         suburbs=body.suburbs,
         districts=body.districts,
