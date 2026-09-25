@@ -64,3 +64,12 @@ def test_actual_browser_waits_for_javascript_links_and_loading_state():
             with pytest.raises(CollectorUnavailable,match='restriction'):
                 rendered_html(page,'https://homes.co.nz/map',3000,[])
         finally:browser.close()
+
+
+def test_discovery_without_budget_for_details_is_not_empty_success(monkeypatch):
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':['https://homes.co.nz/map']}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',1)
+    class Pages:
+        def get(self,url):return '<a href="/address/auckland/example/1/abc">Property</a>'
+    with pytest.raises(CollectorUnavailable,match='budget exhausted'):
+        collect('homes',kind='sold',transport=Pages())

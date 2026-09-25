@@ -249,6 +249,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                     break
             for target in next_pages(text,url,source):
                 if target not in seen and target not in queue:queue.append(target)
+        if not rows and queue:
+            raise CollectorUnavailable('Collection budget exhausted before any property details were read')
         # Discover search pages first. Detail enrichment must not spend the
         # entire request budget on the first page and starve pagination.
         pending_details = []
