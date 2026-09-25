@@ -24,7 +24,10 @@ def main():
         try:
             text = transport.get(url)
             records = extract(text, source)
-            rows = [canonical(source, kind, u, raw) for u, raw in records.items()]
+            # Detail pages can embed nearby sold comparables. Match the actual
+            # collector's category filter; never reinterpret those as listings.
+            rows = [canonical(source, kind, u, raw) for u, raw in records.items()
+                    if raw.get('_apex_kind', kind) == kind]
             usable = [r for r in rows if r.get('address') and r.get('suburb')]
             result.update(ok=bool(usable), records=len(rows), usable_identity=len(usable),
                           fields_present={field: sum(r.get(field) is not None for r in usable)
