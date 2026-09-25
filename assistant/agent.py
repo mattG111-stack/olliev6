@@ -246,6 +246,11 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     if rental_request(question):
         return providers.Result(text=RENTAL_REPLY)
 
+    from assistant.address_report import address_report
+    checked_address = address_report(question, dispatch, on_step)
+    if checked_address is not None:
+        return checked_address
+
     investigation = InvestigationEvidence(question)
     if investigation.property_id is not None:
         from assistant.record_report import record_report
