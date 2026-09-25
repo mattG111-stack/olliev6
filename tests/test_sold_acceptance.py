@@ -71,3 +71,17 @@ def test_conflicting_valid_sale_is_visible_in_review(db_session,monkeypatch):
     assert db_session.query(PropertySold).count()==0
     run(db_session,monkeypatch,[item])
     assert db_session.query(PortalListing).count()==1
+
+
+def test_different_portal_property_ids_do_not_dispute_an_agreed_sale(db_session,monkeypatch):
+    import json
+    from models import PortalListing
+    first = sale(property_id='oneroof-property-101')
+    second = {**sale(property_id='homes-property-202'), 'source':'homes',
+              'url':'https://homes.co.nz/address/auckland/example/1/abc'}
+    result = run(db_session,monkeypatch,[first,second])
+    assert result['new']==1 and result['quarantined']==0
+    assert db_session.query(PropertySold).one().sale_price==900000
+    evidence=json.loads(db_session.query(PortalListing).one().raw_json)
+    assert {r['property_id'] for r in evidence['source_snapshots']} == {
+        'oneroof-property-101','homes-property-202'}

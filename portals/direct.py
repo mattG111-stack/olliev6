@@ -333,7 +333,9 @@ def merge_records(rows):
         group = (key or (row['source'], row['url']), row['kind'], row.get('sold_date') if row['kind']=='sold' else None)
         grouped.setdefault(group, []).append(row)
     result = []
-    metadata = {'source','url','source_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
+    # Site-local identifiers have no cross-source meaning. Keep each original
+    # ID in source_snapshots, but never turn different portal IDs into a dispute.
+    metadata = {'source','url','source_id','property_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
     for group in grouped.values():
         merged = dict(group[0]); provenance = {}; conflicts = {}
         for row in group:
