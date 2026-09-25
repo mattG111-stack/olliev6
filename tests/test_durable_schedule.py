@@ -37,3 +37,58 @@ def test_unfinished_saved_pass_resumes_without_waiting_a_day(db_session):
     assert run_due(engine,'partial',86400,partial,now=now)
     assert run_due(engine,'partial',86400,partial,now=now+timedelta(minutes=5))
     assert len(calls)==2
+
+
+def test_killed_postgres_worker_rolls_back_and_releases_lock(db_session, tmp_path):
+    """A real process death must not leave a success stamp or lock behind."""
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    from models import AppSetting
+    engine = db_session.get_bind()
+    if engine.dialect.name != 'postgresql':
+        pytest.skip('Requires the isolated PostgreSQL CI database')
+    marker = tmp_path / 'worker-entered'
+    child_code = '''
+import sys, time
+from pathlib import Path
+from db import engine, SessionLocal
+from models import AppSetting
+from portals.schedule import run_due
+def unfinished():
+    with SessionLocal() as db:
+        db.add(AppSetting(key='synthetic.crash.uncommitted', value='must rollback'))
+        db.flush()
+        Path(sys.argv[1]).write_text('entered')
+        time.sleep(60)
+run_due(engine, 'synthetic-hard-kill', 86400, unfinished)
+'''
+    child = subprocess.Popen([sys.executable, '-c', child_code, str(marker)],
+        cwd=Path(__file__).resolve().parents[1], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 15
+        while not marker.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists(), 'Child did not reach its uncommitted transaction'
+        assert not run_due(engine, 'synthetic-hard-kill', 86400, lambda: None)
+        child.kill()
+        child.wait(timeout=5)
+        # The server releases session locks when the killed connection closes.
+        deadline = time.monotonic() + 5
+        calls = []
+        recovered = False
+        while time.monotonic() < deadline:
+            recovered = run_due(engine, 'synthetic-hard-kill', 86400, lambda: calls.append(1))
+            if recovered:
+                break
+            time.sleep(0.05)
+        assert recovered and calls == [1]
+        assert db_session.get(AppSetting, 'synthetic.crash.uncommitted') is None
+        assert not run_due(engine, 'synthetic-hard-kill', 86400, lambda: calls.append(2))
+        assert calls == [1]
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
