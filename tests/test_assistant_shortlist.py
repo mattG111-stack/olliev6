@@ -179,3 +179,35 @@ def test_tradeoff_uses_selected_unambiguous_facts_and_retained_count():
     assert 'not condition or value for money' in out
     rows.append({**rows[1], 'asking_price':700000})
     assert 'price-and-space trade-off' not in render_shortlist('[One](/property/1) [Two](/property/2)', rows, 3)
+
+
+def test_area_words_and_new_search_preserve_requested_count():
+    q = 'New search: Find three current Mount Wellington properties under $1.5 million'
+    assert requested_limit(q) == 3
+    assert requested_limit('Show me three bedroom homes in Mount Wellington') is None
+    assert conversation_limit('Keep my budget the same', [SimpleNamespace(role='user', content=q)]) == 3
+
+
+def test_signed_gaps_are_computed_from_unambiguous_evidence():
+    rows = candidates()[:3]
+    rows[0].update(asking_price=649000, fair_value=901444, comps_used=18)
+    rows[1].update(asking_price=750000, fair_value=700000)
+    rows[2].update(asking_price=700000, fair_value=700000)
+    answer = ' '.join(f'[House](/property/{r["id"]})' for r in rows)
+    out = render_shortlist(answer, rows, 3)
+    assert '+$252,444' in out and '-$50,000' in out and '| $0 |' in out
+    assert '18 recorded valuation comparables' in out
+    assert 'not guaranteed sale prices or profit' in out
+    rows.append({**rows[0], 'fair_value': 1000000})
+    out = render_shortlist(answer, rows, 3)
+    assert '+$252,444' not in out and 'Conflicting records' in out
+
+
+def test_developer_evidence_does_not_invent_consent_or_keep_model_claims():
+    rows = candidates()[:1]
+    rows[0].update(subdividable=True, extra_lots=2, comps_used=8)
+    out = render_shortlist('[House](/property/1) Only one qualifies. Approved for 9 lots. Guaranteed profit.', rows, 3, 'Find three development properties')
+    assert 'Additional lots (modelled): 2' in out
+    assert 'not consent or confirmed feasibility' in out
+    assert 'Approved for 9' not in out and 'Only one qualifies' not in out
+    assert 'site-specific costs' in out
