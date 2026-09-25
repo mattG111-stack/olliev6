@@ -233,7 +233,9 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             fetched += 1
             extracted = page_data.extract(text, source)
             if not extracted and source == 'homes':
-                from portals.rendered import property_links
+                from portals.rendered import property_links, discovery_info
+                coverage=discovery_info(text)
+                if coverage:state['discovery_coverage']=coverage
                 discovered = property_links(text, url)
                 if discovered:
                     for target in discovered:
@@ -303,6 +305,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                 state['last_full_pass_at'] = state['last_saved_at']
         for row in rows.values():
             row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
+            if state.get('discovery_coverage'):
+                row['collection_scope']['discovery_coverage']=state['discovery_coverage']
         return list(rows.values())
     finally:
         if owned:

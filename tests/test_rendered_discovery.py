@@ -73,3 +73,30 @@ def test_discovery_without_budget_for_details_is_not_empty_success(monkeypatch):
         def get(self,url):return '<a href="/address/auckland/example/1/abc">Property</a>'
     with pytest.raises(CollectorUnavailable,match='budget exhausted'):
         collect('homes',kind='sold',transport=Pages())
+
+
+def test_actual_browser_loads_more_homes_results_and_reports_partial_coverage():
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import load_homes_results,discovery_info
+    fixture='''<body>3 properties<div class="drawerContentContainer" style="height:100px;overflow:auto">
+      <div style="height:400px"><a href="/address/auckland/example/1/abc">One</a></div>
+      </div><script>let n=1;const box=document.querySelector('.drawerContentContainer');
+      box.addEventListener('scroll',()=>{if(n<3){n++;box.insertAdjacentHTML('beforeend',
+      '<div style="height:400px"><a href="/address/auckland/example/'+n+'/abc">Next</a></div>');}});
+      </script></body>'''
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page()
+            page.set_content(fixture)
+            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=2)
+            assert discovery_info(html)=={'loaded':2,'total':3,'complete':False}
+            page.close();page=browser.new_page();page.set_content(fixture)
+            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=3)
+            assert discovery_info(html)=={'loaded':3,'total':3,'complete':True}
+        finally:browser.close()
+
+
+def test_coverage_metadata_preserves_unknown_totals():
+    from portals.rendered import discovery_info
+    assert discovery_info('<meta name="apex-homes-coverage" data-loaded="20" data-total="unknown" data-complete="false">')=={'loaded':20,'total':None,'complete':False}

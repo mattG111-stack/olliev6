@@ -5,6 +5,7 @@ must perform its normal robots/access checks before rendering the same URL.
 """
 from urllib.parse import urlsplit, unquote, urljoin
 from html.parser import HTMLParser
+import re
 
 
 def property_links(html, base_url):
@@ -35,7 +36,7 @@ def proxy_options(url):
     return result
 
 
-def render_homes(url, *, proxy=None, timeout_ms=30000):
+def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=3):
     from portals.direct import CollectorUnavailable, validate_url, USER_AGENT, MAX_BYTES
     validate_url(url,'homes')
     try:
@@ -65,12 +66,53 @@ def render_homes(url, *, proxy=None, timeout_ms=30000):
                 response=page.goto(url,wait_until='domcontentloaded',timeout=timeout_ms)
                 if response is None or response.status!=200 or restricted:
                     raise CollectorUnavailable('Homes rendering stopped after an unsuccessful response')
-                return rendered_html(page, url, timeout_ms, restricted)
+                return load_homes_results(page, url, timeout_ms, restricted, max_batches=max_batches)
             finally:browser.close()
     except CollectorUnavailable:raise
     except Exception:
         # Browser exceptions can include proxy credentials and request URLs.
         raise CollectorUnavailable('Homes browser unavailable or page did not finish loading') from None
+
+
+def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
+    """Load bounded public result batches; retain the displayed coverage count."""
+    html=rendered_html(page,url,timeout_ms,restricted)
+    displayed=page.locator('body').inner_text()
+    match=re.search(r'([\d,]+)\s+properties\b',displayed,re.I)
+    total=int(match[1].replace(',','')) if match else None
+    for _ in range(max(0,min(int(max_batches),10)-1)):
+        count=len(property_links(html,url))
+        if total is None or count>=total:break
+        container=page.locator('.drawerContentContainer')
+        if container.count()!=1:break
+        container.evaluate('(el) => { el.scrollTop=el.scrollHeight; }')
+        try:
+            page.wait_for_function("""count =>
+                /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
+                new Set([...document.querySelectorAll('a[href*="/address/auckland/"]')]
+                    .map(a=>a.href.split('?')[0].split('#')[0])).size > count
+            """,arg=count,timeout=min(timeout_ms,10000))
+        except Exception:
+            # An unchanged window is partial coverage, never an empty region.
+            html=rendered_html(page,url,timeout_ms,restricted)
+            break
+        html=rendered_html(page,url,timeout_ms,restricted)
+    count=len(property_links(html,url))
+    complete=total is not None and count>=total
+    return html+f'<meta name="apex-homes-coverage" data-loaded="{count}" data-total="{total if total is not None else "unknown"}" data-complete="{str(complete).lower()}">'
+
+
+def discovery_info(html):
+    info={}
+    class Meta(HTMLParser):
+        def handle_starttag(self,tag,attrs):
+            a=dict(attrs)
+            if tag=='meta' and a.get('name')=='apex-homes-coverage':
+                info.update(loaded=int(a['data-loaded']),
+                    total=int(a['data-total']) if a['data-total'].isdigit() else None,
+                    complete=a.get('data-complete')=='true')
+    Meta().feed(html)
+    return info
 
 
 def rendered_html(page, url, timeout_ms, restricted):
