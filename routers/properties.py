@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 import media
 from db import get_db
 from days_to_sell import observed_days_to_sell
+from age_trends import age_selling_times
 from ingest import sold_batch_ids as live_sold_batch_ids
 from external_estimates import homes_estimate
 from propertyvalue import cross_check, gaps as pv_gaps_fn, missing_fills, pv_lookup
@@ -987,6 +988,7 @@ class SuburbStats(BaseModel):
     # The same window split by bedroom count, so the chart can answer "what is a
     # 3-bed doing here" rather than only "what is the suburb doing".
     by_beds: list[BedSeries] = []
+    age_selling_times: dict | None = None
     median_days: float | None            # median days on market, from sold
     sale_vs_cv: float | None             # median (sold / CV) − 1
     effects: list[MarginalEffect]
@@ -1265,6 +1267,7 @@ def suburb_stats(suburb: str, region: str = "Auckland",
         sales_this_month=len(by_month.get(current_month, [])),
         latest_month=latest_month, current_month=current_month, monthly=monthly,
         by_beds=by_beds,
+        age_selling_times=age_selling_times(rows),
         median_days=median_days, sale_vs_cv=(med_svc - 1.0) if med_svc else None,
         effects=effects, by_method=by_method,
         auction_edge_pp=auction_edge_pp, best_method=best_method,
