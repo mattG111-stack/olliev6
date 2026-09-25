@@ -116,3 +116,17 @@ def test_schema_drift_is_failure_not_empty_success(monkeypatch):
         def get(self,url): return '<html>layout changed</html>'
     with pytest.raises(CollectorUnavailable,match='adapter needs checking'):
         collect('homes',transport=Empty())
+
+
+def test_detail_fills_missing_search_field_without_false_conflict(monkeypatch):
+    search='https://homes.co.nz/search'
+    detail='https://homes.co.nz/address/auckland/example/1'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'for_sale':[search]}}))
+    base={'address':{'street':'1 Example Road','suburb':'Mount Wellington','region':'Auckland'},'bedroom-count':None}
+    monkeypatch.setattr(page_data,'extract',lambda html,source:{detail:{**base, 'bedroom-count':3 if html=='detail' else None}})
+    class Pages:
+        def get(self,url):return 'detail' if url==detail else 'search'
+    results=collect('homes',transport=Pages())
+    assert results[0]['beds']==3
+    assert not results[0]['source_conflicts']
+    assert not merge_records(results)[0].get('price_flag')

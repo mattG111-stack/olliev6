@@ -237,7 +237,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                     enriched = canonical(source, kind, record_url, detail)
                     # Preserve conflict evidence; detail is not automatically truth.
                     conflicts = {k: [row[k], v] for k, v in enriched.items()
-                                 if k in row and row[k] != v and k not in ('raw_source', 'provenance', 'scraped_at')}
+                                 if page_data.present(row.get(k)) and page_data.present(v)
+                                 and row[k] != v and k not in ('raw_source', 'provenance', 'scraped_at')}
                     for key, value in enriched.items():
                         if not page_data.present(row.get(key)):
                             row[key] = value
