@@ -68,3 +68,14 @@ def test_disclosed_history_price_fills_same_dated_undisclosed_sale():
     assert item['sale_history'][1]['salePrice']==650000
     assert len(item['sale_history'][1]['sources'])==2
     assert not item['conflicts']
+
+
+def test_missing_district_can_join_one_exact_property_but_not_ambiguous_or_other_unit():
+    source=rows();source[1].pop('district')
+    merged=merge_records(source)
+    assert len(merged)==1 and merged[0]['district']=='Auckland City'
+    assert 'district' not in source[1]  # Missing source fact stays missing.
+    ambiguous={**source[0],'district':'Other district','url':'https://www.oneroof.co.nz/property/other'}
+    assert len(merge_records([*source,ambiguous]))==3
+    source[1]['address']='2/1 Test Road'
+    assert len(merge_records(source))==2

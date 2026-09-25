@@ -311,14 +311,25 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
 
 
 def merge_records(rows):
-    """Merge exact address+unit+suburb+district only; no fuzzy property joins.
+    """Merge exact address+unit+suburb; require an unambiguous known district.
 
     Same property may have separate sale, rental and dated sold records. Full
     source snapshots survive; missing fields fill and disagreements are retained.
     """
+    rows=list(rows)
+    districts={}
+    for row in rows:
+        key=page_data.match_key(row)
+        if key and key[3]:districts.setdefault((key[0],key[1],key[3]),set()).add(key[2])
     grouped = {}
     for row in rows:
         key = page_data.match_key(row)
+        if key is None and not row.get('district'):
+            # Validate the same exact-address rules without inventing a fact.
+            probe=page_data.match_key({**row,'district':'unknown'})
+            if probe:
+                known=districts.get((probe[0],probe[1],probe[3]),set())
+                if len(known)==1:key=(probe[0],probe[1],next(iter(known)),probe[3])
         group = (key or (row['source'], row['url']), row['kind'], row.get('sold_date') if row['kind']=='sold' else None)
         grouped.setdefault(group, []).append(row)
     result = []
