@@ -40,7 +40,8 @@ def shortlist_context(question, history):
         recent.append(turn)
         if turn.role == 'user' and re.search(r'\b(new search|start over|forget (?:that|the|my))\b', turn.content, re.I):
             break
-    previous = next((t.content for t in recent if t.role == 'assistant'), '')
+    previous = next((t.content for t in recent if t.role == 'assistant'
+                     and re.search(r'\]\(/property/\d+\)', t.content)), '')
     ids = {int(m) for m in re.findall(r'\]\(/property/(\d+)\)', previous)}
     context = '\n'.join(t.content for t in reversed(recent) if t.role == 'user')
     return context + '\n' + question, ids

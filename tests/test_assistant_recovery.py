@@ -11,7 +11,7 @@ def test_tool_money_preserves_recorded_dollars(value, expected):
 def test_property_price_and_comparison_use_same_record(db_session):
     batch = ImportBatch(batch_type='for_sale', filename='precision.csv', is_active=True)
     db_session.add(batch); db_session.flush()
-    p = PropertyForSale(import_batch_id=batch.id, address='Precision Road', asking_price=2100000, fair_value=2964963)
+    p = PropertyForSale(import_batch_id=batch.id, floor_area_m2=100, address='Precision Road', asking_price=2100000, fair_value=2964963)
     db_session.add(p); db_session.commit()
     data = json.loads(get_property(p.id))
     assert data['our_value'] == '$2,964,963'

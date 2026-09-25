@@ -30,7 +30,7 @@ def test_above_value_asking_is_a_negative_discount():
 def test_property_tool_returns_link_prices_and_cost_assumptions(db_session):
     batch = ImportBatch(batch_type='for_sale', filename='test.csv', is_active=True)
     db_session.add(batch); db_session.flush()
-    p = PropertyForSale(import_batch_id=batch.id, address='Test Road',
+    p = PropertyForSale(import_batch_id=batch.id, floor_area_m2=100, address='Test Road',
                         asking_price=749000, fair_value=881000, best_net_gain=850000)
     db_session.add(p); db_session.commit()
     data = json.loads(get_property(p.id))
