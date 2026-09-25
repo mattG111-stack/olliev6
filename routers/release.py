@@ -969,14 +969,12 @@ class PortalStatus(BaseModel):
 
 @router.get("/release/portals/status", response_model=PortalStatus)
 def portals_status(_: User = Depends(require_admin)) -> PortalStatus:
-    """Trade Me, OneRoof and realestate.co.nz render their figures in the
-    browser, so they are reached through Apify and need a token. Without one the
-    button still works — it just asks the two that can be read directly."""
-    from portals.apify import configured
+    """Configured direct sources; configuration is not a successful fetch."""
+    from portals.direct import configured
 
     ready = configured()
-    direct = ["corelogic", "homes"]
-    browser = ["oneroof", "trademe", "realestate"]
+    direct = ["corelogic"]
+    browser = ["oneroof", "trademe", "homes"]
     return PortalStatus(
         sources=direct + (browser if ready else []),
         needs_browser=browser,
@@ -1212,12 +1210,12 @@ def sweep_new_listings(hours: int = 24, cap: int = 300,
     `hours` is there for catching up after an outage: a missed day is a day of
     listings nobody saw.
     """
-    from portals.apify import token
+    from portals.direct import configured
 
-    if not token(db):
+    if not configured():
         raise HTTPException(
             status_code=400,
-            detail="No Apify token yet — add one in the Data connection panel.")
+            detail="Direct scraper is disabled or awaiting proxy and source configuration.")
     # No batch: a sweep is looking for properties that are not in one yet. The
     # column is a NULLABLE foreign key, so None is the only correct value — 0
     # would violate the constraint on Postgres and pass on SQLite, which is the
@@ -1451,12 +1449,12 @@ def sweep_sold_endpoint(cap: int = 1000, admin: User = Depends(require_admin),
                         db: Session = Depends(get_db)) -> StageStarted:
     """Ask the portals what has sold. A job, for the same reason as above —
     this one asks for a thousand rows and takes longer, not less."""
-    from portals.apify import token
+    from portals.direct import configured
 
-    if not token(db):
+    if not configured():
         raise HTTPException(
             status_code=400,
-            detail="No Apify token yet — add one in the Data connection panel.")
+            detail="Direct scraper is disabled or awaiting proxy and source configuration.")
     # No batch: a sweep is looking for properties that are not in one yet. The
     # column is a NULLABLE foreign key, so None is the only correct value — 0
     # would violate the constraint on Postgres and pass on SQLite, which is the
@@ -1471,96 +1469,24 @@ def sweep_sold_endpoint(cap: int = 1000, admin: User = Depends(require_admin),
 
 
 # ---- the Apify connection ----------------------------------------------------
-class ApifyStatus(BaseModel):
-    configured: bool
-    # "environment" (set in Railway) or "panel" (typed in here). Worth saying,
-    # because the environment wins and someone changing the wrong one and
-    # seeing nothing happen is a bad afternoon.
-    source: str | None = None
-    # Never the token. Enough to recognise which one is saved.
-    last_four: str | None = None
-    ok: bool | None = None
-    message: str | None = None
-    # True when the environment holds it, so the form says so rather than
-    # letting someone overwrite a value that will not be used.
-    locked: bool = False
-
-
 class ApifyTokenIn(BaseModel):
     token: str
 
 
-@router.get("/release/apify", response_model=ApifyStatus)
-def apify_status(test: bool = False, admin: User = Depends(require_admin),
-                 db: Session = Depends(get_db)) -> ApifyStatus:
-    """Is there a token, where did it come from, and does it work?
-
-    `test=true` asks Apify. That is a real network call, so it is not what a
-    page load does — the panel tests on demand and when a token is saved.
-    """
-    import os
-
-    from models import APIFY_TOKEN
-    from portals.apify import check, token
-    from settings_store import get as get_setting
-
-    from_env = bool((os.getenv("APIFY_TOKEN") or "").strip())
-    stored = get_setting(db, APIFY_TOKEN)
-    tok = token(db)
-
-    out = ApifyStatus(
-        configured=bool(tok),
-        source=("environment" if from_env else "panel" if stored else None),
-        last_four=(tok[-4:] if tok and len(tok) >= 4 else None),
-        locked=from_env,
-    )
-    if test and tok:
-        out.ok, out.message = check(tok)
-    elif not tok:
-        out.ok, out.message = False, "No Apify token yet"
-    return out
+@router.get("/release/scraper")
+def scraper_status(admin: User = Depends(require_admin)):
+    from portals.direct import status
+    return status()
 
 
-@router.post("/release/apify", response_model=ApifyStatus)
-def save_apify_token(body: ApifyTokenIn, admin: User = Depends(require_admin),
-                     db: Session = Depends(get_db)) -> ApifyStatus:
-    """Save a token, after checking it works.
+@router.get("/release/apify")
+def apify_status(test: bool = False, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    raise HTTPException(status_code=410, detail="Apify removed. Use Data connection for direct scraper status.")
 
-    Tested BEFORE it is stored. A token that does not work is not worth keeping,
-    and the failure people actually hit is a real token on an account with no
-    credit — which looks exactly like a working one until the first sweep comes
-    back with nothing.
 
-    Encrypted at rest with the same key as the assistant's, because a token
-    typed into a browser must not be readable by anyone who gets a look at the
-    database. Send an empty string to remove it.
-    """
-    from assistant import keys
-    from models import APIFY_TOKEN
-    from portals.apify import check
-    from settings_store import SettingsUnavailable
-    from settings_store import put as put_setting
-
-    tok = (body.token or "").strip()
-    if not tok:
-        try:
-            put_setting(db, APIFY_TOKEN, None, by=admin.id)
-        except SettingsUnavailable as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        return ApifyStatus(configured=False, ok=False, message="Token removed")
-
-    ok, message = check(tok)
-    if not ok:
-        # Refused rather than saved. Storing a token we already know is dead
-        # only moves the discovery to the first sweep.
-        return ApifyStatus(configured=False, ok=False, message=message)
-
-    try:
-        put_setting(db, APIFY_TOKEN, keys.encrypt(tok), by=admin.id)
-    except SettingsUnavailable as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    return ApifyStatus(configured=True, source="panel", last_four=tok[-4:],
-                       ok=True, message=message)
+@router.post("/release/apify")
+def save_apify_token(body: ApifyTokenIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    raise HTTPException(status_code=410, detail="Apify removed. No token was saved or changed.")
 
 
 # ---- the trained valuation ---------------------------------------------------

@@ -1,0 +1,40 @@
+name: Scraper database validation
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: apex_test
+          POSTGRES_PASSWORD: synthetic_test_only
+          POSTGRES_DB: apex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apex_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://apex_test:synthetic_test_only@localhost:5432/apex_test
+      JWT_SECRET: synthetic-ci-only-not-production
+      SCRAPER_ENABLED: 'false'
+      PORTALS_DAILY: 'false'
+      SCRAPER_DAILY_PRICING: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Database, rollback, scheduling and review checks
+        run: >-
+          python -m pytest -o addopts='' -q
+          tests/test_sold_acceptance.py tests/test_daily_pricing.py
+          tests/test_durable_schedule.py tests/test_collection_storage.py
+          tests/test_direct_collector.py tests/test_public_adapters.py
+          tests/test_collection_pagination.py tests/test_new_listings.py

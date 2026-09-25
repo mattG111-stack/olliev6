@@ -1,39 +1,4 @@
-"""New listings, daily, from the portals — before the weekly file reaches them.
-
-The weekly file is a snapshot. A home listed on Tuesday appears in it the
-following Monday, and for a deal-finding product that is the whole game: an
-underpriced listing is under offer inside a week, so six days late is the
-difference between seeing it and reading about it.
-
-About a hundred new listings a day across Auckland, which is what makes this
-affordable. The two sources, and why each is asked the way it is:
-
-  realestate.co.nz  Its actor takes `publication_date=last_24_hours`, which
-                    filters SERVER-SIDE — so a daily run pays for the hundred
-                    new listings and not the twelve thousand standing ones.
-                    About $3 a month. `get_valuations` is what turns on the
-                    council CV; it defaults to false and is easy to forget.
-
-  oneroof           No date filter, so it is asked for the newest page of
-                    listings and capped. It earns its place by carrying the
-                    RATING VALUATION and the land/improvement split — the two
-                    numbers the land-only-CV rule needs, which realestate does
-                    not publish. About $43 a month at a 300-row daily cap.
-
-  trademe           Not swept. Its actor returns no valuation of any kind, so a
-                    listing from it would arrive with no CV, and a CV is what
-                    everything downstream is anchored to.
-
-Nothing goes live by itself. Each new listing lands as a PortalListing for a
-person to approve, because this is a claim scraped off someone else's page and
-the moment it becomes a row in the live batch it is indistinguishable from data
-we stand behind.
-
-WHAT NO PORTAL CARRIES: `zoning` and `type_of_title`. Those are council and LINZ
-records rather than listing data, and both gate the subdivision engine. An
-approved row prices normally and reads as "not subdividable" until the weekly
-file catches up — a known gap, not a verdict about the property.
-"""
+"""Public-page collection into Review & publish. Legacy actor payload readers remain only for historical record replay and fixture compatibility; active sweeps use portals.direct."""
 
 from __future__ import annotations
 
@@ -48,7 +13,8 @@ from portals import ESTIMATE_COLUMNS
 from pricing.pool import text_says_pool
 from models import BatchType, ImportBatch, PortalListing, PropertyForSale
 from trademe import address_key
-from portals.apify import ApifyUnavailable, num, pick, run_actor
+from portals.legacy_fields import num, pick
+from portals.direct import CollectorUnavailable
 from portals.sources import ACTORS
 
 # OneRoof, on the actor that carries the council record IN FULL — the rating
@@ -60,8 +26,8 @@ LISTING_ACTORS = dict(ACTORS, oneroof="fatihtahta/oneroof-nz-scraper")
 
 log = logging.getLogger(__name__)
 
-# Swept for new listings. Trade Me is absent on purpose — see the note above.
-NEW_LISTING_SOURCES = ("realestate", "oneroof")
+# User-selected sources. realestate.co.nz is excluded from active collection.
+NEW_LISTING_SOURCES = ("oneroof", "trademe", "homes")
 
 # How many rows a single daily sweep will accept from one portal. A hundred a
 # day is the observed rate; three hundred is headroom for a busy Tuesday and a
@@ -99,7 +65,7 @@ ONEROOF_SOLD_URL = (
 # newest-first and capped. The cap is the only thing between a weekly run and
 # every sale ever recorded, so it is generous but real.
 WEEKLY_SOLD_CAP = 1000
-SOLD_SOURCES = ("realestate", "oneroof")
+SOLD_SOURCES = ("oneroof", "trademe", "homes")
 
 
 def _sold_payload(source: str, *, cap: int = WEEKLY_SOLD_CAP) -> dict:
@@ -333,6 +299,24 @@ def to_listing(source: str, item: dict, *, kind: str = "for_sale") -> dict | Non
     already hold the property, and a listing we cannot deduplicate would arrive
     again every single day.
     """
+    if item.get('_apex_direct') and kind not in ('for_sale', 'sold'):
+        raise ValueError('Rental collection is not connected to sale publication')
+    if item.get('_apex_direct'):
+        # Unmapped fields, raw snapshots and per-field provenance remain intact.
+        allowed = set(PortalListing.__table__.columns.keys()) - {'id','status','created_at','reviewed_at','reviewed_by_id','raw_json','address_key'}
+        row = {k:v for k,v in item.items() if k in allowed}
+        if not row.get('address') or not row.get('suburb'):
+            return None
+        row['address_key'] = address_key(row['address'], row['suburb'])
+        row['kind'] = kind
+        if kind == 'sold' and (not row.get('sale_price') or not row.get('sold_date')):
+            return None
+        row['raw_json'] = json.dumps(item, ensure_ascii=False)
+        if row.get('source_id') is not None: row['source_id'] = str(row['source_id'])
+        if row.get('building_age') is not None: row['building_age'] = str(row['building_age'])
+        row['image_urls'], row['image_count'] = _gallery(item.get('images'))
+        row['image_url'] = _first_url(item.get('images'))
+        return row
     reader = _READERS.get(source)
     if reader is None or not isinstance(item, dict):
         return None
@@ -367,12 +351,16 @@ def fetch(source: str, *, hours: int = 24, cap: int = DAILY_CAP,
     # The session is threaded through so a token typed into the admin panel
     # runs, not only one set in the environment. The test doubles take three
     # arguments, so the session is closed over rather than added to the call.
-    call = runner or (lambda a, pl, limit=None: run_actor(a, pl, limit=limit, db=db))
+    if runner is None:
+        from portals.direct import collect
+        return [r for item in collect(source, kind=kind, cap=cap)
+                if (r := to_listing(source, item, kind=kind)) is not None]
+    call = runner
     payload = (_sold_payload(source, cap=cap) if kind == "sold"
                else _payload(source, hours=hours, cap=cap))
     try:
         items = call(LISTING_ACTORS[source], payload, limit=cap)
-    except ApifyUnavailable as e:
+    except CollectorUnavailable as e:
         log.info("%s new-listing sweep unavailable: %s", source, e)
         return []
     except Exception as e:                        # noqa: BLE001
@@ -485,7 +473,7 @@ def _live_keys(db: Session) -> set[str]:
     return {k for k in (address_key(a, s) for a, s in rows) if k}
 
 
-def record(db: Session, rows: list[dict]) -> tuple[int, int]:
+def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None) -> tuple[int, int]:
     """Store what the sweep found. Returns (new, skipped).
 
     Skipped means one of two things, and both are the point: we already have the
@@ -512,17 +500,36 @@ def record(db: Session, rows: list[dict]) -> tuple[int, int]:
                           PortalListing.sold_date).all()
     }
 
+    pending = {}
+    if refresh_pending:
+        for existing in db.query(PortalListing).filter(PortalListing.status == 'pending').all():
+            existing_key = _sale_key({'address_key':existing.address_key,'sold_date':existing.sold_date}) if existing.kind=='sold' else existing.address_key
+            pending[(existing.source,existing.kind,existing_key)] = existing
+    protected = {'id','status','created_at','decided_at','decided_by_id','property_id'}
     new = skipped = 0
     for row in rows:
         # A listing is one per address; a SALE is one per address per month,
         # because a house genuinely sells more than once and a 2019 sale must
         # not stop us recording its 2026 one.
         key = (_sale_key(row) if row["kind"] == "sold" else row["address_key"])
+        old = pending.get((row['source'],row['kind'],key))
+        if old is not None and key not in have:
+            # Refresh pending evidence only. Approved/rejected rows retain the
+            # human decision; every incoming snapshot is stored separately.
+            if row['kind']=='for_sale':
+                old.price_numeric=row.get('price_numeric')
+            old.price_flag=row.get('price_flag') or (_price_flag(db,row) if row['kind']=='sold' else None)
+            for field,value in row.items():
+                if field not in protected:
+                    setattr(old,field,value)
+            if stats is not None:stats['refreshed']=stats.get('refreshed',0)+1
+            skipped += 1
+            continue
         if key in have or (row["source"], row["kind"], key) in seen:
             skipped += 1
             continue
         if row["kind"] == "sold":
-            row["price_flag"] = _price_flag(db, row)
+            row["price_flag"] = row.get('price_flag') or _price_flag(db, row)
         db.add(PortalListing(**row, status="pending"))
         seen.add((row["source"], row["kind"], key))
         new += 1
@@ -568,6 +575,9 @@ def _sold_keys(db: Session) -> set[str]:
 def sweep(db: Session, *, sources=NEW_LISTING_SOURCES, hours: int = 24,
           cap: int = DAILY_CAP, kind: str = "for_sale", runner=None) -> dict:
     """One pass over every portal. Returns a per-source summary."""
+    if runner is None:
+        from portals.storage import collect_and_stage
+        return collect_and_stage(db,sources=sources,kind=kind,cap=cap)
     out: dict[str, dict] = {}
     for source in sources:
         rows = fetch(source, hours=hours, cap=cap, kind=kind, runner=runner,

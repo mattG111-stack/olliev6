@@ -1,0 +1,56 @@
+import json
+import pytest
+from models import PortalCollectionRun, PortalObservation, PortalListing, PropertyForSale, PropertySold
+from portals.storage import collect_and_stage
+from portals.direct import CollectorUnavailable
+
+
+def sample(**values):
+    return dict(source='oneroof',url='https://www.oneroof.co.nz/property/example',kind='for_sale',
+        address='25 Example Road',suburb='Example',district='Auckland City',region='Auckland',
+        _apex_direct=True,scraped_at='2026-09-25T10:00:00Z',raw_source={'extra':'retained'},**values)
+
+
+def test_repeated_collection_keeps_evidence_and_refreshes_only_pending(db_session,monkeypatch):
+    current=sample(price_numeric=900000)
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[current])
+    def run():return collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)['merged']
+    assert run()['new']==1
+    current['price_numeric']=850000
+    assert run()['refreshed']==1
+    pending=db_session.query(PortalListing).one()
+    assert pending.price_numeric==850000 and pending.status=='pending'
+    current.pop('price_numeric');current['price_display']='By negotiation'
+    run()
+    assert pending.price_numeric is None
+    pending.status='rejected';db_session.commit()
+    current['price_numeric']=800000
+    assert run()['refreshed']==0
+    assert pending.status=='rejected' and pending.price_numeric is None
+    assert db_session.query(PortalObservation).count()==4
+    first=db_session.query(PortalObservation).order_by(PortalObservation.id).first()
+    assert json.loads(first.payload_json)['price_numeric']==900000
+    assert db_session.query(PropertyForSale).count()==0
+    assert db_session.query(PortalCollectionRun).filter_by(status='complete').count()==4
+
+
+def test_failure_keeps_completed_source_evidence_but_stages_nothing(db_session,monkeypatch):
+    def collect(source,**kw):
+        if source=='homes':raise CollectorUnavailable('Example failure with secret that must not be stored')
+        return [sample(price_numeric=900000)]
+    monkeypatch.setattr('portals.direct.collect',collect)
+    with pytest.raises(CollectorUnavailable):collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
+    run=db_session.query(PortalCollectionRun).one()
+    assert run.status=='failed' and run.error_type=='CollectorUnavailable'
+    assert 'secret' not in (run.summary_json or '')
+    assert db_session.query(PortalObservation).count()==1
+    assert db_session.query(PortalListing).count()==0
+
+
+def test_undisclosed_sold_price_stored_as_evidence_not_comparable(db_session,monkeypatch):
+    row={**sample(),'kind':'sold','sold_date':'2026-09-01','price_display':'TBC'}
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[row])
+    result=collect_and_stage(db_session,sources=['oneroof'],kind='sold',cap=5)['merged']
+    assert result['excluded']==1 and result['new']==0
+    assert db_session.query(PortalObservation).count()==1
+    assert db_session.query(PropertySold).count()==0

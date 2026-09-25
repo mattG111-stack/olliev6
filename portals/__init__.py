@@ -1,38 +1,4 @@
-"""The portals we ask about a property, behind one shape.
-
-After the deals are worked out there are a few dozen keepers a week, and for
-each one there are public pages that know things we do not: a floor area we are
-missing, a land area, a council valuation, and each portal's own estimate of
-what the place is worth.
-
-Every source answers in the same shape — a PortalResult — so the runner does not
-care which one it is talking to, and adding a fifth is one module rather than a
-change everywhere. What a result may do is deliberately narrow:
-
-  fill      a field we are MISSING. Never an overwrite. Our own feed carries
-            things no portal has, and a value we already hold is not improved by
-            a second opinion about it.
-  estimate  that portal's own figure, kept in that portal's own columns and
-            shown as theirs. Never an input to our valuation, our margin, our
-            buy price or a deal flag — see the note in trademe.py for what
-            happens when a portal's "estimate" turns out to be the sale price
-            handed back.
-
-Sources, and how each is reached:
-
-  corelogic     propertyvalue.co.nz, fetched directly. Already in use.
-  homes         homes.co.nz, fetched directly. Its estimate sits in the page
-                JSON, so no browser is needed.
-  oneroof       via Apify.
-  trademe       via Apify.
-  realestate    via Apify.
-
-The last three render their figures client-side, which means a headless browser.
-Running one inside the API container for thirty lookups a week is the wrong
-trade — it is a large dependency, a large memory footprint, and a scraper to
-maintain against three sites that change without telling us. Apify runs the
-browser, and at this volume it costs cents a week.
-"""
+"""Portal evidence contracts. Missing facts may fill blanks after review; each external valuation stays separate from Apex pricing."""
 
 from __future__ import annotations
 
