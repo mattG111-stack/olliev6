@@ -291,7 +291,12 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     )
 
     if limit:
-        result.text = render_shortlist(result.text, evidence, limit, question)
+        previous_ids = None
+        if requested_limit(question) is None:
+            import re
+            previous = next((t.content for t in reversed(history or []) if t.role == "assistant"), "")
+            previous_ids = {int(m) for m in re.findall(r'\]\(/property/(\d+)\)', previous)}
+        result.text = render_shortlist(result.text, evidence, limit, question, previous_ids)
     else:
         result.text = investigation.link_answer(result.text)
     return result
