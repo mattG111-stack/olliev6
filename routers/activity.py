@@ -86,3 +86,76 @@ def record_page_view(body: PageViewIn,
     except Exception:
         db.rollback()
     return Response(status_code=204)
+
+
+# Optional property memory has its own consent and per-user data boundary.
+from datetime import datetime, timedelta, timezone
+from fastapi import HTTPException
+from interest_memory import InterestMemorySetting, PropertyInterest, memory_summary
+from security import require_active
+from models import PropertyForSale
+
+
+class MemorySettingIn(BaseModel):
+    enabled: bool
+
+
+class PropertyViewIn(BaseModel):
+    property_id: int = Field(gt=0)
+
+
+@router.get('/interests')
+def get_interests(me: User = Depends(require_active), db: Session = Depends(get_db)):
+    return memory_summary(db, me.id)
+
+
+@router.put('/interests')
+def set_interests(body: MemorySettingIn, me: User = Depends(require_active), db: Session = Depends(get_db)):
+    setting = db.query(InterestMemorySetting).filter_by(user_id=me.id).with_for_update().first()
+    if setting is None:
+        setting = InterestMemorySetting(user_id=me.id)
+        db.add(setting)
+    setting.enabled = body.enabled
+    if not body.enabled:
+        db.query(PropertyInterest).filter_by(user_id=me.id).delete()
+    db.commit()
+    return memory_summary(db, me.id)
+
+
+@router.delete('/interests', status_code=204, response_class=Response)
+def clear_interests(me: User = Depends(require_active), db: Session = Depends(get_db)):
+    # Serialize against incoming views, so a view cannot restore cleared data mid-delete.
+    db.query(InterestMemorySetting).filter_by(user_id=me.id).with_for_update().first()
+    db.query(PropertyInterest).filter_by(user_id=me.id).delete()
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post('/property', status_code=204, response_class=Response)
+def record_property_interest(body: PropertyViewIn, me: User = Depends(require_active), db: Session = Depends(get_db)):
+    setting = db.query(InterestMemorySetting).filter_by(user_id=me.id).with_for_update().first()
+    if not setting or not setting.enabled:
+        return Response(status_code=204)
+    from routers.properties import _active_batch, _hide_bad_data
+    batch = _active_batch(db, 'for_sale', 'Auckland')
+    p = _hide_bad_data(db.query(PropertyForSale).filter(
+        PropertyForSale.id == body.property_id, PropertyForSale.import_batch_id == batch)).first() if batch else None
+    if p is None:
+        raise HTTPException(status_code=404, detail='Property unavailable')
+    now = datetime.now(timezone.utc)
+    row = db.get(PropertyInterest, (me.id, p.id))
+    if row is None:
+        row = PropertyInterest(user_id=me.id, property_id=p.id)
+        db.add(row)
+    row.suburb, row.last_viewed = p.suburb, now
+    db.flush()
+    db.query(PropertyInterest).filter(PropertyInterest.user_id == me.id,
+        PropertyInterest.last_viewed < now - timedelta(days=30)).delete()
+    # Bounded history; repeated views of the same record do not inflate interest.
+    old_ids = [r.property_id for r in db.query(PropertyInterest).filter_by(user_id=me.id)
+               .order_by(PropertyInterest.last_viewed.desc(), PropertyInterest.property_id.desc()).offset(100)]
+    if old_ids:
+        db.query(PropertyInterest).filter(PropertyInterest.user_id == me.id,
+                                         PropertyInterest.property_id.in_(old_ids)).delete()
+    db.commit()
+    return Response(status_code=204)
