@@ -1609,3 +1609,6 @@ class RunEvent(Base):
     __table_args__ = (
         Index("ix_run_event_batch_stage", "batch_id", "stage", "at"),
     )
+
+# Register opt-in interest tables for the existing create_all bootstrap.
+from interest_memory import InterestMemorySetting, PropertyInterest  # noqa: E402,F401
