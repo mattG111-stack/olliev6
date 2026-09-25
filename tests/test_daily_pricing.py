@@ -1,8 +1,33 @@
 import pytest
-from test_reprice_memory import _batches
-from models import PropertyForSale, ImportBatch
+from models import PropertyForSale, PropertySold, ImportBatch, BatchType
 from portals.daily_pricing import reprice_live
 from reprice import _sold_df
+
+
+def _batches(db, n_listings: int, n_sold: int = 12):
+    fs = ImportBatch(batch_type=BatchType.FOR_SALE.value, region="Auckland",
+                     filename="week.xlsx", is_active=True, status="staged")
+    sold = ImportBatch(batch_type=BatchType.SOLD.value, region="Auckland",
+                       filename="sold.xlsx", is_active=True, status="published")
+    db.add_all([fs, sold])
+    db.flush()
+    for i in range(n_listings):
+        db.add(PropertyForSale(
+            import_batch_id=fs.id, address=f"{i} Test Road", suburb="Papakura",
+            district="Papakura", property_type="House", beds=3, baths=1,
+            floor_area_m2=140.0 + i, land_area_m2=600.0, cv_numeric=900_000,
+            land_value_numeric=500_000, improvement_value_numeric=400_000,
+            asking_price=950_000, type_of_title="Freehold"))
+    for i in range(n_sold):
+        db.add(PropertySold(
+            import_batch_id=sold.id, address=f"{i} Sold Street", suburb="Papakura",
+            district="Papakura", property_type="House", beds=3, baths=1,
+            floor_area_m2=140.0 + i, land_area_m2=600.0, cv_numeric=880_000,
+            sale_price=900_000 + i * 1000, sold_date="2026-06-01",
+            type_of_title="Freehold"))
+    db.commit()
+    return fs, sold
+
 
 
 def test_daily_price_failure_rolls_back_previously_flushed_chunks(db_session,monkeypatch):
