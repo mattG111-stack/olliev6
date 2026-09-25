@@ -59,3 +59,12 @@ def test_disputed_history_is_not_presented_as_an_agreed_transaction():
     apply_to_property(prop,json.dumps(item))
     assert json.loads(prop.sale_history_json)==[{'saleDate':'2022-03-01','salePrice':850000}]
     assert len(item['sale_history'])==3  # Full conflicting evidence remains.
+
+
+def test_disclosed_history_price_fills_same_dated_undisclosed_sale():
+    source=rows();source[0]['sale_history'][0]['salePrice']=None
+    item=merge_records(source)[0]
+    assert len(item['sale_history'])==2
+    assert item['sale_history'][1]['salePrice']==650000
+    assert len(item['sale_history'][1]['sources'])==2
+    assert not item['conflicts']

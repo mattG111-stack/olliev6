@@ -28,6 +28,13 @@ def history(rows):
             origins=sale.get('sources') or [{'source':row.get('source'),'url':row.get('url')}]
             for origin in origins:
                 if origin not in target['sources']:target['sources'].append(origin)
+    for when in {key[0] for key in entries}:
+        unknown=entries.get((when,None))
+        known=[entry for (day,price),entry in entries.items() if day==when and price is not None]
+        if unknown and len(known)==1:
+            for origin in unknown['sources']:
+                if origin not in known[0]['sources']:known[0]['sources'].append(origin)
+            del entries[(when,None)]
     return sorted(entries.values(),key=lambda x:x['saleDate'],reverse=True)
 
 
