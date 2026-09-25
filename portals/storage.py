@@ -4,6 +4,42 @@ from datetime import datetime, timezone
 from models import PortalCollectionRun, PortalObservation
 
 
+def with_pending_evidence(db, collected):
+    """Join later-source facts to pending review evidence, never live records.
+
+    Replace a source's older snapshot when that source is observed again.
+    Retain other sources for the conservative identity/conflict merger.
+    """
+    from models import PortalListing
+    from portals.page_data import match_key
+    from trademe import address_key
+    if not collected:
+        return collected
+    def candidate(row):
+        key=match_key({**row,'district':row.get('district') or 'unknown'})
+        return (key[0],key[1],key[3]) if key and key[3] else None
+    targets={key for row in collected if (key:=candidate(row))}
+    keys={address_key(row.get('address'),row.get('suburb')) for row in collected}
+    current={(row['source'],row['url']):row for row in collected}
+    combined=[];seen=set()
+    prior=(db.query(PortalListing).filter(PortalListing.kind=='for_sale',
+        PortalListing.status=='pending',PortalListing.address_key.in_(keys))
+        .order_by(PortalListing.id.desc()))
+    for pending in prior:
+        try:data=json.loads(pending.raw_json or '{}')
+        except (ValueError,TypeError):continue
+        if not isinstance(data,dict) or not data.get('_apex_direct'):continue
+        snapshots=data.get('source_snapshots') or [data]
+        for row in snapshots:
+            if not isinstance(row,dict) or row.get('kind')!='for_sale' or candidate(row) not in targets:
+                continue
+            identity=(row.get('source'),row.get('url'))
+            if not all(identity) or identity in seen:continue
+            combined.append(current.pop(identity,row));seen.add(identity)
+    combined.extend(current.values())
+    return combined
+
+
 def collect_and_stage(db, *, sources, kind, cap):
     from portals.direct import collect, merge_records
     from portals.listings import to_listing, record
@@ -27,7 +63,9 @@ def collect_and_stage(db, *, sources, kind, cap):
             summary[source]={'observed':len(rows)}
             run.summary_json=json.dumps(summary)
             db.commit()  # Finished sources survive a later source failure.
-        merged=merge_records(collected)
+        # A Homes detail may arrive in a later bounded pass than OneRoof's
+        # search result. Preserve that pending evidence across run boundaries.
+        merged=merge_records(with_pending_evidence(db,collected) if kind=='for_sale' else collected)
         if kind=='sold':
             from portals.sold_acceptance import accept
             result=accept(db,merged)

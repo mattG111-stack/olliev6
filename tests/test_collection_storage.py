@@ -129,3 +129,52 @@ def test_partial_resume_does_not_restart_already_finished_source(db_session,monk
     # Once the whole pass completes, the next scheduled pass checks both again.
     run()
     assert calls[-2:]==['oneroof','homes']
+
+
+def test_later_source_enriches_same_pending_listing_across_runs(db_session,monkeypatch):
+    first=sample(price_numeric=900000,beds=3)
+    second={**sample(price_numeric=900000,floor_area_m2=140),'source':'homes',
+            'url':'https://homes.co.nz/address/auckland/example/25/abc'}
+    monkeypatch.setattr('portals.direct.collect',lambda source,**kw:[first if source=='oneroof' else second])
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    result=collect_and_stage(db_session,sources=['homes'],kind='for_sale',cap=5)['merged']
+    pending=db_session.query(PortalListing).all()
+    assert len(pending)==1
+    assert result['refreshed']==1 and result['new']==0
+    assert pending[0].beds==3 and pending[0].floor_area_m2==140
+    assert pending[0].source=='oneroof' and pending[0].status=='pending'
+    evidence=json.loads(pending[0].raw_json)
+    assert {r['source'] for r in evidence['source_snapshots']}=={'oneroof','homes'}
+    assert db_session.query(PropertyForSale).count()==0
+    assert db_session.query(PortalObservation).count()==2
+
+
+def test_cross_run_source_refresh_replaces_its_own_old_price(db_session,monkeypatch):
+    first=sample(price_numeric=900000,beds=3)
+    second={**sample(floor_area_m2=140),'source':'homes',
+            'url':'https://homes.co.nz/address/auckland/example/25/abc'}
+    monkeypatch.setattr('portals.direct.collect',lambda source,**kw:[first if source=='oneroof' else second])
+    for source in ('oneroof','homes'):
+        collect_and_stage(db_session,sources=[source],kind='for_sale',cap=5)
+    first['price_numeric']=850000
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    row=db_session.query(PortalListing).one()
+    assert row.price_numeric==850000 and row.floor_area_m2==140
+    evidence=json.loads(row.raw_json)
+    assert 'price_numeric' not in evidence['conflicts']
+    assert len(evidence['source_snapshots'])==2
+    assert db_session.query(PortalObservation).count()==3
+
+
+@pytest.mark.parametrize('change',[{'address':'2/25 Example Road'},
+                                  {'district':'Other district'},
+                                  {'region':'Other region'}])
+def test_cross_run_enrichment_does_not_join_other_property(db_session,monkeypatch,change):
+    first=sample(price_numeric=900000,beds=3)
+    second={**sample(floor_area_m2=140),'source':'homes',
+            'url':'https://homes.co.nz/address/auckland/example/25/abc',**change}
+    monkeypatch.setattr('portals.direct.collect',lambda source,**kw:[first if source=='oneroof' else second])
+    for source in ('oneroof','homes'):
+        collect_and_stage(db_session,sources=[source],kind='for_sale',cap=5)
+    assert db_session.query(PortalListing).count()==2
+    assert db_session.query(PortalListing).filter_by(source='oneroof').one().floor_area_m2 is None
