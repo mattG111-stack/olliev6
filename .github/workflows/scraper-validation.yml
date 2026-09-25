@@ -40,3 +40,7 @@ jobs:
           tests/test_direct_collector.py tests/test_public_adapters.py
           tests/test_collection_pagination.py tests/test_new_listings.py
           tests/test_rendered_discovery.py
+      - name: Bounded public Homes discovery (read only)
+        continue-on-error: true
+        timeout-minutes: 2
+        run: python scripts/check_homes_discovery.py
