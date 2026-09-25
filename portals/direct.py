@@ -67,6 +67,7 @@ class Transport:
             raise CollectorUnavailable('Unknown source')
         self.source, self.delay, self.robots = source, max(1.0, delay), {}
         self.blocked = False
+        self.proxy_url = None
         if client is not None:
             self.client = client
             return
@@ -78,6 +79,7 @@ class Transport:
                 raise ValueError()
             with _lock:
                 proxy = urls[next(_rotation) % len(urls)]
+            self.proxy_url = proxy
             self.client = httpx.Client(proxy=proxy, timeout=30, follow_redirects=False,
                                        trust_env=False, headers={'User-Agent': USER_AGENT, 'Accept': 'text/html'})
         except Exception:
@@ -145,6 +147,11 @@ class Transport:
             return self.get(urljoin(url, location), redirects + 1)
         if code != 200:
             raise CollectorUnavailable(f'Source returned HTTP {code}')
+        if self.source == 'homes' and u.path.startswith('/map'):
+            if not settings.scraper_render_homes:
+                raise CollectorUnavailable('Homes discovery requires the enabled browser renderer')
+            from portals.rendered import render_homes
+            return render_homes(url, proxy=self.proxy_url)
         return text
 
 
@@ -218,6 +225,13 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
             text = transport.get(url)
             fetched += 1
             extracted = page_data.extract(text, source)
+            if not extracted and source == 'homes':
+                from portals.rendered import property_links
+                discovered = property_links(text, url)
+                if discovered:
+                    for target in discovered:
+                        if target not in seen and target not in queue:queue.append(target)
+                    continue
             if not extracted:
                 raise CollectorUnavailable('No recognisable listing data; source adapter needs checking')
             for record_url, raw in extracted.items():

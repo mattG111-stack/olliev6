@@ -30,7 +30,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements-scraper.txt pytest
+      - run: python -m playwright install --with-deps chromium --only-shell
       - name: Database, rollback, scheduling and review checks
         run: >-
           python -m pytest -o addopts='' -q
@@ -38,3 +39,4 @@ jobs:
           tests/test_durable_schedule.py tests/test_collection_storage.py
           tests/test_direct_collector.py tests/test_public_adapters.py
           tests/test_collection_pagination.py tests/test_new_listings.py
+          tests/test_rendered_discovery.py

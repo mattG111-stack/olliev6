@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     scraper_proxy_urls: str = Field(default="", repr=False)  # JSON array; server-side secret, never returned
     scraper_seeds: str = ""  # JSON source -> kind -> public search URLs
     scraper_max_pages: int = 10
+    scraper_render_homes: bool = False  # Requires optional Chromium runtime in collector worker.
     # Ask the portals once a day about anything new, unattended. Off by default:
     # a job that reaches the internet and spends money should be switched on
     # deliberately, not started because a deploy went out.

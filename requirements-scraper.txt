@@ -1,0 +1,3 @@
+# Optional collector-worker browser runtime.
+-r requirements.txt
+playwright==1.63.0
