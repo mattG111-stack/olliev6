@@ -5,6 +5,20 @@ on:
 permissions:
   contents: read
 jobs:
+  worker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dedicated scraper image
+        run: docker build -f Dockerfile.scraper -t apex-scraper-check .
+      - name: Verify disabled startup without database or collection
+        run: >-
+          docker run --rm --network none
+          -e DATABASE_URL=sqlite:///:memory:
+          -e JWT_SECRET=synthetic-image-test-only
+          -e SCRAPER_ENABLED=false -e PORTALS_DAILY=false
+          -e SCRAPER_DAILY_PRICING=false apex-scraper-check
+          python -c "import scraper_worker,worker; jobs=scraper_worker.jobs(); assert len(jobs)==3; assert not any(j.enabled() for j in jobs); assert worker.run(jobs=jobs,max_ticks=1)==0"
   postgres:
     runs-on: ubuntu-latest
     services:

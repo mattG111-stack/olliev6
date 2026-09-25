@@ -1,5 +1,20 @@
 # Direct collector browser runtime
 
+## Dedicated Railway worker
+
+Build `Dockerfile.scraper` and run its default `python scraper_worker.py` command.
+This entry point includes only direct new-listing collection, sold collection and
+validated daily pricing. It excludes unrelated legacy maintenance jobs.
+Use the existing PostgreSQL database through a Railway service reference. Keep
+SCRAPER_ENABLED, PORTALS_DAILY and SCRAPER_DAILY_PRICING false for initial deployment.
+The worker has no HTTP healthcheck or public domain. Run the collection migration
+in the backend deployment before enabling collection. Proxy credentials belong in
+private service variables, never source files.
+
+Saved partial passes resume on the next five-minute scheduler check. A completed
+pass retains its daily success timestamp across restarts. This is durable resume,
+not yet a verified newest-listing cutoff across all three sources.
+
 Homes map discovery needs JavaScript. Install the optional worker dependencies:
 
 ```
