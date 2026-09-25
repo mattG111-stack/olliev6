@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from models import User
+from preferences import assistant_brief
 from assistant import keys, providers, websearch
 from assistant.scope import RENTAL_REPLY, rental_request
 from assistant.shortlist import requested_limit, bounded_dispatch, render_shortlist
@@ -277,7 +278,7 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     source_dispatch = investigation.wrap(dispatch)
     tool_dispatch = bounded_dispatch(source_dispatch, limit, evidence) if limit else source_dispatch
     result = providers.run(
-        provider=provider, api_key=api_key, system=SYSTEM + investigation.answer_guidance(),
+        provider=provider, api_key=api_key, system=SYSTEM + assistant_brief(user) + investigation.answer_guidance(),
         messages=investigation.fresh_messages(messages), specs=[s for s in TOOL_SPECS if s["name"] != "rent_estimate"], dispatch=tool_dispatch,
         deadline=deadline, max_iterations=max_iterations, on_step=on_step,
         workspace_id=workspace_id,
