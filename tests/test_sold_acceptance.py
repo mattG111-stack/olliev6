@@ -59,3 +59,15 @@ def test_partial_promotion_rolls_back_on_failure(db_session,monkeypatch):
     assert db_session.query(PropertySold).count()==0
     assert db_session.query(PortalObservation).count()==2
     assert db_session.query(PortalCollectionRun).one().status=='failed'
+
+
+def test_conflicting_valid_sale_is_visible_in_review(db_session,monkeypatch):
+    from models import PortalListing
+    item=sale(conflicts={'sale_price':[{'value':800000}]})
+    result=run(db_session,monkeypatch,[item])
+    assert result['quarantined']==1
+    pending=db_session.query(PortalListing).one()
+    assert pending.status=='pending' and pending.price_flag
+    assert db_session.query(PropertySold).count()==0
+    run(db_session,monkeypatch,[item])
+    assert db_session.query(PortalListing).count()==1

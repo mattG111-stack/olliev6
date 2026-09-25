@@ -41,8 +41,8 @@ def accept(db, merged):
     counts={'new':0,'skipped':0,'quarantined':0}
     for item in merged:
         problem=reason(item)
-        row=to_listing(item['source'],item,kind='sold') if not problem else None
-        if row is not None:problem=_price_flag(db,row)
+        row=to_listing(item['source'],item,kind='sold') if problem in (None, 'Source evidence requires review') else None
+        if row is not None and not problem:problem=_price_flag(db,row)
         key=identity(item)
         if not problem and key in existing:
             if all(p is not None and float(p)==float(item['sale_price']) for p in existing[key]):
