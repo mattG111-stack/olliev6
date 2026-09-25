@@ -131,7 +131,7 @@ def _display(values, unit=''):
     return f'${number}' if unit == '$' else f'{number}{unit}'
 
 
-def render_shortlist(answer, evidence, limit, question=''):
+def render_shortlist(answer, evidence, limit, question='', previous_ids=None):
     """Bound recommendations at presentation, without truncating model evidence.
 
     Use the model's linked selection order (or address order if it supplied no
@@ -176,6 +176,7 @@ def render_shortlist(answer, evidence, limit, question=''):
              '| Property | Asking price | Apex estimate | Beds / baths | Land | Floor |',
              '| --- | ---: | ---: | --- | ---: | ---: |']
     chart = []
+    decision_rows = []
     for identity, rid in selected:
         rows = groups[identity]
         # Prefer the linked record's label; all fetched duplicate values remain
@@ -191,8 +192,26 @@ def render_shortlist(answer, evidence, limit, question=''):
         floor = _display([_number(_field(r, 'floor_area_m2', 'floor_m2')) for r in rows], ' m²')
         lines.append(f'| {label} | {asking} | {value} | {beds} / {baths} | {land} | {floor} |')
         prices = {_price(r) for r in rows} - {None}
+        floors = {_number(_field(r, 'floor_area_m2', 'floor_m2')) for r in rows} - {None}
+        if len(prices) == 1 and len(floors) == 1:
+            decision_rows.append((address, next(iter(prices)), next(iter(floors))))
         if len(prices) == 1:
             chart.append({'label': row['address'], 'value': next(iter(prices))})
+    if previous_ids:
+        retained = sum(rid in previous_ids for _, rid in selected)
+        lines += ['', f'Compared with the previous shortlist: {retained} retained and {len(selected) - retained} new in this selection.']
+    if len(decision_rows) == len(selected) and len(decision_rows) > 1:
+        cheapest = min(decision_rows, key=lambda r: r[1])
+        largest = max(decision_rows, key=lambda r: r[2])
+        if sum(r[1] == cheapest[1] for r in decision_rows) == 1:
+            lines += ['', f'**If keeping the purchase price down is your priority:** investigate {cheapest[0]}, '
+                      f'the lowest recorded asking price in this selection at {_display([cheapest[1]], "$")}. '
+                      'Confirm condition and your must-haves before treating it as a suitable choice.']
+        if cheapest[0] != largest[0] and largest[1] > cheapest[1] and largest[2] > cheapest[2]:
+            lines += ['', '**The price-and-space trade-off:** '
+                      f'{largest[0]} has {_display([largest[2] - cheapest[2]], " m²")} more recorded floor area than '
+                      f'{cheapest[0]}, for {_display([largest[1] - cheapest[1]], "$")} more in asking price. '
+                      'That compares recorded size and asking prices, not condition or value for money.']
     lines += ['', 'This is a shortlist, not a verified count of every matching property. Estimates are not guaranteed sale prices or profit. Conflicting records need checking before relying on a figure.']
     if re.search(r'\b(renovat\w*|condition|garage|garaging|outdoor|garden|yard)\b', question, re.I):
         lines += ['', 'Needs still to verify: car spaces do not confirm an enclosed garage; land area does not confirm usable outdoor space; build age does not establish condition or renovation requirements. These preferences need listing evidence or inspection before a match is confirmed.']

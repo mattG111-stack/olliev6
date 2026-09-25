@@ -163,3 +163,14 @@ def test_direct_property_tool_evidence_is_available_without_altering_response():
     assert run('get_property',{'property_id':1})==raw
     assert evidence==[record]
     assert '$600,001' in render_shortlist('[One](/property/1)',evidence,3)
+
+
+def test_tradeoff_uses_selected_unambiguous_facts_and_retained_count():
+    rows = [{'id':1,'address':'Small Road','asking_price':629000,'floor_m2':85},
+            {'id':2,'address':'Larger Road','asking_price':749000,'floor_m2':102}]
+    out = render_shortlist('[One](/property/1) [Two](/property/2)', rows, 3, previous_ids={2,3,4})
+    assert '1 retained and 1 new' in out
+    assert '17 m²' in out and '$120,000' in out
+    assert 'not condition or value for money' in out
+    rows.append({**rows[1], 'asking_price':700000})
+    assert 'price-and-space trade-off' not in render_shortlist('[One](/property/1) [Two](/property/2)', rows, 3)
