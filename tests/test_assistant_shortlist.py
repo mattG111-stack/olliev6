@@ -10,6 +10,11 @@ from types import SimpleNamespace
     ('Show me my top three houses', 3),
     ('Find my three-bedroom home in Henderson', None),
     ('Find my 3 best properties under $900,000', 3),
+    ('Find my three best three-bedroom houses in Glen Eden under $800,000', 3),
+    ('Show me two 4 bedroom houses', 2),
+    ('Show my best three 3-bed homes', 3),
+    ('Find my three-bedroom houses in Henderson', None),
+    ('Show me 4 bedroom houses', None),
 ])
 def test_customer_limit_phrasing(q,n):
     assert requested_limit(q) == n
