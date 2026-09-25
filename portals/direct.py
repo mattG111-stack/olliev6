@@ -194,7 +194,7 @@ def next_pages(text, url, source):
     return found
 
 
-def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
+def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, checkpoint=None):
     """Walk configured search pages + visible next links within explicit bounds.
 
     Seeds are explicit per source/category. No guessed private API endpoints,
@@ -212,7 +212,12 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
         raise CollectorUnavailable('Configure explicit source/category search URLs') from None
     owned = transport is None
     transport = transport or Transport(source)
-    rows, seen, queue = {}, set(), list(seeds)
+    # Resume unfinished pages before starting another pass. Cursor URLs are
+    # checked like every other source URL, never treated as trusted input.
+    state = checkpoint if checkpoint is not None else {}
+    pending = state.get('pending_urls', [])
+    for pending_url in pending:validate_url(pending_url, source)
+    rows, seen, queue = {}, set(), list(dict.fromkeys(pending or seeds))
     page_limit = max(1, min(settings.scraper_max_pages, 30))
     fetched = 0
     cap = max(1, min(int(cap), 1000))
@@ -234,7 +239,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                     continue
             if not extracted:
                 raise CollectorUnavailable('No recognisable listing data; source adapter needs checking')
-            for record_url, raw in extracted.items():
+            extracted_items = list(extracted.items())
+            for item_index, (record_url, raw) in enumerate(extracted_items):
                 if raw.get('_apex_kind', kind) != kind:
                     continue
                 validate_url(record_url, source)
@@ -246,6 +252,10 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                 if row.get('address'):
                     rows[record_url] = row
                 if len(rows) >= cap:
+                    # Do not lose the rest of a partially consumed search page.
+                    for remaining_url, _ in extracted_items[item_index + 1:]:
+                        validate_url(remaining_url, source)
+                        if remaining_url not in seen and remaining_url not in queue:queue.append(remaining_url)
                     break
             for target in next_pages(text,url,source):
                 if target not in seen and target not in queue:queue.append(target)
@@ -277,6 +287,9 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None):
                         row['provenance'][key] = enriched['provenance'][key]
             row['raw_source'] = {'search': row['raw_source'], 'detail': detail}
             row['source_conflicts'] = conflicts
+        state['pending_urls'] = list(dict.fromkeys(pending_details + queue))
+        state['last_saved_at'] = page_data.now()
+        if not state['pending_urls']:state['last_completed_pass_at'] = state['last_saved_at']
         for row in rows.values():
             row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
         return list(rows.values())

@@ -473,7 +473,7 @@ def _live_keys(db: Session) -> set[str]:
     return {k for k in (address_key(a, s) for a, s in rows) if k}
 
 
-def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None) -> tuple[int, int]:
+def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None, commit=True) -> tuple[int, int]:
     """Store what the sweep found. Returns (new, skipped).
 
     Skipped means one of two things, and both are the point: we already have the
@@ -533,7 +533,8 @@ def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None) 
         db.add(PortalListing(**row, status="pending"))
         seen.add((row["source"], row["kind"], key))
         new += 1
-    db.commit()
+    if commit:db.commit()
+    else:db.flush()
     return new, skipped
 
 

@@ -77,3 +77,23 @@ def test_collection_migration_roundtrip_preserves_existing_tables(db_session):
             assert 'portal_observations' not in inspect(conn).get_table_names()
             assert 'properties_sold' in inspect(conn).get_table_names()
             migration.upgrade()
+
+
+def test_checkpoint_commits_only_after_all_sources_and_staging_succeed(db_session,monkeypatch):
+    from portals import checkpoints
+    def fail_second(source,checkpoint,**kw):
+        checkpoint['pending_urls']=['https://www.oneroof.co.nz/next']
+        if source=='homes':raise CollectorUnavailable('synthetic failure')
+        return [sample(price_numeric=900000)]
+    monkeypatch.setattr('portals.direct.collect',fail_second)
+    with pytest.raises(CollectorUnavailable):
+        collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
+    assert checkpoints.load(db_session,'oneroof','for_sale')=={}
+    assert db_session.query(PortalListing).count()==0
+    def success(source,checkpoint,**kw):
+        checkpoint['pending_urls']=['https://www.oneroof.co.nz/next']
+        return [sample(price_numeric=900000)]
+    monkeypatch.setattr('portals.direct.collect',success)
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    assert checkpoints.load(db_session,'oneroof','for_sale')['pending_urls']==['https://www.oneroof.co.nz/next']
+    assert db_session.query(PortalListing).count()==1

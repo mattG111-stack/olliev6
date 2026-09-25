@@ -41,3 +41,21 @@ def test_search_pagination_is_not_starved_by_detail_enrichment(monkeypatch):
     assert len(rows)==3
     assert rows[0]['collection_scope']['pending_detail_urls']==urls
     assert not rows[0]['collection_scope']['complete_coverage_verified']
+
+
+def test_resume_reads_saved_pending_url_before_starting_new_pass(monkeypatch):
+    import json
+    from config import settings
+    from portals.direct import collect,page_data
+    seed='https://homes.co.nz/map'
+    detail='https://homes.co.nz/address/auckland/example/1/abc'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':[seed]}}))
+    monkeypatch.setattr(page_data,'extract',lambda html,source:{detail:{'_apex_kind':'sold'}})
+    monkeypatch.setattr(page_data,'normalise',lambda *a:{'address':'1 Example Road','suburb':'Example','region':'Auckland','scraped_at':'2026-09-26'})
+    calls=[]
+    class Pages:
+        def get(self,url):calls.append(url);return 'detail'
+    state={'pending_urls':[detail]}
+    assert len(collect('homes',kind='sold',transport=Pages(),checkpoint=state))==1
+    assert calls==[detail]
+    assert state['pending_urls']==[] and state['last_completed_pass_at']

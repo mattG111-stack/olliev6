@@ -7,13 +7,15 @@ from models import PortalCollectionRun, PortalObservation
 def collect_and_stage(db, *, sources, kind, cap):
     from portals.direct import collect, merge_records
     from portals.listings import to_listing, record
+    from portals import checkpoints
     run=PortalCollectionRun(kind=kind,status='running')
     db.add(run);db.commit()
     run_id=run.id
-    summary={};collected=[]
+    summary={};collected=[];progress={}
     try:
         for source in sources:
-            rows=collect(source,kind=kind,cap=cap)
+            progress[source]=checkpoints.load(db,source,kind)
+            rows=collect(source,kind=kind,cap=cap,checkpoint=progress[source])
             for row in rows:
                 db.add(PortalObservation(run_id=run_id,source=source,kind=kind,url=row['url'],
                     payload_json=json.dumps(row,ensure_ascii=False)))
@@ -27,16 +29,18 @@ def collect_and_stage(db, *, sources, kind, cap):
             result=accept(db,merged)
             result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=0)
             summary['merged']=result
+            for source,state in progress.items():checkpoints.save(db,source,kind,state)
             run.status='complete';run.finished_at=datetime.now(timezone.utc)
             run.summary_json=json.dumps(summary);db.commit()
             return {'merged':result}
         rows=[r for item in merged if (r:=to_listing(item['source'],item,kind=kind)) is not None]
         stats={}
-        new,skipped=record(db,rows,refresh_pending=True,stats=stats)
+        new,skipped=record(db,rows,refresh_pending=True,stats=stats,commit=False)
         result={'found':len(rows),'new':new,'skipped':skipped,
                 'excluded':len(merged)-len(rows),'run_id':run_id,
                 'refreshed':stats.get('refreshed',0)}
         summary['merged']=result
+        for source,state in progress.items():checkpoints.save(db,source,kind,state)
         run.status='complete';run.finished_at=datetime.now(timezone.utc)
         run.summary_json=json.dumps(summary);db.commit()
         return {'merged':result}
