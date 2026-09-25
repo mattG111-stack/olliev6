@@ -13,8 +13,12 @@ def collect_and_stage(db, *, sources, kind, cap):
     run_id=run.id
     summary={};collected=[];progress={}
     try:
+        progress={source:checkpoints.load(db,source,kind) for source in sources}
+        resuming=any(state.get('pending_urls') for state in progress.values())
         for source in sources:
-            progress[source]=checkpoints.load(db,source,kind)
+            if resuming and not progress[source].get('pending_urls') and progress[source].get('last_completed_pass_at'):
+                summary[source]={'observed':0,'already_complete':True}
+                continue
             rows=collect(source,kind=kind,cap=cap,checkpoint=progress[source])
             for row in rows:
                 db.add(PortalObservation(run_id=run_id,source=source,kind=kind,url=row['url'],

@@ -109,3 +109,23 @@ def test_checkpoint_write_failure_rolls_back_new_review_rows(db_session,monkeypa
     assert db_session.query(PortalListing).count()==0
     assert db_session.query(PortalObservation).count()==1
     assert checkpoints.load(db_session,'oneroof','for_sale')=={}
+
+
+def test_partial_resume_does_not_restart_already_finished_source(db_session,monkeypatch):
+    calls=[]
+    def collect(source,checkpoint,**kw):
+        calls.append(source)
+        if source=='homes' and not checkpoint.get('pending_urls'):
+            checkpoint['pending_urls']=['https://homes.co.nz/address/auckland/example/2/test']
+        else:
+            checkpoint['pending_urls']=[]
+            checkpoint['last_completed_pass_at']='2026-09-26T00:00:00Z'
+        return [{**sample(price_numeric=900000),'source':source}]
+    monkeypatch.setattr('portals.direct.collect',collect)
+    def run():return collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
+    assert run()['merged']['pending']==1
+    assert run()['merged']['pending']==0
+    assert calls==['oneroof','homes','homes']
+    # Once the whole pass completes, the next scheduled pass checks both again.
+    run()
+    assert calls[-2:]==['oneroof','homes']
