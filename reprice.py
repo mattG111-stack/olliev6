@@ -210,8 +210,22 @@ def _sold_df(db: Session, region: str, *, published_only: bool = False) -> pd.Da
             PropertySold.sold_date, PropertySold.days_on_market)
          .filter(PropertySold.import_batch_id.in_(batch_ids))
          .yield_per(5_000))
+    records = q
+    if published_only:
+        # A later source can dispute a transaction already imported. Keep the
+        # original evidence, but omit that dated sale until review resolves it.
+        from models import PortalListing
+        from portals.sold_acceptance import identity
+        disputed = {identity({'address': row.address, 'suburb': row.suburb,
+                              'sold_date': row.sold_date})
+                    for row in db.query(PortalListing.address, PortalListing.suburb,
+                                        PortalListing.sold_date)
+                    .filter(PortalListing.kind == 'sold', PortalListing.status == 'pending',
+                            PortalListing.price_flag.isnot(None), PortalListing.price_flag != '')}
+        records = (row for row in q if identity({'address': row.address,
+                   'suburb': row.suburb, 'sold_date': row.sold_date}) not in disputed)
     return pd.DataFrame.from_records(
-        list(q),
+        list(records),
         columns=["address", "suburb", "district", "property_type", "key_bedrooms",
                  "key_bathrooms", "key_floor_area", "key_land_area",
                  "price_numeric", "cv_numeric", "land_value_numeric",

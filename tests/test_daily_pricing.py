@@ -65,3 +65,21 @@ def test_unpublished_sold_data_excluded_only_in_new_daily_path(db_session):
 def test_daily_price_cannot_publish_a_staged_listing_batch(db_session):
     fs,_=_batches(db_session,1)
     with pytest.raises(ValueError,match='active published'):reprice_live(db_session,fs.id)
+
+
+def test_later_dispute_excludes_only_matching_dated_sale_from_daily_comps(db_session):
+    from models import PortalListing
+    _,sold=_batches(db_session,1)
+    db_session.add(PropertySold(import_batch_id=sold.id,address='0 Sold Street',
+        suburb='Papakura',sale_price=800000,sold_date='2025-06-01'))
+    dispute=PortalListing(source='homes',kind='sold',status='pending',
+        address='0 Sold Street',suburb='Papakura',sold_date='06/01/2026',
+        price_flag='Disclosed price conflicts with an existing sale')
+    db_session.add(dispute);db_session.commit()
+    assert len(_sold_df(db_session,'Auckland'))==13  # CSV semantics retained.
+    daily=_sold_df(db_session,'Auckland',published_only=True)
+    assert len(daily)==12
+    matching=daily[daily.address=='0 Sold Street']
+    assert list(matching.sold_date)==['2025-06-01']
+    dispute.status='rejected';db_session.commit()
+    assert len(_sold_df(db_session,'Auckland',published_only=True))==13
