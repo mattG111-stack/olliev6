@@ -303,7 +303,13 @@ def to_listing(source: str, item: dict, *, kind: str = "for_sale") -> dict | Non
         raise ValueError('Rental collection is not connected to sale publication')
     if item.get('_apex_direct'):
         # Unmapped fields, raw snapshots and per-field provenance remain intact.
-        allowed = set(PortalListing.__table__.columns.keys()) - {'id','status','created_at','reviewed_at','reviewed_by_id','raw_json','address_key'}
+        # Portal IDs and lifecycle fields belong in raw evidence, never in
+        # Apex's internal publication link or review/availability state.
+        internal = {'id','status','property_id','created_at','reviewed_at',
+                    'reviewed_by_id','decided_at','decided_by_id','raw_json',
+                    'address_key','link_checked_at','link_gone_count',
+                    'delisted_at','link_last_result'}
+        allowed = set(PortalListing.__table__.columns.keys()) - internal
         row = {k:v for k,v in item.items() if k in allowed}
         if not row.get('address') or not row.get('suburb'):
             return None

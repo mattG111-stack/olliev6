@@ -218,3 +218,20 @@ def test_latest_runs_empty_and_non_object_summary(db_session):
     db_session.add(PortalCollectionRun(kind='sold',status='complete',summary_json='[]'))
     db_session.commit()
     assert latest_runs(db_session)[0]['observed']==0
+
+
+@pytest.mark.parametrize('portal_id', ['homes-public-id', 123456])
+def test_source_property_id_never_sets_internal_publication_link(db_session, monkeypatch, portal_id):
+    current=sample(property_id=portal_id, status='approved', link_gone_count=99,
+                   link_last_result='404', decided_by_id=12)
+    current.update(source='homes',url='https://homes.co.nz/address/auckland/example/25/abc')
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[current])
+    result=collect_and_stage(db_session,sources=['homes'],kind='for_sale',cap=1)
+    assert result['merged']['new']==1
+    row=db_session.query(PortalListing).one()
+    assert row.property_id is None and row.status=='pending'
+    assert row.link_gone_count==0 and row.link_last_result is None
+    assert row.decided_by_id is None
+    assert json.loads(row.raw_json)['property_id']==portal_id
+    assert json.loads(db_session.query(PortalObservation).one().payload_json)['property_id']==portal_id
+    assert db_session.query(PropertyForSale).count()==0
