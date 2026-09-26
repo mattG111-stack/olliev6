@@ -2187,9 +2187,14 @@ def external_estimates(property_id: int, db: Session = Depends(get_db)) -> Exter
     discrepancies: list[PvDiscrepancy] = []
     gap_list: list[PvGap] = []
     pv_zoning = pv_last_price = pv_last_date = None
+    pv_valid = False
     if p.pv_data:
         try:
             pv = json.loads(p.pv_data)
+            from propertyvalue import cached_identity_matches
+            if not cached_identity_matches(p.address, p.suburb, pv):
+                raise ValueError('Cached external valuation identity differs')
+            pv_valid = True
             pv_zoning = pv.get("zoning")
             pv_last_price = pv.get("last_sale_price")
             pv_last_date = pv.get("last_sale_date")
@@ -2222,9 +2227,11 @@ def external_estimates(property_id: int, db: Session = Depends(get_db)) -> Exter
         realestate_valuation_low=p.realestate_valuation_low,
         realestate_valuation_high=p.realestate_valuation_high,
         realestate_url=p.realestate_url,
-        pv_estimate_low=p.pv_estimate_low, pv_estimate_high=p.pv_estimate_high,
-        pv_estimate_mid=p.pv_estimate_mid, pv_cv=p.pv_cv, pv_zoning=pv_zoning,
-        pv_url=p.pv_url, pv_last_sale_price=pv_last_price, pv_last_sale_date=pv_last_date,
+        pv_estimate_low=p.pv_estimate_low if pv_valid else None,
+        pv_estimate_high=p.pv_estimate_high if pv_valid else None,
+        pv_estimate_mid=p.pv_estimate_mid if pv_valid else None,
+        pv_cv=p.pv_cv if pv_valid else None, pv_zoning=pv_zoning,
+        pv_url=p.pv_url if pv_valid else None, pv_last_sale_price=pv_last_price, pv_last_sale_date=pv_last_date,
         pv_discrepancies=discrepancies, pv_gaps=gap_list,
     )
 

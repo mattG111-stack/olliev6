@@ -1,6 +1,6 @@
 """Atomic daily valuation refresh using published sold evidence only."""
 import json
-from addresses import address_key
+from propertyvalue import cached_identity_matches
 from sqlalchemy import text
 from models import ImportBatch, BatchType, PropertyForSale
 from reprice import reprice_batch
@@ -21,12 +21,7 @@ def mismatched_cached_valuations(db, batch_id):
     for pid, address, suburb, raw in rows.yield_per(500):
         try:
             data = json.loads(raw)
-            label = data.get('canonical_address')
-            parts = str(label or '').split(',')
-            source_suburb = data.get('suburb') or (parts[1].strip() if len(parts) > 1 else None)
-            ours = address_key(address, suburb)
-            theirs = address_key(label, source_suburb)
-            valid = bool(ours and theirs and label and source_suburb and ours == theirs)
+            valid = cached_identity_matches(address, suburb, data)
         except (ValueError, TypeError, AttributeError):
             valid = False
         if not valid:
