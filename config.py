@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     brave_api_key: str = ""          # optional — reliable search for external estimates
     # Direct public-page collector; credentials stay in server configuration.
     scraper_enabled: bool = False
+    scraper_check_listings: bool = False  # Reversible availability checks, enabled separately.
     scraper_proxy_urls: str = Field(default="", repr=False)  # JSON array; server-side secret, never returned
     scraper_seeds: str = ""  # JSON source -> kind -> public search URLs
     scraper_max_pages: int = 10
