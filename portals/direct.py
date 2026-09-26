@@ -385,7 +385,7 @@ def merge_records(rows):
     # Site-local identifiers have no cross-source meaning. Keep each original
     # ID in source_snapshots, but never turn different portal IDs into a dispute.
     metadata = {'source','url','source_id','property_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
-    presentation = {'description','image_url','image_urls','image_count'}
+    presentation = {'title','description','images','image_url','image_urls','image_count'}
     for group in grouped.values():
         merged = dict(group[0]); provenance = {}; conflicts = {}
         for row in group:
