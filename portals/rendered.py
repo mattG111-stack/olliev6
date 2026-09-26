@@ -109,7 +109,25 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
             discovered.update(dict.fromkeys(property_links(html,url)))
         after=container.evaluate('el => ({top:el.scrollTop, height:el.scrollHeight})')
         if after['top']==before['top'] and after['height']==before['height'] and len(discovered)==count:
-            break
+            # The public drawer can remain latched at its lower edge after
+            # appending cards. Leave that zone before crossing it again.
+            # One bounded recovery attempt; a quiet edge is still partial.
+            container.evaluate('''async el => {
+                el.scrollTop=0;
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                el.scrollTop=el.scrollHeight;
+            }''')
+            try:
+                page.wait_for_function("""({known, base}) =>
+                    /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
+                    [...document.querySelectorAll('a[href*="/address/auckland/"]')]
+                      .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
+                """,arg={'known':list(discovered),'base':url},timeout=min(timeout_ms,10000))
+            except Exception:
+                pass
+            html=rendered_html(page,url,timeout_ms,restricted)
+            discovered.update(dict.fromkeys(property_links(html,url)))
+            if len(discovered)==count:break
     # Virtualized lists replace earlier cards. Keep the exact observed URLs,
     # including those no longer present in the final DOM, for detail fetching.
     html += ''.join(f'<a href="{escape(link, quote=True)}" data-apex-discovered="true"></a>' for link in discovered)

@@ -195,3 +195,34 @@ def test_partial_homes_coverage_advances_next_bounded_pass(monkeypatch):
     collect('homes',kind='sold',transport=Pages(),checkpoint=state)
     assert state['homes_discovery_batches']==100
     assert state['discovery_coverage']=={'loaded':38,'total':4932,'complete':False}
+
+
+def test_actual_browser_rearms_latched_infinite_scroll_between_batches():
+    """A source may require leaving its bottom zone before another load."""
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import load_homes_results, discovery_info
+    fixture = '''<body>4 properties
+      <div class="drawerContentContainer" style="height:100px;overflow:auto">
+        <div style="height:400px"><a href="/address/auckland/example/1/abc">One</a></div>
+      </div><script>
+      let n=1, armed=true;
+      const box=document.querySelector('.drawerContentContainer');
+      box.addEventListener('scroll',()=>{
+        if(box.scrollTop===0){armed=true;return;}
+        if(armed && box.scrollTop+box.clientHeight>=box.scrollHeight-1 && n<4){
+          armed=false;n++;
+          box.insertAdjacentHTML('beforeend','<div style="height:400px"><a href="/address/auckland/example/'+n+'/abc">Next</a></div>');
+        }
+      });</script></body>'''
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();page.set_content(fixture)
+            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=5)
+            assert discovery_info(html)=={'loaded':2,'total':4,'complete':False}
+            assert len(property_links(html,'https://homes.co.nz/map'))==2
+            page.close();page=browser.new_page();page.set_content(fixture)
+            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=30)
+            assert discovery_info(html)=={'loaded':4,'total':4,'complete':True}
+            assert len(property_links(html,'https://homes.co.nz/map'))==4
+        finally:browser.close()
