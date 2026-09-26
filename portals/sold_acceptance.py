@@ -89,7 +89,25 @@ def enrich_accepted(db, item):
             changed=True
     # Preserve all sources even when they add provenance but no new fact.
     staged.raw_json=json.dumps(evidence,ensure_ascii=False)
+    changed=apply_missing_evidence(target,staged.raw_json) or changed
     return None, changed
+
+
+def apply_missing_evidence(target, raw_json):
+    from portals.evidence import apply_to_property
+    from portals import ESTIMATE_COLUMNS
+    fields={'land_slope_contour','building_age','sale_history_json',
+            'valuation_last_sold_value','valuation_last_sold_date'}
+    fields.update(column for columns in ESTIMATE_COLUMNS.values() for column in columns if column)
+    fields={field for field in fields if hasattr(type(target),field)}
+    before={field:getattr(target,field,None) for field in fields}
+    apply_to_property(target,raw_json)
+    from portals.page_data import present
+    changed=False
+    for field,old in before.items():
+        if present(old):setattr(target,field,old)
+        elif present(getattr(target,field,None)):changed=True
+    return changed
 
 
 def accept(db, merged):
@@ -124,6 +142,7 @@ def accept(db, merged):
         for field in _CARRIED_SOLD:setattr(sale,field,row.get(field))
         sale.beds=int(row['beds']) if row.get('beds') is not None else None
         sale.baths=int(row['baths']) if row.get('baths') is not None else None
+        apply_missing_evidence(sale,row['raw_json'])
         db.add(sale);db.flush()
         staged=db.query(PortalListing).filter_by(source=row['source'],kind='sold',address_key=row['address_key'],sold_date=row['sold_date']).first()
         if staged is not None and staged.status=='rejected':

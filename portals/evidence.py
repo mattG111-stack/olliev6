@@ -52,6 +52,7 @@ def apply_to_property(prop, raw_json):
         value=positive(data.get(prefix))
         if value is None:continue
         mid,low,high,url_col=ESTIMATE_COLUMNS[source]
+        if not hasattr(type(prop),mid):continue  # Never create an unpersisted ORM attribute.
         setattr(prop,mid,value)
         for suffix,column in [('_low',low),('_high',high)]:
             bound=positive(data.get(prefix+suffix))

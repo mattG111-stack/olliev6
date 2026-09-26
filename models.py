@@ -781,6 +781,10 @@ class PropertySold(_PropertyMixin, Base):
     sale_price: Mapped[float | None] = mapped_column(Float, index=True)
     sold_date: Mapped[str | None] = mapped_column(String(32), index=True)
     sale_method: Mapped[str | None] = mapped_column(String(64))
+    homes_valuation: Mapped[float | None] = mapped_column(Float)
+    homes_valuation_low: Mapped[float | None] = mapped_column(Float)
+    homes_valuation_high: Mapped[float | None] = mapped_column(Float)
+    homes_url: Mapped[str | None] = mapped_column(String(500))
 
     __table_args__ = (
         Index("ix_sold_comp", "import_batch_id", "suburb", "beds", "baths"),

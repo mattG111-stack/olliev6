@@ -160,3 +160,56 @@ def test_portal_copy_and_images_do_not_quarantine_agreed_sale_facts(db_session,m
     result=run(db_session,monkeypatch,[first,second])
     assert result['quarantined']==1
     assert db_session.query(PropertySold).one().sale_price==900000
+
+
+def test_automatic_sale_keeps_contour_decade_estimate_and_history_separate(db_session,monkeypatch):
+    import json
+    from portals import ESTIMATE_COLUMNS
+    item=sale(land_slope_contour='Level',building_age_decade='2010s',
+        homes_estimate=1100000,sale_history=[{'saleDate':'2020-01-01','salePrice':650000}])
+    run(db_session,monkeypatch,[item])
+    stored=db_session.query(PropertySold).one()
+    assert stored.land_slope_contour=='Level' and stored.building_age=='2010s'
+    assert getattr(stored,ESTIMATE_COLUMNS['homes'][0])==1100000
+    assert json.loads(stored.sale_history_json)==[{'saleDate':'2020-01-01','salePrice':650000}]
+    assert stored.sale_price==900000  # Never replace a disclosed sale with an estimate.
+
+
+def test_later_source_adds_missing_evidence_without_rewriting_existing_estimate(db_session,monkeypatch):
+    from portals import ESTIMATE_COLUMNS
+    run(db_session,monkeypatch,[sale(homes_estimate=1100000)])
+    stored=db_session.query(PropertySold).one()
+    column=ESTIMATE_COLUMNS['homes'][0]
+    setattr(stored,column,1200000);db_session.commit()
+    later={**sale(land_slope_contour='Level'),'source':'homes',
+           'url':'https://homes.co.nz/address/auckland/example/1/abc'}
+    result=run(db_session,monkeypatch,[later])
+    assert result['enriched']==1
+    assert stored.land_slope_contour=='Level'
+    assert getattr(stored,column)==1200000
+    assert stored.sale_price==900000
+
+
+def test_sold_estimate_migration_preserves_existing_transactions(db_session,monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect, text
+    run(db_session,monkeypatch,[sale()])
+    db_session.close()
+    path=next((Path(__file__).resolve().parents[1]/'alembic'/'versions').glob('d9e0f1a2b3c4*'))
+    spec=importlib.util.spec_from_file_location('sold_evidence_migration',path)
+    migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+    columns={'homes_valuation','homes_valuation_low','homes_valuation_high','homes_url'}
+    with db_session.get_bind().begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.downgrade()  # Recreate the schema before this migration.
+            assert not columns.intersection(c['name'] for c in inspect(conn).get_columns('properties_sold'))
+            migration.upgrade()
+            assert columns.issubset(c['name'] for c in inspect(conn).get_columns('properties_sold'))
+            existing=conn.execute(text('SELECT sale_price, sold_date, homes_valuation FROM properties_sold')).one()
+            assert tuple(existing)==(900000,'2026-01-03',None)
+            migration.downgrade()
+            assert conn.execute(text('SELECT sale_price FROM properties_sold')).scalar_one()==900000
+            migration.upgrade()
