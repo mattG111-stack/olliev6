@@ -163,3 +163,9 @@ def test_resumed_detail_does_not_queue_recommended_properties(monkeypatch):
     assert [row['url'] for row in rows]==[detail]
     assert not state['pending_urls']
     assert not state['pending_search_records']
+
+
+def test_empty_pagination_attributes_do_not_abort_valid_next_link():
+    root='https://www.trademe.co.nz/a/property/residential/sale/auckland'
+    html='<a href="?page=2" rel aria-label>2</a><link href="?page=2" rel><a href="?page=2" aria-label="Next page, page 2">Next</a>'
+    assert next_pages(html,root,'trademe')==[root+'?page=2']

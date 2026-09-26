@@ -188,7 +188,7 @@ def next_pages(text, url, source):
             a=dict(attrs)
             if tag not in ('a','link') or not a.get('href'):return
             target=urljoin(url,a['href']);u=urlsplit(url);v=urlsplit(target)
-            explicit='next' in a.get('rel','').split() or a.get('aria-label','').lower().startswith('next page')
+            explicit='next' in (a.get('rel') or '').split() or (a.get('aria-label') or '').lower().startswith('next page')
             if source=='oneroof':
                 old=re.search(r'_page_(\d+)$',u.path);new=re.search(r'_page_(\d+)$',v.path)
                 sequential=bool(old and new and int(new[1])==int(old[1])+1 and u.path[:old.start()]==v.path[:new.start()] and u.query==v.query)
