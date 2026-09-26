@@ -311,6 +311,9 @@ def to_listing(source: str, item: dict, *, kind: str = "for_sale") -> dict | Non
                     'delisted_at','link_last_result'}
         allowed = set(PortalListing.__table__.columns.keys()) - internal
         row = {k:v for k,v in item.items() if k in allowed}
+        if 'days_on_market' in row:
+            from portals.page_data import duration_days
+            row['days_on_market']=duration_days(row['days_on_market'])
         if not row.get('address') or not row.get('suburb'):
             return None
         row['address_key'] = address_key(row['address'], row['suburb'])

@@ -251,3 +251,11 @@ def test_isolated_bad_detail_retains_evidence_and_does_not_block_next_record(mon
     calls.clear()
     collect('oneroof',transport=Pages(),checkpoint=state,isolate_records=True)
     assert bad not in calls
+
+
+def test_oneroof_explicit_days_normalised_with_raw_evidence_retained():
+    raw={'street':'25 Example Road','suburb':'Example','region':'Auckland',
+         'publicRecords':{'data':[{'alias':'timeOnMarket','value':'2 days'}]}}
+    row=canonical('oneroof','for_sale','https://www.oneroof.co.nz/property/example/25',raw)
+    assert row['days_on_market']==2
+    assert row['raw_source']['publicRecords']['data'][0]['value']=='2 days'
