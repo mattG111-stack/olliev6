@@ -37,7 +37,7 @@ def proxy_options(url):
     return result
 
 
-def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=3):
+def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=50):
     from portals.direct import CollectorUnavailable, validate_url, USER_AGENT, MAX_BYTES
     validate_url(url,'homes')
     try:
@@ -82,25 +82,34 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
     displayed=page.locator('body').inner_text()
     match=re.search(r'([\d,]+)\s+properties\b',displayed,re.I)
     total=int(match[1].replace(',','')) if match else None
-    for _ in range(max(0,min(int(max_batches),10)-1)):
+    # A virtualized drawer may recycle its first window when jumped to the
+    # bottom. Advance by less than one viewport and retain each observed URL.
+    # A stalled cursor is partial coverage, never evidence of completion.
+    for _ in range(max(0,min(int(max_batches),500)-1)):
         count=len(discovered)
         if total is None or count>=total:break
         container=page.locator('.drawerContentContainer')
         if container.count()!=1:break
-        container.evaluate('(el) => { el.scrollTop=el.scrollHeight; }')
+        before=container.evaluate('''el => ({top:el.scrollTop, height:el.scrollHeight,
+            viewport:el.clientHeight})''')
+        container.evaluate('el => { el.scrollTop += Math.max(1, Math.floor(el.clientHeight * 0.75)); }')
         try:
             page.wait_for_function("""({known, base}) =>
                 /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
                 [...document.querySelectorAll('a[href*="/address/auckland/"]')]
                     .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
-            """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,10000))
+            """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,1500))
         except Exception:
-            # An unchanged window is partial coverage, never an empty region.
+            # A small scroll may overlap the old window completely. Continue
+            # from the new offset, stopping only at a stationary edge.
             html=rendered_html(page,url,timeout_ms,restricted)
             discovered.update(dict.fromkeys(property_links(html,url)))
+        else:
+            html=rendered_html(page,url,timeout_ms,restricted)
+            discovered.update(dict.fromkeys(property_links(html,url)))
+        after=container.evaluate('el => ({top:el.scrollTop, height:el.scrollHeight})')
+        if after['top']==before['top'] and after['height']==before['height'] and len(discovered)==count:
             break
-        html=rendered_html(page,url,timeout_ms,restricted)
-        discovered.update(dict.fromkeys(property_links(html,url)))
     # Virtualized lists replace earlier cards. Keep the exact observed URLs,
     # including those no longer present in the final DOM, for detail fetching.
     html += ''.join(f'<a href="{escape(link, quote=True)}" data-apex-discovered="true"></a>' for link in discovered)

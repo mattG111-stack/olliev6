@@ -151,7 +151,8 @@ class Transport:
             if not settings.scraper_render_homes:
                 raise CollectorUnavailable('Homes discovery requires the enabled browser renderer')
             from portals.rendered import render_homes
-            return render_homes(url, proxy=self.proxy_url)
+            return render_homes(url, proxy=self.proxy_url,
+                                max_batches=getattr(self, 'homes_discovery_batches', 50))
         return text
 
 
@@ -219,6 +220,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
     state = checkpoint if checkpoint is not None else {}
     from portals import incremental
     incremental.start(state, source, kind, seeds)
+    if source == 'homes' and isinstance(transport, Transport):
+        transport.homes_discovery_batches = max(50, min(500, int(state.get('homes_discovery_batches', 50))))
     pending = state.get('pending_urls', [])
     for pending_url in pending:validate_url(pending_url, source)
     rows, seen, queue = {}, set(), list(dict.fromkeys(pending or seeds))
@@ -245,7 +248,10 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
                 coverage=discovery_info(text)
-                if coverage:state['discovery_coverage']=coverage
+                if coverage:
+                    state['discovery_coverage']=coverage
+                    if not coverage['complete']:
+                        state['homes_discovery_batches']=min(500, max(50, int(state.get('homes_discovery_batches',50)))+50)
                 discovered = property_links(text, url)
                 if discovered:
                     for target in discovered:

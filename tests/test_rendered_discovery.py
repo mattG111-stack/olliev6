@@ -116,7 +116,11 @@ def test_virtualized_windows_keep_every_observed_link(monkeypatch, windows, tota
             return self
         def inner_text(self): return f'{total} properties'
         def count(self): return 1
-        def evaluate(self, script): self.index = min(self.index + 1, len(windows)-1)
+        def evaluate(self, script):
+            if 'scrollTop +=' in script:
+                self.index = min(self.index + 1, len(windows)-1)
+                return None
+            return {'top':self.index * 75,'height':1000,'viewport':100}
         def wait_for_function(self, script, *, arg, timeout):
             assert isinstance(arg["known"], list)  # Compare identities, not current DOM length.
             if not any(url(x) not in arg["known"] for x in windows[self.index]):
@@ -144,3 +148,50 @@ def test_actual_browser_preserves_replaced_result_cards():
             assert discovery_info(html) == {'loaded':3,'total':3,'complete':True}
         finally:
             browser.close()
+
+
+def test_discovery_advances_through_overlapping_virtual_windows(monkeypatch):
+    from portals import rendered
+    base='https://homes.co.nz/map'
+    def link(n):return f'https://homes.co.nz/address/auckland/example/{n}/abc'
+    class Panel:
+        top=0
+        def count(self):return 1
+        def evaluate(self, script):
+            if 'scrollTop +=' in script:
+                self.top=min(300,self.top+75)
+                return None
+            return {'top':self.top,'height':400,'viewport':100}
+    class Page:
+        def __init__(self):self.panel=Panel()
+        def locator(self, selector):return self.panel if selector=='.drawerContentContainer' else self
+        def inner_text(self):return '5 properties'
+        def wait_for_function(self, script, *, arg, timeout):
+            # Overlapping windows can have no new links on a given scroll.
+            if self.panel.top in (75,225):raise TimeoutError('overlap')
+    page=Page()
+    windows={0:[1],75:[1],150:[2],225:[2],300:[3]}
+    monkeypatch.setattr(rendered,'rendered_html',lambda *args:
+        ''.join(f'<a href="{link(n)}">Sold</a>' for n in windows[page.panel.top]))
+    html=rendered.load_homes_results(page,base,100,[],max_batches=6)
+    assert rendered.property_links(html,base)==[link(3),link(1),link(2)]
+    assert rendered.discovery_info(html)['complete'] is False
+
+
+def test_partial_homes_coverage_advances_next_bounded_pass(monkeypatch):
+    seed='https://homes.co.nz/map/auckland?filter=type:sold'
+    detail='https://homes.co.nz/address/auckland/example/1/abc'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':[seed]}}))
+    from portals import page_data
+    monkeypatch.setattr(page_data,'extract',lambda html,source:
+        {detail:{'_apex_kind':'sold'}} if html=='DETAIL' else {})
+    monkeypatch.setattr(page_data,'normalise',lambda *args:{'address':'1 Example Road',
+        'region':'Auckland','sale_price':900000,'sold_date':'2026-01-01','scraped_at':'2026-09-26'})
+    class Pages:
+        def get(self,url):
+            return ('<a href="'+detail+'">Sold</a><meta name="apex-homes-coverage" '
+                    'data-loaded="38" data-total="4932" data-complete="false">') if url==seed else 'DETAIL'
+    state={}
+    collect('homes',kind='sold',transport=Pages(),checkpoint=state)
+    assert state['homes_discovery_batches']==100
+    assert state['discovery_coverage']=={'loaded':38,'total':4932,'complete':False}
