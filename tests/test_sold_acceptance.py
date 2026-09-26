@@ -235,3 +235,17 @@ def test_sold_estimate_migration_preserves_existing_transactions(db_session,monk
             migration.downgrade()
             assert conn.execute(text('SELECT sale_price FROM properties_sold')).scalar_one()==900000
             migration.upgrade()
+
+
+def test_later_matching_sale_adds_gallery_photos_idempotently(db_session,monkeypatch):
+    first=sale(images=['https://images.example/front.jpg'])
+    run(db_session,monkeypatch,[first])
+    later={**sale(images=['https://images.example/front.jpg','https://images.example/lounge.jpg']),
+           'source':'homes','url':'https://homes.co.nz/address/auckland/example/1/abc'}
+    result=run(db_session,monkeypatch,[later])
+    stored=db_session.query(PropertySold).one()
+    assert result['enriched']==1
+    assert stored.image_url=='https://images.example/front.jpg'
+    assert stored.image_urls.splitlines()==['https://images.example/front.jpg','https://images.example/lounge.jpg']
+    assert stored.image_count==2 and stored.sale_price==900000
+    assert run(db_session,monkeypatch,[later])['enriched']==0

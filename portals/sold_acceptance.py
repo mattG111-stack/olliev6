@@ -87,6 +87,16 @@ def enrich_accepted(db, item):
         if not present(getattr(target,field,None)) and present(value):
             setattr(target,field,int(value) if field in ('beds','baths') else value)
             changed=True
+    # Later matching sources can add gallery photos without replacing the
+    # existing lead image or losing previously retained public photo URLs.
+    existing=[u for u in str(target.image_urls or target.image_url or '').splitlines() if u]
+    incoming=[u for u in str(row.get('image_urls') or '').splitlines() if u]
+    gallery=list(dict.fromkeys(existing+incoming))
+    if gallery and gallery!=existing:
+        target.image_urls='\n'.join(gallery)
+        target.image_count=len(gallery)
+        if not target.image_url:target.image_url=gallery[0]
+        changed=True
     # Preserve all sources even when they add provenance but no new fact.
     staged.raw_json=json.dumps(evidence,ensure_ascii=False)
     changed=apply_missing_evidence(target,staged.raw_json) or changed

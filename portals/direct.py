@@ -233,6 +233,8 @@ def merge_detail_evidence(row, enriched, detail):
         if not page_data.present(row.get(key)) or fuller:
             row[key]=value
             if key in enriched['provenance']:row['provenance'][key]=enriched['provenance'][key]
+    from portals.sources import _all_urls
+    row['images']=list(dict.fromkeys(_all_urls(row.get('images'))+_all_urls(enriched.get('images'))))
     row['raw_source']={'search':row['raw_source'],'detail':detail}
     row['source_conflicts']=conflicts
     return row
@@ -448,6 +450,10 @@ def merge_records(rows):
                     # every version in source_snapshots without labelling that
                     # a disagreement over the home's measurable facts.
                     conflicts.setdefault(key,[]).append({'value':value,**origin})
+        from portals.sources import _all_urls
+        merged['images']=list(dict.fromkeys(url for row in group for url in _all_urls(row.get('images'))))
+        provenance['images']=[{'source':row['source'],'url':row['url'],'collected_at':row.get('scraped_at')}
+                              for row in group if _all_urls(row.get('images'))]
         from portals.evidence import history
         sales=history(group)
         if sales:

@@ -79,3 +79,35 @@ def test_missing_district_can_join_one_exact_property_but_not_ambiguous_or_other
     assert len(merge_records([*source,ambiguous]))==3
     source[1]['address']='2/1 Test Road'
     assert len(merge_records(source))==2
+
+
+def test_matching_sources_merge_all_photos_and_keep_other_units_separate(db_session):
+    source=rows()
+    source[0]['images']=['https://images.example/lead.jpg','https://images.example/kitchen.jpg']
+    source[1]['images']=['https://images.example/kitchen.jpg',{'url':'https://images.example/garden.jpg'}]
+    other={**source[1],'address':'2/1 Test Road','images':['https://images.example/other-unit.jpg']}
+    merged=merge_records([*source,other])
+    item=next(r for r in merged if r['address']=='1 Test Road')
+    expected=['https://images.example/lead.jpg','https://images.example/kitchen.jpg','https://images.example/garden.jpg']
+    assert item['images']==expected
+    assert len(item['provenance']['images'])==2
+    assert not item['conflicts']
+    batch=ImportBatch(batch_type=BatchType.FOR_SALE.value,region='Auckland',filename='synthetic',is_active=True,status='published')
+    db_session.add(batch);db_session.commit()
+    record(db_session,[to_listing(item['source'],item)])
+    staged=db_session.query(PortalListing).one()
+    assert staged.image_count==3 and staged.image_urls.splitlines()==expected
+    ok,why=approve(db_session,staged.id,reprice=lambda db,pid:None)
+    assert ok,why
+    prop=db_session.get(PropertyForSale,staged.property_id)
+    assert prop.image_url==expected[0]
+    assert prop.image_count==3 and prop.image_urls.splitlines()==expected
+
+
+def test_detail_gallery_adds_photos_beyond_search_thumbnail():
+    from portals.direct import merge_detail_evidence
+    row={'images':['https://images.example/front.jpg'],'provenance':{},'raw_source':{'images':['https://images.example/front.jpg']}}
+    detail={'images':['https://images.example/front.jpg','https://images.example/lounge.jpg'],'provenance':{}}
+    merged=merge_detail_evidence(row,detail,dict(detail))
+    assert merged['images']==['https://images.example/front.jpg','https://images.example/lounge.jpg']
+    assert not merged['source_conflicts']
