@@ -69,7 +69,7 @@ def sweep_new_listings() -> dict:
     db = SessionLocal()
     try:
         got = sweep(db)
-        found = sum(v["new"] for v in got.values())
+        found = got["merged"].get("new", 0) if "merged" in got else sum(v.get("new", 0) for v in got.values())
         if found:
             log.warning("daily sweep: %d new listings waiting for review", found)
         return got
@@ -87,7 +87,7 @@ def sweep_sold_listings() -> dict:
     db = SessionLocal()
     try:
         got = sweep_sold(db)
-        found = sum(v["new"] for v in got.values())
+        found = got["merged"].get("new", 0) if "merged" in got else sum(v.get("new", 0) for v in got.values())
         if found:
             log.warning("daily sold sweep: %d validated sales saved", found)
         return got

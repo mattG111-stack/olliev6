@@ -218,3 +218,12 @@ def test_latest_runs_empty_and_non_object_summary(db_session):
     db_session.add(PortalCollectionRun(kind='sold',status='complete',summary_json='[]'))
     db_session.commit()
     assert latest_runs(db_session)[0]['observed']==0
+
+
+@pytest.mark.parametrize("job,collector", [("sweep_new_listings","sweep"),("sweep_sold_listings","sweep_sold")])
+def test_daily_wrapper_returns_durable_summary(db_session,monkeypatch,job,collector):
+    from portals import daily
+    summary={'oneroof':{'observed':3},'merged':{'new':2,'pending':4,'discovery_pending':1}}
+    monkeypatch.setattr(daily,'SessionLocal',lambda:db_session)
+    monkeypatch.setattr('portals.listings.'+collector,lambda db:summary)
+    assert getattr(daily,job)()==summary
