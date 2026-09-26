@@ -105,7 +105,13 @@ def apply_missing_evidence(target, raw_json):
     from portals.page_data import present
     changed=False
     for field,old in before.items():
-        if present(old):setattr(target,field,old)
+        if field=='sale_history_json':
+            # Enrichment supplies the union of all previously accepted source
+            # snapshots. Retain additional dated transactions, not just the
+            # first source's timeline. Conflicting dates/prices were rejected
+            # by enrich_accepted before any property write.
+            changed=changed or getattr(target,field,None)!=old
+        elif present(old):setattr(target,field,old)
         elif present(getattr(target,field,None)):changed=True
     return changed
 

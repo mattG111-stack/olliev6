@@ -190,6 +190,28 @@ def test_later_source_adds_missing_evidence_without_rewriting_existing_estimate(
     assert stored.sale_price==900000
 
 
+def test_later_source_extends_sale_history_without_losing_existing_dates(db_session,monkeypatch):
+    import json
+    first=sale(sale_history=[{'saleDate':'2017-01-01','salePrice':600000}])
+    run(db_session,monkeypatch,[first])
+    later={**sale(sale_history=[{'saleDate':'2020-01-01','salePrice':750000}]),
+           'source':'homes','url':'https://homes.co.nz/address/auckland/example/1/abc'}
+    result=run(db_session,monkeypatch,[later])
+    stored=db_session.query(PropertySold).one()
+    assert result['enriched']==1
+    assert json.loads(stored.sale_history_json)==[
+        {'saleDate':'2020-01-01','salePrice':750000},
+        {'saleDate':'2017-01-01','salePrice':600000}]
+    assert stored.sale_price==900000 and stored.sold_date=='2026-01-03'
+    repeated=run(db_session,monkeypatch,[later])
+    assert repeated['enriched']==0 and repeated['skipped']==1
+    conflict={**later,'sale_history':[{'saleDate':'2017-01-01','salePrice':610000}]}
+    assert run(db_session,monkeypatch,[conflict])['quarantined']==1
+    assert json.loads(stored.sale_history_json)==[
+        {'saleDate':'2020-01-01','salePrice':750000},
+        {'saleDate':'2017-01-01','salePrice':600000}]
+
+
 def test_sold_estimate_migration_preserves_existing_transactions(db_session,monkeypatch):
     import importlib.util
     from pathlib import Path
