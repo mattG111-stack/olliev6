@@ -259,3 +259,16 @@ def test_oneroof_explicit_days_normalised_with_raw_evidence_retained():
     row=canonical('oneroof','for_sale','https://www.oneroof.co.nz/property/example/25',raw)
     assert row['days_on_market']==2
     assert row['raw_source']['publicRecords']['data'][0]['value']=='2 days'
+
+
+@pytest.mark.parametrize('message,code',[
+ ('Source paused: HTTP 429; no proxy retry','access_restricted'),
+ ('Trade Me rendering stopped: access restriction','access_restricted'),
+ ('Source returned HTTP 503','http_503'),
+ ('Source or proxy connection failed','connection_failed'),
+ ('secret password=https://private.example','collector_unavailable'),
+ ('Source returned HTTP 503 secret','collector_unavailable'),
+])
+def test_failure_diagnostics_are_allowlisted(message,code):
+    from portals.direct import failure_code
+    assert failure_code(CollectorUnavailable(message))==code

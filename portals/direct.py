@@ -34,6 +34,43 @@ class CollectorUnavailable(RuntimeError):
     pass
 
 
+def failure_code(exc):
+    """Allowlisted diagnostics only; never persist arbitrary exception text."""
+    message=str(exc)
+    codes={
+        'Source or proxy connection failed':'connection_failed',
+        'Could not establish robots rules':'robots_unavailable',
+        'Source robots rules disallow this URL':'robots_disallowed',
+        'Page exceeds collection size limit':'page_size_limit',
+        'No recognisable listing data; source adapter needs checking':'unrecognised_data',
+        'Collection budget exhausted before any property details were read':'request_budget',
+        'Homes browser unavailable or page did not finish loading':'homes_render_failed',
+        'Homes rendering stopped after an unsuccessful response':'homes_response_failed',
+        'Trade Me browser unavailable or page did not finish loading':'trademe_render_failed',
+        'Trade Me rendering stopped after an unsuccessful response':'trademe_response_failed',
+        'Trade Me search is temporarily unavailable at the source':'source_unavailable',
+        'Trade Me rendered search has no usable listing links':'unrecognised_data',
+        'Homes rendered search has no usable listing links; scope is unverified':'unrecognised_data',
+        'Rendered page exceeds collection size limit':'page_size_limit',
+        'Rendered discovery evidence exceeds collection size limit':'page_size_limit',
+        'Unsupported source URL':'unsupported_url',
+    }
+    if message in codes:return codes[message]
+    if message in ('Source paused after access restriction','Source paused: access challenge',
+                   'Source paused: access challenge; no proxy retry',
+                   'Trade Me rendering stopped: access restriction',
+                   'Homes rendering stopped: access restriction',
+                   'Homes rendering stopped: access restriction (source response)',
+                   'Homes rendering stopped: access restriction (visible challenge text)',
+                   'Homes rendering stopped: access restriction (challenge widget)'):
+        return 'access_restricted'
+    if re.fullmatch(r'Source paused: HTTP (401|403|429); no proxy retry',message):
+        return 'access_restricted'
+    if re.fullmatch(r'Source returned HTTP [1-5][0-9]{2}',message):
+        return 'http_'+message[-3:]
+    return 'collector_unavailable'
+
+
 def configured(db=None):
     if not settings.scraper_enabled:
         return False
