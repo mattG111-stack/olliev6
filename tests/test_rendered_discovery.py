@@ -391,4 +391,9 @@ def test_actual_browser_trademe_discovery_reads_javascript_links_and_stops_on_re
             with pytest.raises(CollectorUnavailable,match='restriction'):trademe_search_html(page,root,3000,['access'])
             page.set_content(f'<body>Verify you are human<a href="{detail}">Property</a></body>')
             with pytest.raises(CollectorUnavailable,match='restriction'):trademe_search_html(page,root,3000,[])
+            page.set_content('<body>Verify you are human</body>')
+            with pytest.raises(CollectorUnavailable,match='restriction'):trademe_search_html(page,root,3000,[])
+            page.set_content('<body><h1>Whoops!</h1>Unable to retrieve search results</body>')
+            with pytest.raises(CollectorUnavailable,match='temporarily unavailable at the source'):
+                trademe_search_html(page,root,3000,[])
         finally:browser.close()

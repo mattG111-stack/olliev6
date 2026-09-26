@@ -192,13 +192,20 @@ def trademe_property_links(html, base_url):
 
 def trademe_search_html(page, url, timeout_ms, restricted):
     from portals.direct import CollectorUnavailable, MAX_BYTES, next_pages
-    page.locator('a[href*="/listing/"]').first.wait_for(state='attached',timeout=timeout_ms)
+    if restricted:raise CollectorUnavailable('Trade Me rendering stopped: access restriction')
+    # A source outage has no listing anchors. Recognise its visible error
+    # instead of waiting for a listing and reporting an ambiguous timeout.
+    page.wait_for_function('''() => document.querySelector('a[href*="/listing/"]')
+        || /verify you are human|access denied|captcha|unable to retrieve search results/i.test(document.body.innerText)
+        || document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]')''',timeout=timeout_ms)
     snapshot=page.evaluate('''() => ({
         blocked: /verify you are human|access denied|captcha/i.test(document.body.innerText)
           || !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]'),
+        unavailable: /unable to retrieve search results/i.test(document.body.innerText),
         links: [...document.querySelectorAll('a[href]')].map(a => ({url:a.href,label:a.getAttribute('aria-label')||'',text:a.innerText}))
     })''')
     if restricted or snapshot['blocked']:raise CollectorUnavailable('Trade Me rendering stopped: access restriction')
+    if snapshot['unavailable']:raise CollectorUnavailable('Trade Me search is temporarily unavailable at the source')
     html=''.join(f'<a href="{escape(a["url"],quote=True)}" aria-label="{escape(a["label"],quote=True)}">{escape(a["text"])}</a>' for a in snapshot['links'])
     details=trademe_property_links(html,url)
     if not details:raise CollectorUnavailable('Trade Me rendered search has no usable listing links')
