@@ -227,3 +227,27 @@ def test_search_detail_enrichment_uses_verified_redirect_target(monkeypatch):
     assert len(result)==1 and result[0]['url']==final
     assert result[0]['redirected_from']==original
     assert 'search' in result[0]['raw_source'] and 'detail' in result[0]['raw_source']
+
+
+def test_isolated_bad_detail_retains_evidence_and_does_not_block_next_record(monkeypatch):
+    bad='https://www.oneroof.co.nz/property/bad'
+    good='https://www.oneroof.co.nz/property/good'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'for_sale':[bad]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',3)
+    calls=[]
+    class Pages:
+        def get(self,url):
+            calls.append(url)
+            if url==bad:return '<html>detail changed</html>'
+            return '<script type="application/ld+json">'+json.dumps({'@type':'RealEstateListing','url':good,'about':{'@type':'House','address':{'streetAddress':'2 Example Road','addressLocality':'Example','addressRegion':'Auckland'}}})+'</script>'
+    state={'pending_urls':[bad,good],'pending_search_records':{bad:{'original':'kept'}}}
+    rows=collect('oneroof',transport=Pages(),checkpoint=state,isolate_records=True)
+    valid=[r for r in rows if not r.get('_collection_rejected')]
+    rejected=[r for r in rows if r.get('_collection_rejected')]
+    assert len(valid)==len(rejected)==1 and valid[0]['url']==good
+    assert rejected[0]['raw_source']['search']=={'original':'kept'}
+    assert 'detail changed' in rejected[0]['raw_source']['html']
+    assert state['pending_urls']==[] and state['record_failures'][bad]['retry_after']
+    calls.clear()
+    collect('oneroof',transport=Pages(),checkpoint=state,isolate_records=True)
+    assert bad not in calls

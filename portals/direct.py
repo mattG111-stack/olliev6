@@ -1,8 +1,8 @@
 """Bounded public-page collector. No Apify or API credentials from listing sites.
 
 Proxy gateway credentials stay server-side. Rotation is between collection jobs,
-not a way to retry a denied request. Source failures fail the job rather than
-being mistaken for zero listings or evidence that a property was delisted.
+not a way to retry a denied request. Source failures are reported with a cooldown; they never become empty success
+or evidence that a property was delisted.
 """
 from __future__ import annotations
 import itertools
@@ -251,16 +251,20 @@ def merge_detail_evidence(row, enriched, detail):
     return row
 
 
+class RecordRejected(CollectorUnavailable):
+    """A fetched detail is unusable; this is not a transport/access failure."""
+
+
 def verify_redirect_identity(source, kind, original_url, original_raw, final_url, final_raw):
     """A source redirect is navigation evidence, never permission to merge units."""
     before=canonical(source,kind,original_url,original_raw)
     after=canonical(source,kind,final_url,final_raw)
     for field in ('address','suburb'):
         if not before.get(field) or not after.get(field) or page_data.text_key(before[field]) != page_data.text_key(after[field]):
-            raise CollectorUnavailable('Redirected listing identity differs; review required')
+            raise RecordRejected('Redirected listing identity differs; review required')
 
 
-def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, checkpoint=None):
+def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, checkpoint=None, isolate_records=False):
     """Walk configured search pages + visible next links within explicit bounds.
 
     Seeds are explicit per source/category. No guessed private API endpoints,
@@ -299,6 +303,24 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
     if rechecks and not pending:
         due = rechecks[:min(5, page_limit // 2)]
         queue = list(dict.fromkeys(due + queue))
+    rejected=[]
+    from datetime import datetime, timezone, timedelta
+    clock=datetime.now(timezone.utc)
+    failures=state.setdefault('record_failures',{})
+    def due(url):
+        try:return datetime.fromisoformat(failures[url]['retry_after'])<=clock
+        except (KeyError,ValueError,TypeError):return True
+    if isolate_records:
+        queue=[url for url in queue if due(url)]
+        for url in failures:
+            validate_url(url,source)
+            if due(url) and url not in queue:queue.append(url)
+    def reject(url, final_url, html, search, details, exc):
+        if not isolate_records:raise exc
+        failures[url]={'retry_after':(clock+timedelta(hours=24)).isoformat(), 'code':type(exc).__name__}
+        rejected.append({'source':source,'kind':kind,'url':url,'_collection_rejected':True,
+            'reason_code':type(exc).__name__,'resolved_url':final_url,
+            'raw_source':{'search':search,'details':details,'html':html}})
     fetched = 0
     cap = max(1, min(int(cap), 1000))
     try:
@@ -314,14 +336,19 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             requested_url=url
             url=getattr(transport,'resolved_urls',{}).get(url,url)
             validate_url(url,source)
-            if url != requested_url:
-                seen.add(url)
-                if url not in extracted:
-                    raise CollectorUnavailable('Redirected detail canonical URL missing')
-                if saved_search is not None:
-                    verify_redirect_identity(source,kind,requested_url,saved_search,url,extracted[url])
-            if saved_search is not None and url not in extracted:
-                raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
+            try:
+                if url != requested_url:
+                    seen.add(url)
+                    if url not in extracted:
+                        raise RecordRejected('Redirected detail canonical URL missing')
+                    if saved_search is not None:
+                        verify_redirect_identity(source,kind,requested_url,saved_search,url,extracted[url])
+                if saved_search is not None and url not in extracted:
+                    raise RecordRejected('Listing detail schema changed or canonical URL missing')
+            except RecordRejected as exc:
+                reject(requested_url,url,text,saved_search,extracted,exc)
+                continue
+            failures.pop(requested_url,None)
             if url in extracted:
                 # Detail pages can embed recommended neighbours. They are not
                 # part of this search checkpoint or its configured result set.
@@ -331,7 +358,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                 discovered=trademe_property_links(text,url)
                 if discovered:
                     for target in discovered+next_pages(text,url,source):
-                        if target not in seen and target not in queue:queue.append(target)
+                        if target not in seen and target not in queue and (not isolate_records or due(target)):queue.append(target)
                     continue
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
@@ -372,6 +399,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                     row['redirected_from']=requested_url
                 if saved_search is not None and record_url==url:
                     row=merge_detail_evidence(canonical(source,kind,url,saved_search),row,raw)
+                if requested_url != url:
+                    row['redirected_from']=requested_url
                 page_rows.append(row)
                 if str(row.get('region', '')).strip().casefold() != 'auckland':
                     continue
@@ -392,13 +421,16 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             boundary = bool(following and len(page_rows) == len(extracted_items)
                             and incremental.stop_after_page(state, page_rows))
             for target in ([] if boundary else following):
-                if target not in seen and target not in queue:queue.append(target)
-        if not rows and queue:
+                if target not in seen and target not in queue and (not isolate_records or due(target)):queue.append(target)
+        if not rows and not rejected and queue:
             raise CollectorUnavailable('Collection budget exhausted before any property details were read')
         # Discover search pages first. Detail enrichment must not spend the
         # entire request budget on the first page and starve pagination.
         pending_details = []
         for record_url, row in list(rows.items()):
+            if isolate_records and not due(record_url):
+                rows.pop(record_url,None)
+                continue
             if record_url in seen:
                 continue
             if fetched >= page_limit:
@@ -411,15 +443,21 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             resolved_url=getattr(transport,'resolved_urls',{}).get(record_url,record_url)
             validate_url(resolved_url,source)
             detail = page_data.extract(detail_text, source).get(resolved_url)
-            if detail is None:
-                raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
-            if resolved_url != record_url:
-                verify_redirect_identity(source,kind,record_url,row['raw_source'],resolved_url,detail)
-                row['redirected_from']=record_url
-                row['url']=resolved_url
-                rows.pop(record_url)
-                rows[resolved_url]=row
-                seen.add(resolved_url)
+            try:
+                if detail is None:
+                    raise RecordRejected('Listing detail schema changed or canonical URL missing')
+                if resolved_url != record_url:
+                    verify_redirect_identity(source,kind,record_url,row['raw_source'],resolved_url,detail)
+                    row['redirected_from']=record_url
+                    row['url']=resolved_url
+                    rows.pop(record_url)
+                    rows[resolved_url]=row
+                    seen.add(resolved_url)
+            except RecordRejected as exc:
+                reject(record_url,resolved_url,detail_text,row['raw_source'],detail,exc)
+                rows.pop(record_url,None)
+                continue
+            failures.pop(record_url,None)
             enriched = canonical(source, kind, resolved_url, detail)
             merge_detail_evidence(row,enriched,detail)
         if kind == 'sold':
@@ -448,7 +486,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             row['collection_scope'] = {'pages_fetched': fetched, 'page_limit': page_limit, 'record_cap': cap, 'pending_search_urls':list(queue), 'pending_detail_urls':pending_details, 'complete_coverage_verified': False}
             if state.get('discovery_coverage'):
                 row['collection_scope']['discovery_coverage']=state['discovery_coverage']
-        return list(rows.values())
+        return list(rows.values())+rejected
     finally:
         if owned:
             transport.close()
