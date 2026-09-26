@@ -226,3 +226,70 @@ def test_actual_browser_rearms_latched_infinite_scroll_between_batches():
             assert discovery_info(html)=={'loaded':4,'total':4,'complete':True}
             assert len(property_links(html,'https://homes.co.nz/map'))==4
         finally:browser.close()
+
+
+def test_expanding_homes_window_skips_queued_prefix_and_refreshes_after_completion(monkeypatch):
+    from portals.direct import collect, page_data
+    seed='https://homes.co.nz/map/auckland?filter=type:sold'
+    urls=[f'https://homes.co.nz/address/auckland/example/{i}/abc' for i in range(4)]
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',2)
+    monkeypatch.setattr(page_data,'extract',lambda text,source:
+        {text:{'_apex_kind':'sold'}} if text in urls else {})
+    monkeypatch.setattr(page_data,'normalise',lambda source,kind,url,raw:{
+        'address':f'{urls.index(url)+1} Example Road','suburb':'Example','region':'Auckland',
+        'sale_price':900000,'sold_date':'2026-01-01','scraped_at':'2026-09-26'})
+    class Pages:
+        width=2
+        calls=[]
+        def get(self,url):
+            self.calls.append(url)
+            if url!=seed:return url
+            return ''.join(f'<a href="{u}">Sold</a>' for u in urls[:self.width])+(
+                f'<meta name="apex-homes-coverage" data-loaded="{self.width}" '
+                f'data-total="4" data-complete="{str(self.width==4).lower()}">')
+    pages=Pages();state={}
+    collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[seed,urls[0]]
+    assert state['pending_urls']==[urls[1]]
+    # Mimic persistent JSON storage and restart, then finish unread details.
+    state=json.loads(json.dumps(state));pages.calls=[]
+    collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[urls[1]]
+    pages.calls=[];pages.width=4
+    collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[seed,urls[2]]
+    assert state['pending_urls']==[urls[3]]
+    pages.calls=[]
+    collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[urls[3]]
+    assert state['homes_discovered_urls']=={}
+    # A new pass refreshes old records; the dedupe is not permanent suppression.
+    pages.calls=[]
+    collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[seed,urls[0]]
+
+
+def test_homes_prefix_tracking_does_not_suppress_late_sold_price_recheck(monkeypatch):
+    seed='https://homes.co.nz/map/auckland?filter=type:sold'
+    detail='https://homes.co.nz/address/auckland/example/1/abc'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',3)
+    from portals.direct import page_data
+    monkeypatch.setattr(page_data,'extract',lambda text,source:
+        {detail:{'_apex_kind':'sold'}} if text=='DETAIL' else {})
+    monkeypatch.setattr(page_data,'normalise',lambda *args:{'address':'1 Example Road',
+        'suburb':'Example','region':'Auckland','sale_price':900000,
+        'sold_date':'2026-01-01','scraped_at':'2026-09-26'})
+    class Pages:
+        calls=[]
+        def get(self,url):
+            self.calls.append(url)
+            if url==detail:return 'DETAIL'
+            return f'<a href="{detail}">Sold</a><meta name="apex-homes-coverage" data-loaded="1" data-total="4" data-complete="false">'
+    pages=Pages();state={'homes_discovered_urls':{seed:[detail]},'sold_recheck_urls':[detail]}
+    rows=collect('homes',kind='sold',transport=pages,checkpoint=state)
+    assert pages.calls==[detail,seed]
+    assert rows[0]['sale_price']==900000
+    assert state['sold_recheck_urls']==[]
+    assert state['discovery_coverage']['complete'] is False

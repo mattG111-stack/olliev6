@@ -254,8 +254,22 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                         state['homes_discovery_batches']=min(500, max(50, int(state.get('homes_discovery_batches',50)))+50)
                 discovered = property_links(text, url)
                 if discovered:
+                    # Growing a bounded Homes window revisits its prefix.
+                    # Remember queued identities for this search pass; unread
+                    # details live in pending_urls in the same checkpoint.
+                    # Sold-price rechecks remain independent of this set.
+                    windows = state.setdefault('homes_discovered_urls', {})
+                    previous = set(windows.get(url, [])) if coverage else set()
                     for target in discovered:
-                        if target not in seen and target not in queue:queue.append(target)
+                        if target not in previous and target not in seen and target not in queue:
+                            queue.append(target)
+                    if coverage:
+                        if coverage['complete']:
+                            # After pending details drain, the next complete
+                            # scan must refresh known properties again.
+                            windows.pop(url, None)
+                        else:
+                            windows[url] = sorted(previous.union(discovered))
                     continue
             if not extracted:
                 raise CollectorUnavailable('No recognisable listing data; source adapter needs checking')
