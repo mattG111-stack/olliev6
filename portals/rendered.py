@@ -117,6 +117,10 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
     if len(html.encode()) > MAX_BYTES:
         raise CollectorUnavailable('Rendered discovery evidence exceeds collection size limit')
     count=len(discovered)
+    # The public result count can change while a long scan is running.
+    # Never certify coverage against an obsolete, smaller initial count.
+    final_match=re.search(r'([\d,]+)\s+properties\b',page.locator('body').inner_text(),re.I)
+    total=int(final_match[1].replace(',','')) if final_match else None
     complete=total is not None and count>=total
     return html+f'<meta name="apex-homes-coverage" data-loaded="{count}" data-total="{total if total is not None else "unknown"}" data-complete="{str(complete).lower()}">'
 

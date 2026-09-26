@@ -313,3 +313,16 @@ def test_actual_browser_discovery_keeps_urls_without_copying_oversized_card_mark
             with pytest.raises(CollectorUnavailable,match='restriction'):
                 rendered_html(page,'https://homes.co.nz/map',3000,[],True)
         finally:browser.close()
+
+
+def test_coverage_uses_latest_visible_total_not_obsolete_initial_count(monkeypatch):
+    from portals import rendered
+    class Page:
+        reads=0
+        def locator(self,selector):return self
+        def inner_text(self):
+            self.reads+=1
+            return '1 properties' if self.reads==1 else '2 properties'
+    monkeypatch.setattr(rendered,'rendered_html',lambda *args:'<a href="/address/auckland/example/1/abc">Sold</a>')
+    html=rendered.load_homes_results(Page(),'https://homes.co.nz/map',100,[],max_batches=1)
+    assert rendered.discovery_info(html)=={'loaded':1,'total':2,'complete':False}
