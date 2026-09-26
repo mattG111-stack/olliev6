@@ -177,6 +177,8 @@ def canonical(source, kind, url, raw):
                'key_land_area': 'land_area_m2', 'year_built': 'building_age',
                'key_time_on_market': 'days_on_market'}
     row = {aliases.get(k, k): v for k, v in n.items()}
+    if 'days_on_market' in row:
+        row['days_on_market']=page_data.duration_days(row['days_on_market'])
     row.update(kind=kind, source=source, url=url, _apex_direct=True)
     row['raw_source'] = raw
     row['provenance'] = {aliases.get(k, k): {'source': source, 'url': url, 'collected_at': n['scraped_at']}

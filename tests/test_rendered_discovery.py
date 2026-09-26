@@ -397,3 +397,17 @@ def test_actual_browser_trademe_discovery_reads_javascript_links_and_stops_on_re
             with pytest.raises(CollectorUnavailable,match='temporarily unavailable at the source'):
                 trademe_search_html(page,root,3000,[])
         finally:browser.close()
+
+
+def test_discovery_time_budget_keeps_observed_urls_and_marks_partial(monkeypatch):
+    from portals import rendered
+    class Page:
+        def locator(self,selector):
+            assert selector=='body'  # No further scroll once the budget expires.
+            return self
+        def inner_text(self):return '100 properties'
+    first='<a href="https://homes.co.nz/address/auckland/example/1/abc">One</a>'
+    monkeypatch.setattr(rendered,'rendered_html',lambda *args:first)
+    result=rendered.load_homes_results(Page(),'https://homes.co.nz/map',1000,[],max_batches=50,max_elapsed_ms=0)
+    assert rendered.property_links(result,'https://homes.co.nz/map')==['https://homes.co.nz/address/auckland/example/1/abc']
+    assert rendered.discovery_info(result)=={'loaded':1,'total':100,'complete':False}

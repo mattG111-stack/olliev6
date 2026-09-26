@@ -264,3 +264,29 @@ def test_rejected_detail_raw_evidence_cannot_become_listing_or_sale(db_session,m
     assert result['record_errors']==1 and result['excluded']==1 and result['new']==0
     assert 'original rejected evidence' in db_session.query(PortalObservation).one().payload_json
     assert db_session.query(PortalListing).count()==db_session.query(PropertySold).count()==0
+
+
+def test_incomplete_discovery_resumes_while_other_source_is_in_cooldown(db_session,monkeypatch):
+    calls=[]
+    def collect(source,checkpoint,**kw):
+        calls.append(source)
+        if source=='oneroof':raise CollectorUnavailable('transient')
+        checkpoint.update(pending_urls=[],last_completed_pass_at='2026-09-27T00:00:00Z',
+                          discovery_coverage={'complete':False,'loaded':2,'total':10})
+        return [{**sample(),'source':source}]
+    monkeypatch.setattr('portals.direct.collect',collect)
+    for _ in range(2):
+        got=collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)['merged']
+        assert got['failed_sources']==1 and got['discovery_pending']==1
+    assert calls==['oneroof','homes','homes']
+
+
+@pytest.mark.parametrize('duration,expected',[('2 days',2),('1 day',1),('2.5 days',2.5),(0,0),('2 months',None),('unknown',None),(True,None),(-1,None)])
+def test_direct_duration_text_is_normalised_before_database_insert(db_session,monkeypatch,duration,expected):
+    item=sample(days_on_market=duration)
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[item])
+    got=collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=1)
+    assert got['merged']['new']==1
+    row=db_session.query(PortalListing).one()
+    assert row.days_on_market==expected
+    assert json.loads(row.raw_json)['days_on_market']==duration

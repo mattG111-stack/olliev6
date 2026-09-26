@@ -76,9 +76,12 @@ def collect_and_stage(db, *, sources, kind, cap):
     summary={};collected=[];progress={};failed_sources=0;record_errors=0;successful_sources=0
     try:
         progress={source:checkpoints.load(db,source,kind) for source in sources}
-        resuming=any(state.get('pending_urls') or state.get('source_retry_after') for state in progress.values())
+        def unfinished(state):
+            return (state.get('pending_urls') or state.get('source_retry_after') or
+                    state.get('discovery_coverage',{}).get('complete') is False)
+        resuming=any(unfinished(state) for state in progress.values())
         for source in sources:
-            if resuming and not progress[source].get('pending_urls') and not progress[source].get('source_retry_after') and progress[source].get('last_completed_pass_at'):
+            if resuming and not unfinished(progress[source]) and progress[source].get('last_completed_pass_at'):
                 summary[source]={'observed':0,'already_complete':True}
                 continue
             now=datetime.now(timezone.utc)

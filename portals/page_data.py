@@ -26,6 +26,14 @@ def area(v,unit):
     n=number(v)
     return n*10000 if n is not None and str(unit).lower() in ('ha','hectares','hectare') else n
 
+def duration_days(value):
+    """Accept explicit days, not guessed units or approximate date text."""
+    if isinstance(value,bool) or value is None:return None
+    match=re.fullmatch(r'(\d+(?:\.\d+)?)\s*(?:days?)?',str(value).strip(),re.I)
+    if not match:return None
+    number=float(match[1])
+    return number if math.isfinite(number) else None
+
 def date(v):
     if not present(v):return None
     try:
