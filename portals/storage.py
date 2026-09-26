@@ -69,7 +69,7 @@ def collect_and_stage(db, *, sources, kind, cap):
         if kind=='sold':
             from portals.sold_acceptance import accept
             result=accept(db,merged)
-            result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=0,
+            result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=result.get('enriched',0),
                           pending=sum(len(s.get('pending_urls',[])) for s in progress.values()),
                           discovery_pending=sum(s.get('discovery_coverage',{}).get('complete') is False for s in progress.values()))
             summary['merged']=result
