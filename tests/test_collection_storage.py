@@ -290,3 +290,12 @@ def test_direct_duration_text_is_normalised_before_database_insert(db_session,mo
     row=db_session.query(PortalListing).one()
     assert row.days_on_market==expected
     assert json.loads(row.raw_json)['days_on_market']==duration
+
+
+def test_safe_failure_reason_persists_through_cooldown(db_session,monkeypatch):
+    def fail(*a,**k):raise CollectorUnavailable('Source or proxy connection failed')
+    monkeypatch.setattr('portals.direct.collect',fail)
+    for _ in range(2):
+        collect_and_stage(db_session,sources=['trademe'],kind='for_sale',cap=1)
+        run=db_session.query(PortalCollectionRun).order_by(PortalCollectionRun.id.desc()).first()
+        assert json.loads(run.summary_json)['trademe']['reason_code']=='connection_failed'

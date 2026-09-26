@@ -67,7 +67,7 @@ def with_pending_evidence(db, collected):
 
 
 def collect_and_stage(db, *, sources, kind, cap):
-    from portals.direct import collect, merge_records, CollectorUnavailable
+    from portals.direct import collect, merge_records, CollectorUnavailable, failure_code
     from portals.listings import to_listing, record
     from portals import checkpoints
     run=PortalCollectionRun(kind=kind,status='running')
@@ -90,21 +90,24 @@ def collect_and_stage(db, *, sources, kind, cap):
             except (ValueError,TypeError):waiting=False
             if waiting:
                 failed_sources+=1
-                summary[source]={'observed':0,'status':'cooldown','error_type':original.get('source_error_type','CollectorUnavailable')}
+                summary[source]={'observed':0,'status':'cooldown','error_type':original.get('source_error_type','CollectorUnavailable'),
+                                 'reason_code':original.get('source_error_code','collector_unavailable')}
                 continue
             try:
                 rows=collect(source,kind=kind,cap=cap,checkpoint=progress[source],isolate_records=True)
-            except CollectorUnavailable:
+            except CollectorUnavailable as exc:
                 # A failed source must not advance its cursor or erase other
                 # sources' valid work. Store no exception text/credentials.
-                original.update(source_retry_after=(now+timedelta(hours=1)).isoformat(),source_error_type='CollectorUnavailable')
+                reason=failure_code(exc)
+                original.update(source_retry_after=(now+timedelta(hours=1)).isoformat(),source_error_type='CollectorUnavailable',source_error_code=reason)
                 progress[source]=original
                 failed_sources+=1
-                summary[source]={'observed':0,'status':'failed','error_type':'CollectorUnavailable'}
+                summary[source]={'observed':0,'status':'failed','error_type':'CollectorUnavailable','reason_code':reason}
                 continue
             successful_sources+=1
             progress[source].pop('source_retry_after',None)
             progress[source].pop('source_error_type',None)
+            progress[source].pop('source_error_code',None)
             for row in rows:
                 db.add(PortalObservation(run_id=run_id,source=source,kind=kind,url=row['url'],
                     payload_json=json.dumps(row,ensure_ascii=False)))
