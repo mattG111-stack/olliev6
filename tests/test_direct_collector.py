@@ -155,3 +155,32 @@ def test_search_excerpt_and_detail_copy_do_not_create_factual_dispute(monkeypatc
     disputed=collect('homes',transport=Pages())
     assert disputed[0]['source_conflicts']['beds']==[3,4]
     assert merge_records(disputed)[0]['price_flag']
+
+
+@pytest.mark.parametrize('code',[200,302,403,407,429])
+def test_proxy_diagnostic_never_retries_redirects_or_exposes_response(monkeypatch,code):
+    from scripts import check_proxy_connection as diagnostic
+    calls=[]
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(code,text='sensitive diagnostic response',headers={'Location':'https://elsewhere.example'})
+    client=client_for(handler)
+    def factory(**kwargs):
+        assert kwargs['follow_redirects'] is False and kwargs['trust_env'] is False
+        assert kwargs['timeout']==15
+        return client
+    monkeypatch.setattr(diagnostic.httpx,'Client',factory)
+    result=diagnostic.check('["http://synthetic:secret@proxy.example:1234"]')
+    assert result['ok']==(code==200)
+    assert result['source_access_verified'] is False
+    assert calls==['https://ip.decodo.com/json']
+    assert 'secret' not in json.dumps(result) and 'sensitive' not in json.dumps(result)
+
+
+def test_proxy_diagnostic_redacts_client_error_and_rejects_missing_config(monkeypatch):
+    from scripts import check_proxy_connection as diagnostic
+    def failing(**kw):raise RuntimeError('synthetic:secret@proxy.example')
+    monkeypatch.setattr(diagnostic.httpx,'Client',failing)
+    result=diagnostic.check('["http://synthetic:secret@proxy.example:1234"]')
+    assert not result['ok'] and 'secret' not in json.dumps(result)
+    assert diagnostic.check('')['reason']=='Missing or invalid proxy configuration'
