@@ -6,7 +6,11 @@ import worker
 
 def jobs():
     allowed={'new listings sweep','sold sweep','daily validated pricing'}
-    return [job for job in worker.build_jobs() if job.name in allowed]
+    from config import settings
+    from portals.delisted import scheduled_run_once
+    return [job for job in worker.build_jobs() if job.name in allowed] + [
+        worker.DurableJob('listing availability', 30 * 60, scheduled_run_once,
+            enabled=lambda: settings.scraper_check_listings)]
 
 
 def main():

@@ -28,7 +28,7 @@ def test_second_worker_does_not_enter_running_job(db_session):
 
 def test_dedicated_scraper_worker_excludes_legacy_live_maintenance():
     from scraper_worker import jobs
-    assert {job.name for job in jobs()}=={'new listings sweep','sold sweep','daily validated pricing'}
+    assert {job.name for job in jobs()}=={'new listings sweep','sold sweep','daily validated pricing','listing availability'}
 
 
 def test_unfinished_saved_pass_resumes_without_waiting_a_day(db_session):
@@ -120,3 +120,13 @@ def test_storage_reports_incomplete_search_even_with_zero_unread_details(db_sess
     assert result['merged']['pending']==0
     assert result['merged']['discovery_pending']==1
     assert checkpoints.load(db_session,'homes',kind)['discovery_coverage']['complete'] is False
+
+
+def test_availability_job_has_separate_explicit_switch(monkeypatch):
+    from config import settings
+    from scraper_worker import jobs
+    monkeypatch.setattr(settings,'scraper_check_listings',False)
+    job=next(j for j in jobs() if j.name=='listing availability')
+    assert not job.enabled()
+    monkeypatch.setattr(settings,'scraper_check_listings',True)
+    assert job.enabled() and job.every==1800

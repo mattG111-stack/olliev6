@@ -40,6 +40,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models import BatchType, ImportBatch, PortalListing, PropertyForSale
@@ -115,7 +116,7 @@ def check_one(client: httpx.Client, url: str) -> tuple[bool, str]:
 
 
 def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
-          client: httpx.Client | None = None, sleep=time.sleep) -> dict:
+          client: httpx.Client | None = None, sleep=time.sleep, due_only=False) -> dict:
     """One daily pass. Returns what it did, and never raises.
 
     Checks the listings whose links have gone longest without a look, so the
@@ -143,11 +144,13 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
                   .filter(ImportBatch.batch_type == BatchType.FOR_SALE.value,
                           ImportBatch.is_active.is_(True))
                   .order_by(ImportBatch.id.desc()).first())
+    due_before = now - timedelta(days=1)
     live = []
     if live_batch:
         live = (db.query(PropertyForSale)
                 .filter(PropertyForSale.url.isnot(None),
                         PropertyForSale.import_batch_id == live_batch[0])
+                .filter(or_(PropertyForSale.link_checked_at.is_(None), PropertyForSale.link_checked_at <= due_before) if due_only else True)
                 .order_by(PropertyForSale.link_checked_at.asc().nullsfirst(),
                           PropertyForSale.id.asc())
                 .limit(cap)
@@ -156,6 +159,7 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
               .filter(PortalListing.url.isnot(None),
                       PortalListing.kind == "for_sale",
                       PortalListing.delisted_at.is_(None))
+              .filter(or_(PortalListing.link_checked_at.is_(None), PortalListing.link_checked_at <= due_before) if due_only else True)
               .order_by(PortalListing.link_checked_at.asc().nullsfirst(),
                         PortalListing.id.asc())
               .limit(max(0, cap - len(live)))
@@ -188,7 +192,7 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
             out["checked"] += 1
             if gone:
                 out["gone"] += 1
-            elif what.isdigit():
+            elif what.isdigit() and int(what) == 200:
                 out["still_up"] += 1
             else:
                 out["unreachable"] += 1
@@ -227,7 +231,7 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
                 elif not is_live and row.delisted_at is None:
                     row.delisted_at = now
                     out["newly_delisted"] += 1
-        elif what.isdigit():
+        elif what.isdigit() and int(what) == 200:
             # It answered, and not with "gone". Whatever we thought before, the
             # advertisement is up — so it goes back on the site immediately.
             if (row.link_gone_count or 0) > 0:
@@ -247,6 +251,8 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
     except Exception:                                  # noqa: BLE001
         log.exception("could not record the delisting sweep")
         db.rollback()
+        if due_only:
+            raise  # Durable scheduler must not mark failed writes successful.
     return out
 
 
@@ -276,3 +282,10 @@ def run_once() -> dict:
         return {"checked": 0, "error": True}
     finally:
         db.close()
+
+
+def scheduled_run_once():
+    """Check a bounded due slice; restarts cannot accumulate same-day evidence."""
+    from db import SessionLocal
+    with SessionLocal() as db:
+        return sweep(db, due_only=True)
