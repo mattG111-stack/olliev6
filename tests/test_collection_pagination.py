@@ -59,3 +59,56 @@ def test_resume_reads_saved_pending_url_before_starting_new_pass(monkeypatch):
     assert len(collect('homes',kind='sold',transport=Pages(),checkpoint=state))==1
     assert calls==[detail]
     assert state['pending_urls']==[] and state['last_completed_pass_at']
+
+
+def test_capped_search_preserves_disclosed_prices_across_checkpoint_restart(monkeypatch):
+    import json
+    from config import settings
+    from portals.direct import collect,page_data
+    seed='https://www.oneroof.co.nz/search/sold/region_auckland-35_page_1'
+    urls=['https://www.oneroof.co.nz/property/example-'+str(i) for i in range(3)]
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',1)
+    records=[dict(address=f'{i} Example Road',suburb='Example',region='Auckland',
+                  sale_price=900000+i,sold_date='2026-06-01') for i in range(3)]
+    def extract(html,source):
+        if html==seed:return dict(zip(urls,records))
+        row=dict(records[urls.index(html)]);row.pop('sale_price')
+        return {html:row}
+    monkeypatch.setattr(page_data,'extract',extract)
+    monkeypatch.setattr(page_data,'normalise',lambda source,kind,url,raw:{**raw,'scraped_at':'2026-09-26T00:00:00Z'})
+    calls=[]
+    class Pages:
+        def get(self,url):calls.append(url);return url
+    state={};all_rows=[]
+    for _ in range(10):
+        all_rows.extend(collect('oneroof',kind='sold',cap=1,transport=Pages(),checkpoint=state))
+        state=json.loads(json.dumps(state))  # Simulate a fresh worker process.
+        if not state['pending_urls']:break
+    assert {row['address']:row.get('sale_price') for row in all_rows}=={f'{i} Example Road':900000+i for i in range(3)}
+    assert not state['pending_urls']
+    assert not state.get('pending_search_records')
+    assert calls==[seed,*urls]
+
+
+def test_resumed_detail_price_conflict_is_not_accepted_as_comparable(monkeypatch):
+    import json
+    from config import settings
+    from portals.direct import collect, page_data
+    from portals.sold_acceptance import reason
+    seed='https://www.oneroof.co.nz/search/sold/region_auckland-35_page_1'
+    detail='https://www.oneroof.co.nz/property/example-conflict'
+    search=dict(address='1 Example Road',suburb='Example',region='Auckland',
+                sale_price=900000,sold_date='2026-06-01')
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[seed]}}))
+    monkeypatch.setattr(page_data,'extract',lambda html,source:{detail:{**search,'sale_price':950000}})
+    monkeypatch.setattr(page_data,'normalise',lambda source,kind,url,raw:{**raw,'scraped_at':'2026-09-26T00:00:00Z'})
+    class Pages:
+        def get(self,url):return 'detail'
+    state=json.loads(json.dumps({'pending_urls':[detail],'pending_search_records':{detail:search}}))
+    row,=collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+    assert row['source_conflicts']['sale_price']==[900000,950000]
+    assert row['raw_source']['search']['sale_price']==900000
+    assert row['raw_source']['detail']['sale_price']==950000
+    assert reason(row)=='Source evidence requires review'
+    assert not state['pending_search_records']

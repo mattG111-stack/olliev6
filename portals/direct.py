@@ -198,6 +198,21 @@ def next_pages(text, url, source):
     return found
 
 
+def merge_detail_evidence(row, enriched, detail):
+    conflicts = {k: [row[k], value] for k, value in enriched.items()
+                 if page_data.present(row.get(k)) and page_data.present(value)
+                 and row[k] != value and k not in PRESENTATION_FIELDS
+                 and k not in ('raw_source', 'provenance', 'scraped_at')}
+    for key,value in enriched.items():
+        fuller=(key=='description' and isinstance(value,str) and len(value)>len(str(row.get(key) or '')))
+        if not page_data.present(row.get(key)) or fuller:
+            row[key]=value
+            if key in enriched['provenance']:row['provenance'][key]=enriched['provenance'][key]
+    row['raw_source']={'search':row['raw_source'],'detail':detail}
+    row['source_conflicts']=conflicts
+    return row
+
+
 def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, checkpoint=None):
     """Walk configured search pages + visible next links within explicit bounds.
 
@@ -224,6 +239,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
     if source == 'homes' and isinstance(transport, Transport):
         transport.homes_discovery_batches = max(50, min(500, int(state.get('homes_discovery_batches', 50))))
     pending = state.get('pending_urls', [])
+    buffered = state.setdefault('pending_search_records', {})
+    for buffered_url in buffered:validate_url(buffered_url,source)
     for pending_url in pending:validate_url(pending_url, source)
     rows, seen, queue = {}, set(), list(dict.fromkeys(pending or seeds))
     page_limit = max(1, min(settings.scraper_max_pages, 30))
@@ -246,6 +263,9 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             text = transport.get(url)
             fetched += 1
             extracted = page_data.extract(text, source)
+            saved_search=buffered.pop(url,None)
+            if saved_search is not None and url not in extracted:
+                raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
                 coverage=discovery_info(text)
@@ -281,6 +301,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                     continue
                 validate_url(record_url, source)
                 row = canonical(source, kind, record_url, raw)
+                if saved_search is not None and record_url==url:
+                    row=merge_detail_evidence(canonical(source,kind,url,saved_search),row,raw)
                 page_rows.append(row)
                 if str(row.get('region', '')).strip().casefold() != 'auckland':
                     continue
@@ -290,9 +312,11 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                     rows[record_url] = row
                 if len(rows) >= cap:
                     # Do not lose the rest of a partially consumed search page.
-                    for remaining_url, _ in extracted_items[item_index + 1:]:
+                    for remaining_url, remaining_raw in extracted_items[item_index + 1:]:
                         validate_url(remaining_url, source)
-                        if remaining_url not in seen and remaining_url not in queue:queue.append(remaining_url)
+                        if remaining_url not in seen:
+                            buffered[remaining_url]=remaining_raw
+                            if remaining_url not in queue:queue.append(remaining_url)
                     break
             following = next_pages(text,url,source)
             # Only assess whole search pages, never truncated pages or details.
@@ -310,6 +334,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                 continue
             if fetched >= page_limit:
                 pending_details.append(record_url)
+                buffered[record_url]=row['raw_source']
                 continue
             detail_text = transport.get(record_url)
             fetched += 1
@@ -318,19 +343,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             if detail is None:
                 raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
             enriched = canonical(source, kind, record_url, detail)
-            conflicts = {k: [row[k], value] for k, value in enriched.items()
-                         if page_data.present(row.get(k)) and page_data.present(value)
-                         and row[k] != value and k not in PRESENTATION_FIELDS
-                         and k not in ('raw_source', 'provenance', 'scraped_at')}
-            for key, value in enriched.items():
-                fuller_description=(key=='description' and isinstance(value,str)
-                                    and len(value)>len(str(row.get(key) or '')))
-                if not page_data.present(row.get(key)) or fuller_description:
-                    row[key] = value
-                    if key in enriched['provenance']:
-                        row['provenance'][key] = enriched['provenance'][key]
-            row['raw_source'] = {'search': row['raw_source'], 'detail': detail}
-            row['source_conflicts'] = conflicts
+            merge_detail_evidence(row,enriched,detail)
         if kind == 'sold':
             # Remove resolved observations; move still-undisclosed ones to the
             # back so a repeatedly missing price cannot monopolise refreshes.
