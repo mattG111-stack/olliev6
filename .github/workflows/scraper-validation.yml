@@ -50,6 +50,7 @@ jobs:
         run: >-
           python -m pytest -o addopts='' -q
           tests/test_sold_acceptance.py tests/test_daily_pricing.py
+          tests/test_scraped_price_paths.py tests/test_a_guide_price_is_a_real_number.py
           tests/test_durable_schedule.py tests/test_collection_storage.py
           tests/test_direct_collector.py tests/test_public_adapters.py
           tests/test_collection_pagination.py tests/test_new_listings.py

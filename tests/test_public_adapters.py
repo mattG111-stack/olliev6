@@ -101,3 +101,43 @@ def test_trademe_insights_sold_schema_and_region_without_invented_district():
     assert n['sale_price']==600100 and n['sold_date']=='2026-08-18'
     assert n['region']=='Auckland' and not n.get('district')
     assert n['beds']==2 and n['homes_estimate']==750000
+
+
+@pytest.mark.parametrize("display,method", [
+    ("Auction on 13 Oct", "auction"), ("Deadline sale 12 October", "deadline sale"),
+    ("Tender closes Friday", "tender"), ("By Negotiation", "negotiation"),
+    ("Price on application", "negotiation"), ("Enquiries over $900,000", "offers over"),
+    ("Asking price $950,000", "fixed"), ("$1.2M", "fixed"),
+])
+@pytest.mark.parametrize("source", ["trademe", "homes", "oneroof"])
+def test_advertised_sale_method_has_source_provenance(source, display, method):
+    if source == "trademe":
+        raw = trademe(); raw["priceDisplay"] = display
+        row = normalized(source, raw)
+    elif source == "homes":
+        raw = homes(); raw["display_price"] = display
+        row = normalized(source, raw)
+    else:
+        row = canonical(source, "for_sale", "https://www.oneroof.co.nz/example", {
+            "street": "1 Example Road", "suburb": "Example", "region": "Auckland",
+            "priceBold": display, "searchPrice": 950000})
+    assert row["sale_method"] == method
+    assert row["provenance"]["sale_method"]["source"] == source
+    if method not in ("fixed", "offers over"):
+        assert row.get("price_numeric") is None
+
+
+def test_sale_method_not_guessed_from_description_or_completed_sale_price():
+    raw = trademe(); raw["priceDisplay"] = "Contact us"; raw["body"] = "Previously auctioned; owner relocating"
+    assert "sale_method" not in normalized("trademe", raw)
+    from portals.sale_method import apply_sale_method
+    sold = {"listing_kind": "sold", "price_display": "$950,000"}
+    apply_sale_method(sold)
+    assert "sale_method" not in sold
+
+
+def test_auction_in_secondary_price_line_clears_misleading_numeric_price():
+    row = canonical("oneroof", "for_sale", "https://www.oneroof.co.nz/example", {
+        "priceBold": "$950,000", "priceLight": "Auction guide"})
+    assert row["sale_method"] == "auction"
+    assert "price_numeric" not in row

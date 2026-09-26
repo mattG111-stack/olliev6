@@ -157,6 +157,8 @@ class Transport:
 
 def canonical(source, kind, url, raw):
     n = page_data.normalise(source, kind, url, raw)
+    from portals.sale_method import apply_sale_method
+    apply_sale_method(n)
     aliases = {'listing_id': 'source_id', 'key_bedrooms': 'beds', 'key_bathrooms': 'baths',
                'key_carspaces': 'carspaces', 'key_floor_area': 'floor_area_m2',
                'key_land_area': 'land_area_m2', 'year_built': 'building_age',

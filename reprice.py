@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ingest import _to_float, _to_int, _to_str
 from models import BatchType, ImportBatch, PropertyForSale, PropertyRent, PropertySold
-from prior_price import DERIVED_BASIS
+from prior_price import DERIVED_BASIS, GUIDE_BASIS
 from pricing.cashflow import RentRates
 from pricing.comps import SoldDataset
 from pricing.pipeline import run as run_pipeline
@@ -156,6 +156,10 @@ def _apply_outputs(rec: PropertyForSale, row: dict) -> None:
             _carried = _to_float(row.get("price_numeric"))
         if _carried and _carried > 0:
             rec.asking_price = _carried
+    elif rec.listing_type == "guide" and rec.asking_basis == GUIDE_BASIS:
+        # A disclosed floor remains a labelled guide after every reprice.
+        # It is not a firm asking price and the pipeline suppresses its margin.
+        rec.asking_price = _to_float(row.get("price_numeric"))
     elif rec.listing_type not in ("fixed", "", None):
         # And the other direction, which is what makes re-pricing a REPAIR.
         #
