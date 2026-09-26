@@ -1474,9 +1474,10 @@ class ApifyTokenIn(BaseModel):
 
 
 @router.get("/release/scraper")
-def scraper_status(admin: User = Depends(require_admin)):
+def scraper_status(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     from portals.direct import status
-    return status()
+    from portals.storage import latest_runs
+    return {**status(), 'configuration_scope':'api', 'latest_runs':latest_runs(db)}
 
 
 @router.get("/release/apify")

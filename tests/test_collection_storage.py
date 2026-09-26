@@ -189,3 +189,32 @@ def test_cross_run_enrichment_does_not_join_other_property(db_session,monkeypatc
         collect_and_stage(db_session,sources=[source],kind='for_sale',cap=5)
     assert db_session.query(PortalListing).count()==2
     assert db_session.query(PortalListing).filter_by(source='oneroof').one().floor_area_m2 is None
+
+
+def test_latest_runs_reports_each_kind_without_private_evidence(db_session):
+    from portals.storage import latest_runs
+    db_session.add_all([
+        PortalCollectionRun(kind='for_sale',status='failed',summary_json='{}'),
+        PortalCollectionRun(kind='sold',status='complete',summary_json=json.dumps({
+            'oneroof':{'observed':3,'secret':'private'},'homes':{'observed':True},
+            'trademe':{'observed':-5},'merged':{'new':2,'pending':4,'excluded':1,
+            'refreshed':False,'discovery_pending':'private'},'raw':'private'})),
+        PortalCollectionRun(kind='for_sale',status='running',summary_json='broken-json'),
+        PortalCollectionRun(kind='rental',status='complete',summary_json='{}')])
+    db_session.commit()
+    result=latest_runs(db_session)
+    assert len(result)==2
+    assert result[0]['kind']=='for_sale' and result[0]['status']=='running'
+    assert result[0]['observed']==0
+    assert result[1]['observed']==3 and result[1]['new']==2
+    assert result[1]['pending']==4 and result[1]['excluded']==1
+    assert 'refreshed' not in result[1] and 'discovery_pending' not in result[1]
+    assert 'private' not in json.dumps(result)
+
+
+def test_latest_runs_empty_and_non_object_summary(db_session):
+    from portals.storage import latest_runs
+    assert latest_runs(db_session)==[]
+    db_session.add(PortalCollectionRun(kind='sold',status='complete',summary_json='[]'))
+    db_session.commit()
+    assert latest_runs(db_session)[0]['observed']==0
