@@ -5,6 +5,7 @@ must perform its normal robots/access checks before rendering the same URL.
 """
 from urllib.parse import urlsplit, unquote, urljoin
 from html.parser import HTMLParser
+from html import escape
 import re
 
 
@@ -77,27 +78,36 @@ def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=3):
 def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
     """Load bounded public result batches; retain the displayed coverage count."""
     html=rendered_html(page,url,timeout_ms,restricted)
+    discovered = dict.fromkeys(property_links(html, url))
     displayed=page.locator('body').inner_text()
     match=re.search(r'([\d,]+)\s+properties\b',displayed,re.I)
     total=int(match[1].replace(',','')) if match else None
     for _ in range(max(0,min(int(max_batches),10)-1)):
-        count=len(property_links(html,url))
+        count=len(discovered)
         if total is None or count>=total:break
         container=page.locator('.drawerContentContainer')
         if container.count()!=1:break
         container.evaluate('(el) => { el.scrollTop=el.scrollHeight; }')
         try:
-            page.wait_for_function("""count =>
+            page.wait_for_function("""known =>
                 /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
-                new Set([...document.querySelectorAll('a[href*="/address/auckland/"]')]
-                    .map(a=>a.href.split('?')[0].split('#')[0])).size > count
-            """,arg=count,timeout=min(timeout_ms,10000))
+                [...document.querySelectorAll('a[href*="/address/auckland/"]')]
+                    .some(a => !known.includes(a.href.split('?')[0].split('#')[0]))
+            """,arg=list(discovered),timeout=min(timeout_ms,10000))
         except Exception:
             # An unchanged window is partial coverage, never an empty region.
             html=rendered_html(page,url,timeout_ms,restricted)
+            discovered.update(dict.fromkeys(property_links(html,url)))
             break
         html=rendered_html(page,url,timeout_ms,restricted)
-    count=len(property_links(html,url))
+        discovered.update(dict.fromkeys(property_links(html,url)))
+    # Virtualized lists replace earlier cards. Keep the exact observed URLs,
+    # including those no longer present in the final DOM, for detail fetching.
+    html += ''.join(f'<a href="{escape(link, quote=True)}" data-apex-discovered="true"></a>' for link in discovered)
+    from portals.direct import CollectorUnavailable, MAX_BYTES
+    if len(html.encode()) > MAX_BYTES:
+        raise CollectorUnavailable('Rendered discovery evidence exceeds collection size limit')
+    count=len(discovered)
     complete=total is not None and count>=total
     return html+f'<meta name="apex-homes-coverage" data-loaded="{count}" data-total="{total if total is not None else "unknown"}" data-complete="{str(complete).lower()}">'
 

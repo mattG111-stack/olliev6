@@ -100,3 +100,47 @@ def test_actual_browser_loads_more_homes_results_and_reports_partial_coverage():
 def test_coverage_metadata_preserves_unknown_totals():
     from portals.rendered import discovery_info
     assert discovery_info('<meta name="apex-homes-coverage" data-loaded="20" data-total="unknown" data-complete="false">')=={'loaded':20,'total':None,'complete':False}
+
+
+@pytest.mark.parametrize("windows,total,expected_complete", [
+    ([['a'], ['b'], ['c']], 3, True),
+    ([['a','b'], ['b','c'], ['a','b']], 4, False),
+])
+def test_virtualized_windows_keep_every_observed_link(monkeypatch, windows, total, expected_complete):
+    from portals import rendered
+    base = 'https://homes.co.nz/map'
+    class Page:
+        index = 0
+        def locator(self, selector):
+            self.selector = selector
+            return self
+        def inner_text(self): return f'{total} properties'
+        def count(self): return 1
+        def evaluate(self, script): self.index = min(self.index + 1, len(windows)-1)
+        def wait_for_function(self, script, *, arg, timeout):
+            assert isinstance(arg, list)  # Compare identities, not current DOM length.
+            if not any(url(x) not in arg for x in windows[self.index]):
+                raise TimeoutError('no unseen links')
+    def url(x): return f'https://homes.co.nz/address/auckland/example/{x}/abc'
+    page = Page()
+    monkeypatch.setattr(rendered, 'rendered_html', lambda *args:
+        ''.join(f'<a href="{url(x)}">Listing</a>' for x in windows[page.index]))
+    html = rendered.load_homes_results(page, base, 100, [], max_batches=3)
+    assert set(rendered.property_links(html, base)) == {url(x) for w in windows for x in w}
+    assert rendered.discovery_info(html) == {'loaded':3,'total':total,'complete':expected_complete}
+
+
+def test_actual_browser_preserves_replaced_result_cards():
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import load_homes_results, discovery_info
+    fixture = '<body>3 properties<div class="drawerContentContainer" style="height:100px;overflow:auto">\n    <div style="height:400px"><a href="/address/auckland/example/1/abc">One</a></div></div>\n    <script>let n=1;const box=document.querySelector(\'.drawerContentContainer\');\n    box.addEventListener(\'scroll\',()=>{if(box.scrollTop>0 && n<3){n++;\n    box.innerHTML=\'<div style="height:400px"><a href="/address/auckland/example/\'+n+\'/abc">Next</a></div>\';box.scrollTop=0;}});</script></body>'
+    with sync_playwright() as runtime:
+        browser = runtime.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.set_content(fixture)
+            html = load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=3)
+            assert len(property_links(html,'https://homes.co.nz/map')) == 3
+            assert discovery_info(html) == {'loaded':3,'total':3,'complete':True}
+        finally:
+            browser.close()
