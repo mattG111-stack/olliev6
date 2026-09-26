@@ -68,6 +68,7 @@ class Transport:
             raise CollectorUnavailable('Unknown source')
         self.source, self.delay, self.robots = source, max(1.0, delay), {}
         self.blocked = False
+        self.resolved_urls = {}
         self.proxy_url = None
         if client is not None:
             self.client = client
@@ -145,9 +146,13 @@ class Transport:
         if 300 <= code < 400:
             if redirects >= 3:
                 raise CollectorUnavailable('Too many source redirects')
-            return self.get(urljoin(url, location), redirects + 1)
+            target = urljoin(url, location)
+            result = self.get(target, redirects + 1)
+            self.resolved_urls[url] = self.resolved_urls.get(target, target)
+            return result
         if code != 200:
             raise CollectorUnavailable(f'Source returned HTTP {code}')
+        self.resolved_urls[url] = url
         if self.source == 'homes' and u.path.startswith('/map'):
             if not settings.scraper_render_homes:
                 raise CollectorUnavailable('Homes discovery requires the enabled browser renderer')
@@ -246,6 +251,15 @@ def merge_detail_evidence(row, enriched, detail):
     return row
 
 
+def verify_redirect_identity(source, kind, original_url, original_raw, final_url, final_raw):
+    """A source redirect is navigation evidence, never permission to merge units."""
+    before=canonical(source,kind,original_url,original_raw)
+    after=canonical(source,kind,final_url,final_raw)
+    for field in ('address','suburb'):
+        if not before.get(field) or not after.get(field) or page_data.text_key(before[field]) != page_data.text_key(after[field]):
+            raise CollectorUnavailable('Redirected listing identity differs; review required')
+
+
 def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, checkpoint=None):
     """Walk configured search pages + visible next links within explicit bounds.
 
@@ -297,6 +311,15 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             fetched += 1
             extracted = page_data.extract(text, source)
             saved_search=buffered.pop(url,None)
+            requested_url=url
+            url=getattr(transport,'resolved_urls',{}).get(url,url)
+            validate_url(url,source)
+            if url != requested_url:
+                seen.add(url)
+                if url not in extracted:
+                    raise CollectorUnavailable('Redirected detail canonical URL missing')
+                if saved_search is not None:
+                    verify_redirect_identity(source,kind,requested_url,saved_search,url,extracted[url])
             if saved_search is not None and url not in extracted:
                 raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
             if url in extracted:
@@ -345,6 +368,8 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                     continue
                 validate_url(record_url, source)
                 row = canonical(source, kind, record_url, raw)
+                if requested_url != url:
+                    row['redirected_from']=requested_url
                 if saved_search is not None and record_url==url:
                     row=merge_detail_evidence(canonical(source,kind,url,saved_search),row,raw)
                 page_rows.append(row)
@@ -373,7 +398,7 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
         # Discover search pages first. Detail enrichment must not spend the
         # entire request budget on the first page and starve pagination.
         pending_details = []
-        for record_url, row in rows.items():
+        for record_url, row in list(rows.items()):
             if record_url in seen:
                 continue
             if fetched >= page_limit:
@@ -383,10 +408,19 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             detail_text = transport.get(record_url)
             fetched += 1
             seen.add(record_url)
-            detail = page_data.extract(detail_text, source).get(record_url)
+            resolved_url=getattr(transport,'resolved_urls',{}).get(record_url,record_url)
+            validate_url(resolved_url,source)
+            detail = page_data.extract(detail_text, source).get(resolved_url)
             if detail is None:
                 raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
-            enriched = canonical(source, kind, record_url, detail)
+            if resolved_url != record_url:
+                verify_redirect_identity(source,kind,record_url,row['raw_source'],resolved_url,detail)
+                row['redirected_from']=record_url
+                row['url']=resolved_url
+                rows.pop(record_url)
+                rows[resolved_url]=row
+                seen.add(resolved_url)
+            enriched = canonical(source, kind, resolved_url, detail)
             merge_detail_evidence(row,enriched,detail)
         if kind == 'sold':
             # Remove resolved observations; move still-undisclosed ones to the

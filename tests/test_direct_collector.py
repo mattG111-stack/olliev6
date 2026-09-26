@@ -184,3 +184,46 @@ def test_proxy_diagnostic_redacts_client_error_and_rejects_missing_config(monkey
     result=diagnostic.check('["http://synthetic:secret@proxy.example:1234"]')
     assert not result['ok'] and 'secret' not in json.dumps(result)
     assert diagnostic.check('')['reason']=='Missing or invalid proxy configuration'
+
+@pytest.mark.parametrize('different_unit',[False,True])
+def test_buffered_detail_follows_verified_redirect_without_combining_units(monkeypatch,different_unit):
+    original='https://www.oneroof.co.nz/property/old-id'
+    final='https://www.oneroof.co.nz/property/new-id'
+    def raw(address):
+        return {'@type':'RealEstateListing','url':final,'about':{'@type':'House','address':{'streetAddress':address,'addressLocality':'Mount Wellington','addressRegion':'Auckland'}}}
+    body='<script type="application/ld+json">'+json.dumps(raw('2/25 Example Road' if different_unit else '1/25 Example Road'))+'</script>'
+    old_body='<script type="application/ld+json">'+json.dumps(raw('1/25 Example Road'))+'</script>'
+    old=page_data.extract(old_body,'oneroof')[final]
+    def handler(r):
+        if r.url.path=='/robots.txt':return httpx.Response(200,text='User-agent: *\nAllow: /')
+        if str(r.url)==original:return httpx.Response(308,headers={'Location':final})
+        return httpx.Response(200,text=body)
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'for_sale':[original]}}))
+    checkpoint={'pending_urls':[original],'pending_search_records':{original:old}}
+    transport=Transport('oneroof',client=client_for(handler))
+    if different_unit:
+        with pytest.raises(CollectorUnavailable,match='identity differs'):
+            collect('oneroof',transport=transport,checkpoint=checkpoint)
+    else:
+        result=collect('oneroof',transport=transport,checkpoint=checkpoint)
+        assert len(result)==1 and result[0]['url']==final
+        assert checkpoint['pending_urls']==[]
+        assert transport.resolved_urls[original]==final
+
+
+def test_search_detail_enrichment_uses_verified_redirect_target(monkeypatch):
+    seed='https://www.oneroof.co.nz/search/example'
+    original='https://www.oneroof.co.nz/property/old-id'
+    final='https://www.oneroof.co.nz/property/new-id'
+    def body(url):
+        return '<script type="application/ld+json">'+json.dumps({'@type':'RealEstateListing','url':url,'about':{'@type':'House','address':{'streetAddress':'1/25 Example Road','addressLocality':'Mount Wellington','addressRegion':'Auckland'}}})+'</script>'
+    def handler(r):
+        if r.url.path=='/robots.txt':return httpx.Response(200,text='User-agent: *\nAllow: /')
+        if str(r.url)==original:return httpx.Response(308,headers={'Location':final})
+        return httpx.Response(200,text=body(original if str(r.url)==seed else final))
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'for_sale':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',3)
+    result=collect('oneroof',transport=Transport('oneroof',client=client_for(handler)))
+    assert len(result)==1 and result[0]['url']==final
+    assert result[0]['redirected_from']==original
+    assert 'search' in result[0]['raw_source'] and 'detail' in result[0]['raw_source']
