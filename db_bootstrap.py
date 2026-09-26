@@ -30,7 +30,7 @@ from sqlalchemy import inspect, text
 import models  # noqa: F401  — populate Base.metadata
 from db import Base, engine
 
-HEAD_REVISION = "b7c8d9e0f1a2"
+HEAD_REVISION = "d9e0f1a2b3c4"
 
 # New columns this codebase added that an out-of-sync DB may be missing.
 _ADD_COLUMNS = (

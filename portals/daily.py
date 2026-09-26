@@ -32,7 +32,7 @@ from portals.runner import run_portal_job
 log = logging.getLogger(__name__)
 
 EVERY_SECONDS = 24 * 60 * 60
-# Refresh disclosed sold evidence daily; pending records still require review.
+# Refresh sold evidence daily; valid disclosed transactions are auto-accepted.
 SOLD_EVERY_DAYS = 1
 # A daily pass should be a handful of properties. If it ever wants hundreds,
 # something upstream has changed and a human should look before we spend it.
@@ -89,7 +89,7 @@ def sweep_sold_listings() -> dict:
         got = sweep_sold(db)
         found = sum(v["new"] for v in got.values())
         if found:
-            log.warning("daily sold sweep: %d sales waiting for review", found)
+            log.warning("daily sold sweep: %d validated sales saved", found)
         return got
     except Exception:                             # noqa: BLE001
         log.exception("daily sold sweep failed")

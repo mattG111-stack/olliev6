@@ -79,6 +79,17 @@ def test_collection_migration_roundtrip_preserves_existing_tables(db_session):
             migration.upgrade()
 
 
+def test_bootstrap_stamp_matches_current_migration_head():
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from db_bootstrap import HEAD_REVISION
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / 'alembic.ini'))
+    config.set_main_option('script_location', str(root / 'alembic'))
+    assert ScriptDirectory.from_config(config).get_heads() == [HEAD_REVISION]
+
+
 def test_checkpoint_commits_only_after_all_sources_and_staging_succeed(db_session,monkeypatch):
     from portals import checkpoints
     def fail_second(source,checkpoint,**kw):
