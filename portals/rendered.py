@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, unquote, urljoin
 from html.parser import HTMLParser
 from html import escape
 import re
+import time
 
 
 def property_links(html, base_url):
@@ -67,7 +68,11 @@ def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=50):
                 response=page.goto(url,wait_until='domcontentloaded',timeout=timeout_ms)
                 if response is None or response.status!=200 or restricted:
                     raise CollectorUnavailable('Homes rendering stopped after an unsuccessful response')
-                return load_homes_results(page, url, timeout_ms, restricted, max_batches=max_batches)
+                # Increase the discovery window with the persisted batch target.
+                # A fixed short deadline would revisit the same prefix forever.
+                budget=max(60000,min(600000,int(max_batches)*1200))
+                return load_homes_results(page, url, timeout_ms, restricted,
+                                          max_batches=max_batches,max_elapsed_ms=budget)
             finally:browser.close()
     except CollectorUnavailable:raise
     except Exception:
@@ -75,8 +80,9 @@ def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=50):
         raise CollectorUnavailable('Homes browser unavailable or page did not finish loading') from None
 
 
-def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
+def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3, max_elapsed_ms=60000):
     """Load bounded public result batches; retain the displayed coverage count."""
+    deadline=time.monotonic()+max(0,max_elapsed_ms)/1000
     html=rendered_html(page,url,timeout_ms,restricted,True)
     discovered = dict.fromkeys(property_links(html, url))
     displayed=page.locator('body').inner_text()
@@ -86,6 +92,11 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
     # rearms the public drawer's load trigger before entering it again.
     # A stalled cursor is partial coverage, never evidence of completion.
     for _ in range(max(0,min(int(max_batches),500)-1)):
+        # A large Auckland map must yield its observed URLs for checkpointing,
+        # not hold every other source until hundreds of scroll waits finish.
+        # This is checked between bounded page operations; an in-flight page
+        # operation still gets its normal timeout and access checks.
+        if time.monotonic()>=deadline:break
         count=len(discovered)
         if total is None or count>=total:break
         container=page.locator('.drawerContentContainer')
