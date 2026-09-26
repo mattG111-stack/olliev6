@@ -143,3 +143,23 @@ def test_map_pin_tolerance_never_hides_price_address_or_large_coordinate_conflic
         row=merge_detail_evidence({**base,'raw_source':dict(base),'provenance':{}},
                                   {**detail,'raw_source':dict(detail),'provenance':{}},detail)
         assert expected in row['source_conflicts']
+
+
+def test_resumed_detail_does_not_queue_recommended_properties(monkeypatch):
+    import json
+    from config import settings
+    from portals.direct import collect, page_data
+    detail='https://www.oneroof.co.nz/property/example-target'
+    recommendation='https://www.oneroof.co.nz/property/recommended-neighbour'
+    raw=dict(address='1 Example Road',suburb='Example',region='Auckland',
+             sale_price=900000,sold_date='2026-06-01')
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[detail]}}))
+    monkeypatch.setattr(page_data,'extract',lambda html,source:{recommendation:{**raw,'address':'2 Example Road'},detail:raw})
+    monkeypatch.setattr(page_data,'normalise',lambda source,kind,url,raw:{**raw,'scraped_at':'2026-09-26T00:00:00Z'})
+    class Pages:
+        def get(self,url):return 'detail'
+    state={'pending_urls':[detail],'pending_search_records':{detail:raw}}
+    rows=collect('oneroof',kind='sold',cap=1,transport=Pages(),checkpoint=state)
+    assert [row['url'] for row in rows]==[detail]
+    assert not state['pending_urls']
+    assert not state['pending_search_records']

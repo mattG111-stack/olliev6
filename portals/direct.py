@@ -291,6 +291,10 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             saved_search=buffered.pop(url,None)
             if saved_search is not None and url not in extracted:
                 raise CollectorUnavailable('Listing detail schema changed or canonical URL missing')
+            if url in extracted:
+                # Detail pages can embed recommended neighbours. They are not
+                # part of this search checkpoint or its configured result set.
+                extracted={url:extracted[url]}
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
                 coverage=discovery_info(text)
