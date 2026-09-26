@@ -25,6 +25,7 @@ HOSTS = {
 }
 USER_AGENT = 'ApexPropertyCollector/2.0'
 MAX_BYTES = 5_000_000
+PRESENTATION_FIELDS = {'title','description','images','image_url','image_urls','image_count'}
 _lock = threading.Lock()
 _rotation = itertools.count()
 _last_request = {}
@@ -319,9 +320,12 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             enriched = canonical(source, kind, record_url, detail)
             conflicts = {k: [row[k], value] for k, value in enriched.items()
                          if page_data.present(row.get(k)) and page_data.present(value)
-                         and row[k] != value and k not in ('raw_source', 'provenance', 'scraped_at')}
+                         and row[k] != value and k not in PRESENTATION_FIELDS
+                         and k not in ('raw_source', 'provenance', 'scraped_at')}
             for key, value in enriched.items():
-                if not page_data.present(row.get(key)):
+                fuller_description=(key=='description' and isinstance(value,str)
+                                    and len(value)>len(str(row.get(key) or '')))
+                if not page_data.present(row.get(key)) or fuller_description:
                     row[key] = value
                     if key in enriched['provenance']:
                         row['provenance'][key] = enriched['provenance'][key]
@@ -385,7 +389,6 @@ def merge_records(rows):
     # Site-local identifiers have no cross-source meaning. Keep each original
     # ID in source_snapshots, but never turn different portal IDs into a dispute.
     metadata = {'source','url','source_id','property_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
-    presentation = {'title','description','images','image_url','image_urls','image_count'}
     for group in grouped.values():
         merged = dict(group[0]); provenance = {}; conflicts = {}
         for row in group:
@@ -398,7 +401,7 @@ def merge_records(rows):
                     merged[key]=value
                 if merged[key]==value:
                     provenance.setdefault(key,[]).append(origin)
-                elif key not in presentation:
+                elif key not in PRESENTATION_FIELDS:
                     # Portal copy and CDN image URLs naturally differ. Keep
                     # every version in source_snapshots without labelling that
                     # a disagreement over the home's measurable facts.

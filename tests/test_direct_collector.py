@@ -130,3 +130,28 @@ def test_detail_fills_missing_search_field_without_false_conflict(monkeypatch):
     assert results[0]['beds']==3
     assert not results[0]['source_conflicts']
     assert not merge_records(results)[0].get('price_flag')
+
+
+def test_search_excerpt_and_detail_copy_do_not_create_factual_dispute(monkeypatch):
+    search='https://homes.co.nz/search'
+    detail='https://homes.co.nz/address/auckland/example/1'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'for_sale':[search]}}))
+    base={'address':{'street':'1 Example Road','suburb':'Mount Wellington','region':'Auckland'},'bedroom-count':3}
+    detail_beds=3
+    def extract(html,source):
+        return {detail:{**base,'description':'Full property description' if html=='detail' else 'Short excerpt',
+            'header':'Full headline' if html=='detail' else 'Card headline',
+            'photos':['https://images.example/full.jpg' if html=='detail' else 'https://images.example/thumb.jpg'],
+            'bedroom-count':detail_beds if html=='detail' else 3}}
+    monkeypatch.setattr(page_data,'extract',extract)
+    class Pages:
+        def get(self,url):return 'detail' if url==detail else 'search'
+    results=collect('homes',transport=Pages())
+    assert not results[0]['source_conflicts']
+    assert not merge_records(results)[0].get('price_flag')
+    assert results[0]['raw_source']['detail']['description']=='Full property description'
+    assert results[0]['description']=='Full property description'
+    detail_beds=4
+    disputed=collect('homes',transport=Pages())
+    assert disputed[0]['source_conflicts']['beds']==[3,4]
+    assert merge_records(disputed)[0]['price_flag']

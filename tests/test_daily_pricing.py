@@ -83,3 +83,50 @@ def test_later_dispute_excludes_only_matching_dated_sale_from_daily_comps(db_ses
     assert list(matching.sold_date)==['2025-06-01']
     dispute.status='rejected';db_session.commit()
     assert len(_sold_df(db_session,'Auckland',published_only=True))==13
+
+
+def test_three_source_sales_feed_pricing_while_new_listing_stays_in_review(db_session,monkeypatch):
+    """Synthetic collection -> merge -> sold save -> real pricing, with review isolation."""
+    import json
+    from portals.storage import collect_and_stage
+    from models import PortalListing, PortalObservation
+    fs,_=_batches(db_session,1,n_sold=0)
+    fs.status='published';db_session.commit();bid=fs.id
+    sources=('oneroof','trademe','homes')
+    roots={'oneroof':'https://www.oneroof.co.nz/property/',
+           'trademe':'https://www.trademe.co.nz/a/property/residential/sale/',
+           'homes':'https://homes.co.nz/address/auckland/papakura/'}
+    def collect(source,kind,**kw):
+        if kind=='for_sale':
+            return [dict(_apex_direct=True,source=source,kind=kind,url=roots[source]+'new',
+                address='99 New Street',suburb='Papakura',district='Papakura',region='Auckland',
+                price_numeric=950000,price_display='$950,000',sale_method='fixed')]
+        rows=[]
+        for i in range(12):
+            row=dict(_apex_direct=True,source=source,kind=kind,url=roots[source]+str(i),
+                address=f'{i} Sold Street',suburb='Papakura',district='Papakura',region='Auckland',
+                sold_date='2026-06-01',sale_price=900000+i*1000)
+            if source=='oneroof':
+                row.update(property_type='House',beds=3,baths=1,cv_numeric=880000,type_of_title='Freehold')
+            elif source=='trademe':row.update(floor_area_m2=140+i,land_area_m2=600)
+            else:row.update(homes_estimate=2000000,sale_history=[{'saleDate':'2020-01-01','salePrice':650000}])
+            rows.append(row)
+        return rows
+    monkeypatch.setattr('portals.direct.collect',collect)
+    result=collect_and_stage(db_session,sources=sources,kind='sold',cap=20)['merged']
+    assert result['new']==12 and result['quarantined']==0
+    assert db_session.query(PropertySold).count()==12
+    sold=db_session.query(PropertySold).filter_by(address='0 Sold Street').one()
+    assert sold.beds==3 and sold.floor_area_m2==140 and sold.homes_valuation==2000000
+    assert sold.sale_price==900000  # Reference estimate cannot replace the transaction.
+    assert len(json.loads(sold.sale_history_json))==1
+    assert db_session.query(PortalObservation).count()==36
+    assert len(_sold_df(db_session,'Auckland',published_only=True))==12
+    collect_and_stage(db_session,sources=sources,kind='for_sale',cap=20)
+    assert db_session.query(PortalListing).filter_by(kind='for_sale',status='pending').count()==1
+    result=reprice_live(db_session,bid)
+    assert result.committed and result.rows==1
+    live=db_session.query(PropertyForSale).one()
+    assert live.fair_value is not None and live.fair_value>0
+    assert live.asking_price==950000
+    assert db_session.query(PropertyForSale).filter_by(address='99 New Street').count()==0
