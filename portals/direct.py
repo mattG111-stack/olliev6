@@ -154,6 +154,12 @@ class Transport:
             from portals.rendered import render_homes
             return render_homes(url, proxy=self.proxy_url,
                                 max_batches=getattr(self, 'homes_discovery_batches', 50))
+        if (self.source=='trademe' and u.path.startswith('/a/property/residential/sale/auckland')
+                and '/listing/' not in u.path and not page_data.extract(text,'trademe')):
+            if not settings.scraper_render_trademe:
+                raise CollectorUnavailable('Trade Me discovery requires the enabled browser renderer')
+            from portals.rendered import render_trademe_search
+            return render_trademe_search(url,proxy=self.proxy_url)
         return text
 
 
@@ -297,6 +303,13 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                 # Detail pages can embed recommended neighbours. They are not
                 # part of this search checkpoint or its configured result set.
                 extracted={url:extracted[url]}
+            if not extracted and source=='trademe':
+                from portals.rendered import trademe_property_links
+                discovered=trademe_property_links(text,url)
+                if discovered:
+                    for target in discovered+next_pages(text,url,source):
+                        if target not in seen and target not in queue:queue.append(target)
+                    continue
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
                 coverage=discovery_info(text)

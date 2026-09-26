@@ -171,3 +171,72 @@ def rendered_html(page, url, timeout_ms, restricted, discovery_only=False):
     if not property_links(html,url):
         raise CollectorUnavailable('Homes rendered search has no usable listing links; scope is unverified')
     return html
+
+
+def trademe_property_links(html, base_url):
+    from portals.direct import validate_url
+    links=[]
+    class Links(HTMLParser):
+        def handle_starttag(self,tag,attrs):
+            href=dict(attrs).get('href')
+            if tag!='a' or not href:return
+            url=urljoin(base_url,href);u=urlsplit(url)
+            if u.hostname not in ('trademe.co.nz','www.trademe.co.nz'):return
+            if not re.fullmatch(r'/a/property/residential/sale/auckland/[^/]+/[^/]+/listing/\d+',u.path):return
+            validate_url(url,'trademe')
+            url=u._replace(query='',fragment='').geturl()
+            if url not in links:links.append(url)
+    Links().feed(html)
+    return links
+
+
+def trademe_search_html(page, url, timeout_ms, restricted):
+    from portals.direct import CollectorUnavailable, MAX_BYTES, next_pages
+    page.locator('a[href*="/listing/"]').first.wait_for(state='attached',timeout=timeout_ms)
+    snapshot=page.evaluate('''() => ({
+        blocked: /verify you are human|access denied|captcha/i.test(document.body.innerText)
+          || !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]'),
+        links: [...document.querySelectorAll('a[href]')].map(a => ({url:a.href,label:a.getAttribute('aria-label')||'',text:a.innerText}))
+    })''')
+    if restricted or snapshot['blocked']:raise CollectorUnavailable('Trade Me rendering stopped: access restriction')
+    html=''.join(f'<a href="{escape(a["url"],quote=True)}" aria-label="{escape(a["label"],quote=True)}">{escape(a["text"])}</a>' for a in snapshot['links'])
+    details=trademe_property_links(html,url)
+    if not details:raise CollectorUnavailable('Trade Me rendered search has no usable listing links')
+    # Only exact observed Auckland listing links and the next filtered page.
+    compact=''.join(f'<a href="{escape(u,quote=True)}">Observed property</a>' for u in details)
+    compact+=''.join(f'<a href="{escape(u,quote=True)}" aria-label="Next page">Next</a>' for u in next_pages(html,url,'trademe'))
+    if len(compact.encode())>MAX_BYTES:raise CollectorUnavailable('Rendered page exceeds collection size limit')
+    return compact
+
+
+def render_trademe_search(url, *, proxy=None, timeout_ms=30000):
+    from portals.direct import CollectorUnavailable, validate_url, USER_AGENT
+    validate_url(url,'trademe')
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as runtime:
+            browser=runtime.chromium.launch(headless=True,proxy=proxy_options(proxy))
+            try:
+                context=browser.new_context(user_agent=USER_AGENT,service_workers='block')
+                page=context.new_page();restricted=[]
+                def route_request(route):
+                    req=route.request
+                    if req.is_navigation_request() and req.frame==page.main_frame:
+                        try:validate_url(req.url,'trademe')
+                        except CollectorUnavailable:
+                            restricted.append('navigation');route.abort();return
+                    if req.resource_type in ('image','media','font'):route.abort()
+                    else:route.continue_()
+                def response_seen(response):
+                    host=urlsplit(response.url).hostname or ''
+                    if host=='trademe.co.nz' or host.endswith('.trademe.co.nz'):
+                        if response.status in (401,403,429) or response.headers.get('x-amzn-waf-action') in ('challenge','captcha'):
+                            restricted.append('access')
+                page.route('**/*',route_request);page.on('response',response_seen)
+                response=page.goto(url,wait_until='domcontentloaded',timeout=timeout_ms)
+                if response is None or response.status!=200 or restricted:
+                    raise CollectorUnavailable('Trade Me rendering stopped after an unsuccessful response')
+                return trademe_search_html(page,url,timeout_ms,restricted)
+            finally:browser.close()
+    except CollectorUnavailable:raise
+    except Exception:raise CollectorUnavailable('Trade Me browser unavailable or page did not finish loading') from None

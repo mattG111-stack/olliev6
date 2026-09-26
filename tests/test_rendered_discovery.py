@@ -326,3 +326,69 @@ def test_coverage_uses_latest_visible_total_not_obsolete_initial_count(monkeypat
     monkeypatch.setattr(rendered,'rendered_html',lambda *args:'<a href="/address/auckland/example/1/abc">Sold</a>')
     html=rendered.load_homes_results(Page(),'https://homes.co.nz/map',100,[],max_batches=1)
     assert rendered.discovery_info(html)=={'loaded':1,'total':2,'complete':False}
+
+
+def test_trademe_discovery_only_follows_auckland_sale_listings():
+    from portals.rendered import trademe_property_links
+    root='https://www.trademe.co.nz/a/property/residential/sale/auckland'
+    good=root+'/auckland-city/example/listing/123'
+    html=''.join(f'<a href="{u}">Property</a>' for u in [good,good+'?tracking=x',
+        good.replace('/auckland/','/wellington/'),good.replace('/sale/','/rent/'),
+        good.replace('www.trademe.co.nz','evil.example'),root+'?page=2'])
+    assert trademe_property_links(html,root)==[good]
+
+
+def test_trademe_rendered_links_resume_detail_and_next_page(monkeypatch):
+    from portals import page_data
+    root='https://www.trademe.co.nz/a/property/residential/sale/auckland'
+    detail=root+'/auckland-city/example/listing/123';second=root+'?page=2'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'trademe':{'for_sale':[root]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',2)
+    monkeypatch.setattr(page_data,'extract',lambda html,source:{detail:{}} if html=='DETAIL' else {})
+    monkeypatch.setattr(page_data,'normalise',lambda *args:{'address':'1 Example Road','suburb':'Example','region':'Auckland','scraped_at':'2026-09-26'})
+    calls=[]
+    class Pages:
+        def get(self,url):
+            calls.append(url)
+            return f'<a href="{detail}">Property</a><a aria-label="Next page" href="{second}">Next</a>' if url==root else 'DETAIL'
+    state={};rows=collect('trademe',cap=1,transport=Pages(),checkpoint=state)
+    assert calls==[root,detail] and rows[0]['url']==detail
+    assert state['pending_urls']==[second]
+
+
+def test_trademe_renderer_has_proxy_and_obeys_robots_preflight(monkeypatch):
+    import httpx
+    calls=[]
+    monkeypatch.setattr(settings,'scraper_render_trademe',True)
+    monkeypatch.setattr('portals.direct.time.sleep',lambda _:None)
+    monkeypatch.setattr('portals.rendered.render_trademe_search',lambda url,proxy:(calls.append(proxy) or '<a>Rendered</a>'))
+    root='https://www.trademe.co.nz/a/property/residential/sale/auckland'
+    def response(request):return httpx.Response(200,text='User-agent: *\nDisallow:' if request.url.path=='/robots.txt' else 'Enable JavaScript')
+    t=Transport('trademe',client=httpx.Client(transport=httpx.MockTransport(response)))
+    t.proxy_url='http://synthetic:password@proxy.example:10001'
+    assert t.get(root)=='<a>Rendered</a>' and calls==[t.proxy_url]
+    calls.clear()
+    denied=httpx.Client(transport=httpx.MockTransport(lambda req:httpx.Response(200,text='User-agent: *\nDisallow: /a/property')))
+    with pytest.raises(CollectorUnavailable,match='robots'):Transport('trademe',client=denied).get(root)
+    assert not calls
+
+
+def test_actual_browser_trademe_discovery_reads_javascript_links_and_stops_on_restriction():
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import trademe_search_html,trademe_property_links
+    from portals.direct import next_pages
+    root='https://www.trademe.co.nz/a/property/residential/sale/auckland'
+    detail=root+'/auckland-city/example/listing/123'
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page()
+            page.set_content(f'''<body><script>setTimeout(()=>document.body.insertAdjacentHTML('beforeend',
+              '<a href="{detail}">Property</a><a href="{root}?page=2" aria-label="Next page, page 2">Next</a>'),100)</script></body>''')
+            html=trademe_search_html(page,root,3000,[])
+            assert trademe_property_links(html,root)==[detail]
+            assert next_pages(html,root,'trademe')==[root+'?page=2']
+            with pytest.raises(CollectorUnavailable,match='restriction'):trademe_search_html(page,root,3000,['access'])
+            page.set_content(f'<body>Verify you are human<a href="{detail}">Property</a></body>')
+            with pytest.raises(CollectorUnavailable,match='restriction'):trademe_search_html(page,root,3000,[])
+        finally:browser.close()
