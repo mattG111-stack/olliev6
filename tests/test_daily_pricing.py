@@ -130,3 +130,40 @@ def test_three_source_sales_feed_pricing_while_new_listing_stays_in_review(db_se
     assert live.fair_value is not None and live.fair_value>0
     assert live.asking_price==950000
     assert db_session.query(PropertyForSale).filter_by(address='99 New Street').count()==0
+
+
+@pytest.mark.parametrize('cached', [
+    {'canonical_address': '2 Church Street, Otahuhu', 'suburb': 'Otahuhu'},
+    {'canonical_address': '1/2 Church Street, Henderson', 'suburb': 'Henderson'},
+    {'cv': 3250000},
+    'invalid-json',
+])
+def test_legacy_wrong_or_unidentified_lookup_blocks_entire_daily_publish(db_session, monkeypatch, cached):
+    import json
+    import portals.daily_pricing as daily
+    fs, _ = _batches(db_session, 2)
+    fs.status = 'published'
+    prop = db_session.query(PropertyForSale).order_by(PropertyForSale.id).first()
+    prop.address = '1/2 Church Street'; prop.suburb = 'Otahuhu'
+    prop.pv_data = cached if isinstance(cached, str) else json.dumps(cached)
+    db_session.commit(); bid = fs.id
+    def unexpected(*args, **kwargs):
+        pytest.fail('Pricing must not start with mismatched legacy source inputs')
+    monkeypatch.setattr(daily, 'reprice_batch', unexpected)
+    with pytest.raises(ValueError, match='cached valuation identities need review'):
+        daily.reprice_live(db_session, bid)
+    assert all(p.fair_value is None for p in db_session.query(PropertyForSale).all())
+
+
+def test_matching_cached_unit_and_absent_cache_allow_atomic_pricing(db_session):
+    import json
+    from portals.daily_pricing import mismatched_cached_valuations
+    fs, _ = _batches(db_session, 2)
+    fs.status = 'published'
+    prop = db_session.query(PropertyForSale).order_by(PropertyForSale.id).first()
+    prop.address = '1 / 2 Church Street'; prop.suburb = 'Otahuhu'
+    prop.pv_data = json.dumps({'canonical_address': '1/2 Church St, Otahuhu, Auckland'})
+    db_session.commit(); bid = fs.id
+    assert mismatched_cached_valuations(db_session, bid) == []
+    result = reprice_live(db_session, bid)
+    assert result.committed and result.rows == 2

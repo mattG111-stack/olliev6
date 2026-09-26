@@ -1,7 +1,37 @@
 """Atomic daily valuation refresh using published sold evidence only."""
+import json
+from addresses import address_key
 from sqlalchemy import text
 from models import ImportBatch, BatchType, PropertyForSale
 from reprice import reprice_batch
+
+
+def mismatched_cached_valuations(db, batch_id):
+    """Legacy enrichment may have copied a parent property's inputs onto a unit.
+
+    Do not try to undo those fills without their original provenance. Return
+    affected IDs so the entire automatic publication can stop before pricing.
+    A listing with no cached external lookup can still use its own input data.
+    """
+    bad = []
+    rows = db.query(PropertyForSale.id, PropertyForSale.address,
+                    PropertyForSale.suburb, PropertyForSale.pv_data).filter(
+        PropertyForSale.import_batch_id == batch_id,
+        PropertyForSale.pv_data.isnot(None))
+    for pid, address, suburb, raw in rows.yield_per(500):
+        try:
+            data = json.loads(raw)
+            label = data.get('canonical_address')
+            parts = str(label or '').split(',')
+            source_suburb = data.get('suburb') or (parts[1].strip() if len(parts) > 1 else None)
+            ours = address_key(address, suburb)
+            theirs = address_key(label, source_suburb)
+            valid = bool(ours and theirs and label and source_suburb and ours == theirs)
+        except (ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            bad.append(pid)
+    return bad
 
 
 def enabled():
@@ -43,6 +73,9 @@ def reprice_live(db, batch_id, *, chunk=500):
             db.execute(text('LOCK TABLE properties_sold IN SHARE MODE'))
         batch=db.query(ImportBatch).filter_by(id=batch_id,is_active=True,status='published',batch_type=BatchType.FOR_SALE.value).with_for_update().first()
         if batch is None:raise ValueError('Daily pricing requires an active published for-sale batch')
+        mismatches = mismatched_cached_valuations(db, batch_id)
+        if mismatches:
+            raise ValueError(f'Daily pricing blocked: {len(mismatches)} cached valuation identities need review')
         result=reprice_batch(db,batch_id,region=batch.region or 'Auckland',commit=True,
             chunk=chunk,commit_chunks=False,published_only=True)
         if result.error:raise ValueError(result.error)
