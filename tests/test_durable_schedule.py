@@ -92,3 +92,31 @@ run_due(engine, 'synthetic-hard-kill', 86400, unfinished)
         if child.poll() is None:
             child.kill()
         child.wait(timeout=5)
+
+
+def test_partial_discovery_without_pending_details_resumes_before_tomorrow(db_session):
+    engine=db_session.get_bind();now=datetime(2026,9,26,tzinfo=timezone.utc)
+    partial=lambda:{'merged':{'pending':0,'discovery_pending':1}}
+    assert run_due(engine,'partial-search',86400,partial,now=now)
+    assert run_due(engine,'partial-search',86400,partial,now=now+timedelta(minutes=5))
+    complete=lambda:{'merged':{'pending':0,'discovery_pending':0}}
+    assert run_due(engine,'partial-search',86400,complete,now=now+timedelta(minutes=10))
+    assert not run_due(engine,'partial-search',86400,complete,now=now+timedelta(minutes=15))
+
+
+@pytest.mark.parametrize('kind',['for_sale','sold'])
+def test_storage_reports_incomplete_search_even_with_zero_unread_details(db_session,monkeypatch,kind):
+    import json
+    from config import settings
+    from portals import direct, checkpoints
+    from portals.storage import collect_and_stage
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{kind:['https://homes.co.nz/map/auckland']}}))
+    def partial(source,*,kind,cap,checkpoint):
+        checkpoint['pending_urls']=[]
+        checkpoint['discovery_coverage']={'loaded':133,'total':4932,'complete':False}
+        return []
+    monkeypatch.setattr(direct,'collect',partial)
+    result=collect_and_stage(db_session,sources=['homes'],kind=kind,cap=10)
+    assert result['merged']['pending']==0
+    assert result['merged']['discovery_pending']==1
+    assert checkpoints.load(db_session,'homes',kind)['discovery_coverage']['complete'] is False
