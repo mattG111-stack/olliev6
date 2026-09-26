@@ -12,6 +12,7 @@ settings.scraper_render_homes=True
 # Observed from the public search UI, not a guessed internal endpoint.
 url='https://homes.co.nz/map/auckland?filter=type:sold'
 transport=Transport('homes',client=httpx.Client(timeout=30,follow_redirects=False,headers={'User-Agent':USER_AGENT}))
+transport.homes_discovery_batches=20
 try:
     html=transport.get(url)
     links=property_links(html,url)

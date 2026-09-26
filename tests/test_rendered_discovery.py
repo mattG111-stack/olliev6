@@ -117,7 +117,7 @@ def test_virtualized_windows_keep_every_observed_link(monkeypatch, windows, tota
         def inner_text(self): return f'{total} properties'
         def count(self): return 1
         def evaluate(self, script):
-            if 'scrollTop +=' in script:
+            if 'scrollTop=el.scrollHeight' in script:
                 self.index = min(self.index + 1, len(windows)-1)
                 return None
             return {'top':self.index * 75,'height':1000,'viewport':100}
@@ -158,7 +158,7 @@ def test_discovery_advances_through_overlapping_virtual_windows(monkeypatch):
         top=0
         def count(self):return 1
         def evaluate(self, script):
-            if 'scrollTop +=' in script:
+            if 'scrollTop=el.scrollHeight' in script:
                 self.top=min(300,self.top+75)
                 return None
             return {'top':self.top,'height':400,'viewport':100}
@@ -218,7 +218,7 @@ def test_actual_browser_rearms_latched_infinite_scroll_between_batches():
         browser=runtime.chromium.launch(headless=True)
         try:
             page=browser.new_page();page.set_content(fixture)
-            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=5)
+            html=load_homes_results(page,'https://homes.co.nz/map',3000,[],max_batches=2)
             assert discovery_info(html)=={'loaded':2,'total':4,'complete':False}
             assert len(property_links(html,'https://homes.co.nz/map'))==2
             page.close();page=browser.new_page();page.set_content(fixture)
@@ -293,3 +293,23 @@ def test_homes_prefix_tracking_does_not_suppress_late_sold_price_recheck(monkeyp
     assert rows[0]['sale_price']==900000
     assert state['sold_recheck_urls']==[]
     assert state['discovery_coverage']['complete'] is False
+
+
+def test_actual_browser_discovery_keeps_urls_without_copying_oversized_card_markup():
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import rendered_html
+    from portals.direct import MAX_BYTES
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page()
+            page.set_content('<body><a href="/address/auckland/example/1/abc">Sold</a><div>'+('x'*(MAX_BYTES+1))+'</div></body>')
+            with pytest.raises(CollectorUnavailable,match='size limit'):
+                rendered_html(page,'https://homes.co.nz/map',3000,[])
+            compact=rendered_html(page,'https://homes.co.nz/map',3000,[],True)
+            assert property_links(compact,'https://homes.co.nz/map')==['https://homes.co.nz/address/auckland/example/1/abc']
+            assert len(compact.encode())<1000
+            page.set_content('<body>Access denied<a href="/address/auckland/example/1/abc">Sold</a></body>')
+            with pytest.raises(CollectorUnavailable,match='restriction'):
+                rendered_html(page,'https://homes.co.nz/map',3000,[],True)
+        finally:browser.close()

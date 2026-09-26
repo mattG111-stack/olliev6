@@ -77,13 +77,13 @@ def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=50):
 
 def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
     """Load bounded public result batches; retain the displayed coverage count."""
-    html=rendered_html(page,url,timeout_ms,restricted)
+    html=rendered_html(page,url,timeout_ms,restricted,True)
     discovered = dict.fromkeys(property_links(html, url))
     displayed=page.locator('body').inner_text()
     match=re.search(r'([\d,]+)\s+properties\b',displayed,re.I)
     total=int(match[1].replace(',','')) if match else None
-    # A virtualized drawer may recycle its first window when jumped to the
-    # bottom. Advance by less than one viewport and retain each observed URL.
+    # Retain every observed window before advancing. Leaving the bottom zone
+    # rearms the public drawer's load trigger before entering it again.
     # A stalled cursor is partial coverage, never evidence of completion.
     for _ in range(max(0,min(int(max_batches),500)-1)):
         count=len(discovered)
@@ -92,42 +92,24 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
         if container.count()!=1:break
         before=container.evaluate('''el => ({top:el.scrollTop, height:el.scrollHeight,
             viewport:el.clientHeight})''')
-        container.evaluate('el => { el.scrollTop += Math.max(1, Math.floor(el.clientHeight * 0.75)); }')
+        container.evaluate('async el => {\n            el.scrollTop=0;\n            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));\n            el.scrollTop=el.scrollHeight;\n        }')
         try:
             page.wait_for_function("""({known, base}) =>
                 /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
                 [...document.querySelectorAll('a[href*="/address/auckland/"]')]
                     .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
-            """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,1500))
+            """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,10000))
         except Exception:
-            # A small scroll may overlap the old window completely. Continue
-            # from the new offset, stopping only at a stationary edge.
-            html=rendered_html(page,url,timeout_ms,restricted)
+            # Capture the final window after a timeout; no new identities
+            # means partial coverage, never an empty or completed region.
+            html=rendered_html(page,url,timeout_ms,restricted,True)
             discovered.update(dict.fromkeys(property_links(html,url)))
         else:
-            html=rendered_html(page,url,timeout_ms,restricted)
+            html=rendered_html(page,url,timeout_ms,restricted,True)
             discovered.update(dict.fromkeys(property_links(html,url)))
         after=container.evaluate('el => ({top:el.scrollTop, height:el.scrollHeight})')
         if after['top']==before['top'] and after['height']==before['height'] and len(discovered)==count:
-            # The public drawer can remain latched at its lower edge after
-            # appending cards. Leave that zone before crossing it again.
-            # One bounded recovery attempt; a quiet edge is still partial.
-            container.evaluate('''async el => {
-                el.scrollTop=0;
-                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                el.scrollTop=el.scrollHeight;
-            }''')
-            try:
-                page.wait_for_function("""({known, base}) =>
-                    /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
-                    [...document.querySelectorAll('a[href*="/address/auckland/"]')]
-                      .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
-                """,arg={'known':list(discovered),'base':url},timeout=min(timeout_ms,10000))
-            except Exception:
-                pass
-            html=rendered_html(page,url,timeout_ms,restricted)
-            discovered.update(dict.fromkeys(property_links(html,url)))
-            if len(discovered)==count:break
+            break
     # Virtualized lists replace earlier cards. Keep the exact observed URLs,
     # including those no longer present in the final DOM, for detail fetching.
     html += ''.join(f'<a href="{escape(link, quote=True)}" data-apex-discovered="true"></a>' for link in discovered)
@@ -152,7 +134,7 @@ def discovery_info(html):
     return info
 
 
-def rendered_html(page, url, timeout_ms, restricted):
+def rendered_html(page, url, timeout_ms, restricted, discovery_only=False):
     """Wait for public listing DOM; never interpret a spinner as zero stock."""
     from portals.direct import CollectorUnavailable, MAX_BYTES
     page.wait_for_function("""() => {
@@ -161,7 +143,20 @@ def rendered_html(page, url, timeout_ms, restricted):
             (!document.querySelector('[role="progressbar"]') &&
              (document.querySelector('a[href*="/address/auckland/"]') || /0 properties|no properties found/i.test(body)));
     }""",timeout=timeout_ms)
-    html=page.content()
+    if discovery_only:
+        # Search discovery needs observed public URLs, not thousands of image
+        # carousel nodes. Individual detail evidence is still fetched/stored.
+        # Limit the compact evidence too; never disable the transport guard.
+        snapshot=page.evaluate('''() => ({
+            denied: /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
+              !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]'),
+            links: [...new Set([...document.querySelectorAll('a[href*="/address/auckland/"]')].map(a => a.href))]
+        })''')
+        if restricted or snapshot['denied']:
+            raise CollectorUnavailable('Homes rendering stopped: access restriction')
+        html=''.join(f'<a href="{escape(link,quote=True)}">Observed property</a>' for link in snapshot['links'])
+    else:
+        html=page.content()
     if restricted or any(v in html.lower() for v in ('cf-chl-','g-recaptcha','hcaptcha','verify you are human','access denied')):
         raise CollectorUnavailable('Homes rendering stopped: access restriction')
     if len(html.encode())>MAX_BYTES:raise CollectorUnavailable('Rendered page exceeds collection size limit')
