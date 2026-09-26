@@ -198,11 +198,36 @@ def next_pages(text, url, source):
     return found
 
 
+def same_property_map_pin(row, enriched):
+    """Allow <=10m display-pin variation only on the exact same source URL/address.
+
+    This never matches properties, units or different source identities. Both
+    original coordinate pairs remain in the raw search/detail evidence.
+    """
+    if any(not row.get(k) or row.get(k) != enriched.get(k)
+           for k in ('source', 'url', 'address', 'suburb')):
+        return False
+    import math
+    try:
+        a,b,c,d=(float(r[k]) for r,k in ((row,'latitude'),(row,'longitude'),
+                                       (enriched,'latitude'),(enriched,'longitude')))
+        if not all(math.isfinite(v) for v in (a,b,c,d)) or max(abs(a),abs(c))>90 or max(abs(b),abs(d))>180:
+            return False
+        dy=math.radians(c-a)
+        dx=math.radians(d-b)
+        h=math.sin(dy/2)**2+math.cos(math.radians(a))*math.cos(math.radians(c))*math.sin(dx/2)**2
+        return 6371000*2*math.asin(math.sqrt(min(1,h)))<=10
+    except (KeyError,TypeError,ValueError):
+        return False
+
+
 def merge_detail_evidence(row, enriched, detail):
+    pin_variation=same_property_map_pin(row,enriched)
     conflicts = {k: [row[k], value] for k, value in enriched.items()
                  if page_data.present(row.get(k)) and page_data.present(value)
                  and row[k] != value and k not in PRESENTATION_FIELDS
-                 and k not in ('raw_source', 'provenance', 'scraped_at')}
+                 and k not in ('raw_source', 'provenance', 'scraped_at')
+                 and not (pin_variation and k in ('latitude','longitude'))}
     for key,value in enriched.items():
         fuller=(key=='description' and isinstance(value,str) and len(value)>len(str(row.get(key) or '')))
         if not page_data.present(row.get(key)) or fuller:

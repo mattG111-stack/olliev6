@@ -112,3 +112,34 @@ def test_resumed_detail_price_conflict_is_not_accepted_as_comparable(monkeypatch
     assert row['raw_source']['detail']['sale_price']==950000
     assert reason(row)=='Source evidence requires review'
     assert not state['pending_search_records']
+
+
+def test_same_listing_small_map_pin_variation_retains_evidence_without_sale_conflict():
+    from portals.direct import merge_detail_evidence
+    from portals.sold_acceptance import reason
+    search=dict(source='oneroof',url='https://www.oneroof.co.nz/property/example',
+                address='1 Example Road',suburb='Example',kind='sold',
+                sold_date='2026-06-01',sale_price=900000,
+                latitude=-36.9742573,longitude=174.8434141)
+    detail={**search,'latitude':-36.974211,'longitude':174.843326}
+    row=merge_detail_evidence({**search,'raw_source':dict(search),'provenance':{}},
+                              {**detail,'raw_source':dict(detail),'provenance':{}},detail)
+    assert reason(row) is None
+    assert row['raw_source']['search']['latitude']==search['latitude']
+    assert row['raw_source']['detail']['latitude']==detail['latitude']
+
+
+def test_map_pin_tolerance_never_hides_price_address_or_large_coordinate_conflicts():
+    from portals.direct import merge_detail_evidence
+    base=dict(source='oneroof',url='https://www.oneroof.co.nz/property/example',
+              address='1/2 Example Road',suburb='Example',sale_price=900000,
+              latitude=-36.9742573,longitude=174.8434141)
+    for change,expected in [({'latitude':-36.98},'latitude'),
+                            ({'latitude':-36.974211,'sale_price':950000},'sale_price'),
+                            ({'latitude':-36.974211,'address':'2/2 Example Road'},'latitude'),
+                            ({'latitude':-36.974211,'url':'https://www.oneroof.co.nz/property/other'},'latitude'),
+                            ({'latitude':-36.974211,'longitude':None},'latitude')]:
+        detail={**base,**change}
+        row=merge_detail_evidence({**base,'raw_source':dict(base),'provenance':{}},
+                                  {**detail,'raw_source':dict(detail),'provenance':{}},detail)
+        assert expected in row['source_conflicts']
