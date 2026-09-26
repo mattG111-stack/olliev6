@@ -1,6 +1,7 @@
 """Store source evidence before staging; an incomplete attempt never publishes."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from copy import deepcopy
 from models import PortalCollectionRun, PortalObservation
 
 
@@ -16,13 +17,13 @@ def latest_runs(db):
         if not isinstance(summary,dict):summary={}
         merged=summary.get('merged',{})
         if not isinstance(merged,dict):merged={}
-        counts={key:value for key in ('new','refreshed','excluded','pending','discovery_pending')
+        counts={key:value for key in ('new','refreshed','excluded','pending','discovery_pending','failed_sources','record_errors')
                 if type(value:=merged.get(key)) is int and value>=0}
         observed=sum(item.get('observed',0) for source in ('oneroof','trademe','homes')
                      if isinstance(item:=summary.get(source),dict)
                      and type(item.get('observed')) is int and item['observed']>=0)
         result.append({'id':run.id,'kind':kind,
-            'status':run.status if run.status in ('running','complete','failed') else 'unknown',
+            'status':run.status if run.status in ('running','complete','partial','failed') else 'unknown',
             'started_at':run.started_at.isoformat() if run.started_at else None,
             'finished_at':run.finished_at.isoformat() if run.finished_at else None,
             'observed':observed,**counts})
@@ -66,30 +67,53 @@ def with_pending_evidence(db, collected):
 
 
 def collect_and_stage(db, *, sources, kind, cap):
-    from portals.direct import collect, merge_records
+    from portals.direct import collect, merge_records, CollectorUnavailable
     from portals.listings import to_listing, record
     from portals import checkpoints
     run=PortalCollectionRun(kind=kind,status='running')
     db.add(run);db.commit()
     run_id=run.id
-    summary={};collected=[];progress={}
+    summary={};collected=[];progress={};failed_sources=0;record_errors=0;successful_sources=0
     try:
         progress={source:checkpoints.load(db,source,kind) for source in sources}
-        resuming=any(state.get('pending_urls') for state in progress.values())
+        resuming=any(state.get('pending_urls') or state.get('source_retry_after') for state in progress.values())
         for source in sources:
-            if resuming and not progress[source].get('pending_urls') and progress[source].get('last_completed_pass_at'):
+            if resuming and not progress[source].get('pending_urls') and not progress[source].get('source_retry_after') and progress[source].get('last_completed_pass_at'):
                 summary[source]={'observed':0,'already_complete':True}
                 continue
-            rows=collect(source,kind=kind,cap=cap,checkpoint=progress[source])
+            now=datetime.now(timezone.utc)
+            original=deepcopy(progress[source])
+            try:waiting=datetime.fromisoformat(original.get('source_retry_after',''))>now
+            except (ValueError,TypeError):waiting=False
+            if waiting:
+                failed_sources+=1
+                summary[source]={'observed':0,'status':'cooldown','error_type':original.get('source_error_type','CollectorUnavailable')}
+                continue
+            try:
+                rows=collect(source,kind=kind,cap=cap,checkpoint=progress[source],isolate_records=True)
+            except CollectorUnavailable:
+                # A failed source must not advance its cursor or erase other
+                # sources' valid work. Store no exception text/credentials.
+                original.update(source_retry_after=(now+timedelta(hours=1)).isoformat(),source_error_type='CollectorUnavailable')
+                progress[source]=original
+                failed_sources+=1
+                summary[source]={'observed':0,'status':'failed','error_type':'CollectorUnavailable'}
+                continue
+            successful_sources+=1
+            progress[source].pop('source_retry_after',None)
+            progress[source].pop('source_error_type',None)
             for row in rows:
                 db.add(PortalObservation(run_id=run_id,source=source,kind=kind,url=row['url'],
                     payload_json=json.dumps(row,ensure_ascii=False)))
-            collected.extend(rows)
-            summary[source]={'observed':len(rows)}
+            rejected=[row for row in rows if row.get('_collection_rejected')]
+            record_errors+=len(rejected)
+            collected.extend(row for row in rows if not row.get('_collection_rejected'))
+            summary[source]={'observed':len(rows),'record_errors':len(rejected),'status':'complete'}
             run.summary_json=json.dumps(summary)
             db.commit()  # Finished sources survive a later source failure.
         # A Homes detail may arrive in a later bounded pass than OneRoof's
         # search result. Preserve that pending evidence across run boundaries.
+        outcome='partial' if failed_sources and successful_sources else ('failed' if failed_sources else 'complete')
         merged=merge_records(with_pending_evidence(db,collected) if kind=='for_sale' else collected)
         if kind=='sold':
             from portals.sold_acceptance import accept
@@ -97,9 +121,11 @@ def collect_and_stage(db, *, sources, kind, cap):
             result.update(found=len(merged),run_id=run_id,excluded=result['quarantined'],refreshed=result.get('enriched',0),
                           pending=sum(len(s.get('pending_urls',[])) for s in progress.values()),
                           discovery_pending=sum(s.get('discovery_coverage',{}).get('complete') is False for s in progress.values()))
+            result['excluded']+=record_errors
+            result.update(failed_sources=failed_sources,record_errors=record_errors)
             summary['merged']=result
             for source,state in progress.items():checkpoints.save(db,source,kind,state)
-            run.status='complete';run.finished_at=datetime.now(timezone.utc)
+            run.status=outcome;run.finished_at=datetime.now(timezone.utc)
             run.summary_json=json.dumps(summary);db.commit()
             return {'merged':result}
         rows=[r for item in merged if (r:=to_listing(item['source'],item,kind=kind)) is not None]
@@ -110,9 +136,11 @@ def collect_and_stage(db, *, sources, kind, cap):
                 'refreshed':stats.get('refreshed',0),
                 'pending':sum(len(s.get('pending_urls',[])) for s in progress.values()),
                 'discovery_pending':sum(s.get('discovery_coverage',{}).get('complete') is False for s in progress.values())}
+        result['excluded']+=record_errors
+        result.update(failed_sources=failed_sources,record_errors=record_errors)
         summary['merged']=result
         for source,state in progress.items():checkpoints.save(db,source,kind,state)
-        run.status='complete';run.finished_at=datetime.now(timezone.utc)
+        run.status=outcome;run.finished_at=datetime.now(timezone.utc)
         run.summary_json=json.dumps(summary);db.commit()
         return {'merged':result}
     except Exception as exc:

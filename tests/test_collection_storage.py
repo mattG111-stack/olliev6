@@ -34,17 +34,19 @@ def test_repeated_collection_keeps_evidence_and_refreshes_only_pending(db_sessio
     assert db_session.query(PortalCollectionRun).filter_by(status='complete').count()==4
 
 
-def test_failure_keeps_completed_source_evidence_but_stages_nothing(db_session,monkeypatch):
+def test_failed_source_does_not_block_good_source_review_or_expose_error_text(db_session,monkeypatch):
     def collect(source,**kw):
         if source=='homes':raise CollectorUnavailable('Example failure with secret that must not be stored')
         return [sample(price_numeric=900000)]
     monkeypatch.setattr('portals.direct.collect',collect)
-    with pytest.raises(CollectorUnavailable):collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
+    result=collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)['merged']
+    assert result['new']==1 and result['failed_sources']==1
     run=db_session.query(PortalCollectionRun).one()
-    assert run.status=='failed' and run.error_type=='CollectorUnavailable'
+    assert run.status=='partial'
     assert 'secret' not in (run.summary_json or '')
     assert db_session.query(PortalObservation).count()==1
-    assert db_session.query(PortalListing).count()==0
+    assert db_session.query(PortalListing).one().status=='pending'
+    assert db_session.query(PropertyForSale).count()==0
 
 
 def test_undisclosed_sold_price_stored_as_evidence_not_comparable(db_session,monkeypatch):
@@ -90,17 +92,18 @@ def test_bootstrap_stamp_matches_current_migration_head():
     assert ScriptDirectory.from_config(config).get_heads() == [HEAD_REVISION]
 
 
-def test_checkpoint_commits_only_after_all_sources_and_staging_succeed(db_session,monkeypatch):
+def test_only_successful_source_cursor_advances_when_later_source_fails(db_session,monkeypatch):
     from portals import checkpoints
     def fail_second(source,checkpoint,**kw):
         checkpoint['pending_urls']=['https://www.oneroof.co.nz/next']
         if source=='homes':raise CollectorUnavailable('synthetic failure')
         return [sample(price_numeric=900000)]
     monkeypatch.setattr('portals.direct.collect',fail_second)
-    with pytest.raises(CollectorUnavailable):
-        collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
-    assert checkpoints.load(db_session,'oneroof','for_sale')=={}
-    assert db_session.query(PortalListing).count()==0
+    collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)
+    assert checkpoints.load(db_session,'oneroof','for_sale')['pending_urls']==['https://www.oneroof.co.nz/next']
+    failed=checkpoints.load(db_session,'homes','for_sale')
+    assert 'pending_urls' not in failed and failed['source_retry_after']
+    assert db_session.query(PortalListing).count()==1
     def success(source,checkpoint,**kw):
         checkpoint['pending_urls']=['https://www.oneroof.co.nz/next']
         return [sample(price_numeric=900000)]
@@ -235,3 +238,29 @@ def test_source_property_id_never_sets_internal_publication_link(db_session, mon
     assert json.loads(row.raw_json)['property_id']==portal_id
     assert json.loads(db_session.query(PortalObservation).one().payload_json)['property_id']==portal_id
     assert db_session.query(PropertyForSale).count()==0
+
+
+def test_failed_source_waits_and_does_not_skip_next_successful_source(db_session,monkeypatch):
+    calls=[]
+    def collect(source,checkpoint,**kw):
+        calls.append(source)
+        if source=='oneroof':raise CollectorUnavailable('transient')
+        checkpoint.update(pending_urls=[],last_completed_pass_at='2026-09-27T00:00:00Z')
+        return [{**sample(),'source':source}]
+    monkeypatch.setattr('portals.direct.collect',collect)
+    for _ in range(2):
+        got=collect_and_stage(db_session,sources=['oneroof','homes'],kind='for_sale',cap=5)['merged']
+        assert got['failed_sources']==1
+    assert calls==['oneroof','homes']
+    assert db_session.query(PortalListing).count()==1
+
+
+@pytest.mark.parametrize('kind',['for_sale','sold'])
+def test_rejected_detail_raw_evidence_cannot_become_listing_or_sale(db_session,monkeypatch,kind):
+    rejected={**sample(),'kind':kind,'sale_price':900000,'sold_date':'2026-09-01',
+              '_collection_rejected':True,'raw_source':{'html':'original rejected evidence'}}
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[rejected])
+    result=collect_and_stage(db_session,sources=['oneroof'],kind=kind,cap=5)['merged']
+    assert result['record_errors']==1 and result['excluded']==1 and result['new']==0
+    assert 'original rejected evidence' in db_session.query(PortalObservation).one().payload_json
+    assert db_session.query(PortalListing).count()==db_session.query(PropertySold).count()==0

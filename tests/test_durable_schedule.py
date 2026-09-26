@@ -111,7 +111,7 @@ def test_storage_reports_incomplete_search_even_with_zero_unread_details(db_sess
     from portals import direct, checkpoints
     from portals.storage import collect_and_stage
     monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{kind:['https://homes.co.nz/map/auckland']}}))
-    def partial(source,*,kind,cap,checkpoint):
+    def partial(source,*,kind,cap,checkpoint,**kwargs):
         checkpoint['pending_urls']=[]
         checkpoint['discovery_coverage']={'loaded':133,'total':4932,'complete':False}
         return []
@@ -130,3 +130,13 @@ def test_availability_job_has_separate_explicit_switch(monkeypatch):
     assert not job.enabled()
     monkeypatch.setattr(settings,'scraper_check_listings',True)
     assert job.enabled() and job.every==1800
+
+
+def test_failed_sources_do_not_mark_the_daily_job_successful(db_session):
+    from portals.schedule import run_due
+    from models import AppSetting
+    import hashlib
+    name='isolated-source-regression'
+    key='scraper.schedule.'+hashlib.sha256(name.encode()).hexdigest()[:32]
+    assert run_due(db_session.get_bind(),name,86400,lambda:{'merged':{'new':1,'failed_sources':1}})
+    assert db_session.get(AppSetting,key) is None
