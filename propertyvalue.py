@@ -197,6 +197,19 @@ _FILL_PAIRS = (
 )
 
 
+def cached_identity_matches(address, suburb, data) -> bool:
+    """A legacy cache is usable only when its exact street/unit and suburb match."""
+    if not isinstance(data, dict):
+        return False
+    label = data.get('canonical_address')
+    if not isinstance(label, str) or not label.strip():
+        return False
+    parts = label.split(',')
+    source_suburb = data.get('suburb') or (parts[1].strip() if len(parts) > 1 else None)
+    return bool(address and suburb and source_suburb and
+                address_key(address, suburb) == address_key(label, source_suburb))
+
+
 def missing_fills(ours: dict, pv: dict) -> dict:
     """Values to copy from CoreLogic into OUR record where ours is blank or zero.
     Keyed by our field names. Never overwrites a real value — fills gaps only."""
