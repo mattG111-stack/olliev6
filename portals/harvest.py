@@ -1,29 +1,4 @@
-"""Ask a portal for a SUBURB, then find our address in what comes back.
-
-The three portal lookups were written as "give the actor an address, get that
-property". Checked against the actors' real input schemas, that is not something
-any of them can do — and it is not a gap in the ones we picked. Every New Zealand
-property actor in the Apify store searches by region, suburb or a URL you already
-have. None takes an address.
-
-That mattered more than a missing field would have. `oneroof(address)` did not
-fail: it sent `mode="search"` (not a value in the actor's enum) and a `query`
-field the actor has no idea about, so the run fell back to its defaults — every
-listing in New Zealand — and handed back the first three. Those would have been
-written onto the property as its floor area, its land area, its council value.
-Wrong-house data, arriving quietly and looking entirely plausible.
-
-So the shape is inverted. Ask each portal once for a whole suburb, index what
-comes back by street address, and look our properties up in the index:
-
-    30 properties across 6 suburbs = 6 actor runs per portal, not 30 misses.
-
-Matching is app.trademe.address_key — the same reduction already used to line the
-Trade Me sold export up against our own rows ("3/107 Donovan Street, Blockhouse
-Bay, Auckland City" and "3 / 107 Donovan St, Blockhouse Bay" are one address).
-An address that is not in the harvest is simply not found, which is the honest
-answer and the one the old code could not give.
-"""
+"""Collect configured public search pages and match exact addresses within a suburb. No Apify network calls."""
 
 from __future__ import annotations
 
@@ -31,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 
 from trademe import address_key
-from portals.apify import ApifyUnavailable, run_actor
+from portals.direct import CollectorUnavailable, collect
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +60,7 @@ def _index(source: str, suburb: str, items: list[dict],
     for item in items:
         if not isinstance(item, dict):
             continue
-        addr = address_of(item)
+        addr = item.get("address") if item.get("_apex_direct") else address_of(item)
         key = address_key(addr, suburb)
         if key:
             h.by_address.setdefault(key, item)
@@ -101,8 +76,8 @@ def harvest(source: str, actor: str, payload: dict, suburb: str,
     unaffected, and every property keeps whatever it already had.
     """
     try:
-        items = run_actor(actor, payload, limit=limit)
-    except ApifyUnavailable as e:
+        items = collect(source, suburb=suburb, cap=limit)
+    except CollectorUnavailable as e:
         log.info("%s harvest of %s unavailable: %s", source, suburb, e)
         return Harvest(source=source, suburb=suburb, error=str(e))
     except Exception as e:                        # noqa: BLE001

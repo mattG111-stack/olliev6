@@ -19,6 +19,30 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db import Base
 
 
+class PortalCollectionRun(Base):
+    """Durable audit of one bounded collection attempt, never a publish action."""
+    __tablename__ = 'portal_collection_runs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default='running')
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary_json: Mapped[str | None] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(120))
+
+
+class PortalObservation(Base):
+    """Original normalized and raw source evidence, retained across daily runs."""
+    __tablename__ = 'portal_observations'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('portal_collection_runs.id'), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(24), nullable=False)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class UserRole(str, Enum):
     USER = "user"
     ADMIN = "admin"
@@ -757,6 +781,10 @@ class PropertySold(_PropertyMixin, Base):
     sale_price: Mapped[float | None] = mapped_column(Float, index=True)
     sold_date: Mapped[str | None] = mapped_column(String(32), index=True)
     sale_method: Mapped[str | None] = mapped_column(String(64))
+    homes_valuation: Mapped[float | None] = mapped_column(Float)
+    homes_valuation_low: Mapped[float | None] = mapped_column(Float)
+    homes_valuation_high: Mapped[float | None] = mapped_column(Float)
+    homes_url: Mapped[str | None] = mapped_column(String(500))
 
     __table_args__ = (
         Index("ix_sold_comp", "import_batch_id", "suburb", "beds", "baths"),

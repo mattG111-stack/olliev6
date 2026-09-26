@@ -1,31 +1,12 @@
-"""One function per portal. Address in, PortalResult out, or nothing.
-
-The two that can be read without a browser are wrapped around code that already
-existed and is already in use: give them an address, they resolve that property's
-own page and read it. That is what a lookup should look like.
-
-The three that need a browser go through Apify, and they do NOT work that way.
-Every New Zealand property actor in the store searches by region, suburb or a URL
-you already have; not one takes an address. So those three ask for the SUBURB and
-find our address in the answer — see harvest.py for why, and for what the
-address-shaped version was silently doing instead.
-
-Every one of them is best-effort by contract: they return None rather than
-raising, because the caller is working through a list of properties and one
-portal having a bad day must not cost the other twenty-nine their lookups.
-
-The payloads and field names below are checked against each actor's published
-input and output schema, not guessed. Where a name here does not appear in the
-actor's schema it is a deliberate alias for a sibling actor, and the one the
-actor really uses is named in a comment.
-"""
+"""Direct public-page enrichment with pure readers for historical record formats."""
 
 from __future__ import annotations
 
 import logging
 
 from portals import PortalResult
-from portals.apify import ApifyUnavailable, num, pick, run_actor
+from portals.legacy_fields import num, pick
+from portals.direct import CollectorUnavailable
 from portals.harvest import ONEROOF_REGION, ONEROOF_SUBURB_URL, HarvestCache, _slug, harvest
 
 log = logging.getLogger(__name__)
@@ -294,7 +275,16 @@ def _via_harvest(source: str, address: str, suburb: str | None,
     item = h.get(address, suburb)
     if not item:
         return None
-    res = spec["result"](item)
+    if item.get('_apex_direct'):
+        from dataclasses import fields
+        mapped = {**item, 'cars': item.get('carspaces'), 'year_built': num(item.get('building_age')),
+                  'estimate': item.get(source + '_estimate'),
+                  'estimate_low': item.get(source + '_estimate_low'),
+                  'estimate_high': item.get(source + '_estimate_high')}
+        res = PortalResult(**{f.name: mapped[f.name] for f in fields(PortalResult)
+                              if f.name in mapped and f.name != 'raw'}, raw=item)
+    else:
+        res = spec["result"](item)
     return res if res.has_anything() else None
 
 

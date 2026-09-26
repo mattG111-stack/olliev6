@@ -1,4 +1,4 @@
-from pydantic import ValidationError
+from pydantic import ValidationError, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,14 +36,18 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     batch_retention_limit: int = 12  # keep last N batches per type+region
     brave_api_key: str = ""          # optional — reliable search for external estimates
-    # Apify runs the headless browser that Trade Me, OneRoof and realestate.co.nz
-    # need to render their figures. Blank = those three sources are skipped and
-    # the button still works with the two that can be read directly.
-    apify_token: str = ""
+    # Direct public-page collector; credentials stay in server configuration.
+    scraper_enabled: bool = False
+    scraper_proxy_urls: str = Field(default="", repr=False)  # JSON array; server-side secret, never returned
+    scraper_seeds: str = ""  # JSON source -> kind -> public search URLs
+    scraper_max_pages: int = 10
+    scraper_render_trademe: bool = False
+    scraper_render_homes: bool = False  # Requires optional Chromium runtime in collector worker.
     # Ask the portals once a day about anything new, unattended. Off by default:
     # a job that reaches the internet and spends money should be switched on
     # deliberately, not started because a deploy went out.
     portals_daily: bool = False
+    scraper_daily_pricing: bool = False  # Enable only after migration and production validation.
     stripe_secret_key: str = ""      # optional — Stripe billing metrics on the admin dashboard
     # Toitū Te Whenua LINZ Data Service key — legal parcel boundaries for the
     # Sun & shade panel. Free to obtain. Without it the panel falls back to a box

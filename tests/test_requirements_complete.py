@@ -50,12 +50,12 @@ PROVIDED_BY = {
 }
 
 
-def _declared() -> set[str]:
+def _declared(path=REQUIREMENTS) -> set[str]:
     """Distribution names in requirements.txt, normalised."""
     out = set()
-    for line in REQUIREMENTS.read_text().splitlines():
+    for line in path.read_text().splitlines():
         line = line.split("#")[0].strip()
-        if not line:
+        if not line or line.startswith('-r '):
             continue
         name = re.split(r"[<>=!\[;]", line)[0].strip().lower()
         if name:
@@ -103,6 +103,11 @@ def test_every_third_party_import_is_declared():
     missing = {}
     for module, users in _imported().items():
         want = PROVIDED_BY.get(module, module).lower().replace("_", "-")
+        # Optional Chromium runtime is installed in the dedicated worker image.
+        # This exemption is scoped to its lazy renderer import, not the API.
+        if (module=='playwright' and set(users)=={'portals/rendered.py'} and
+                want in _declared(REQUIREMENTS.with_name('requirements-scraper.txt'))):
+            continue
         if want not in declared:
             missing[module] = sorted(set(users))[:4]
 

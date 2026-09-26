@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ingest import _to_float, _to_int, _to_str
 from models import BatchType, ImportBatch, PropertyForSale, PropertyRent, PropertySold
-from prior_price import DERIVED_BASIS
+from prior_price import DERIVED_BASIS, GUIDE_BASIS
 from pricing.cashflow import RentRates
 from pricing.comps import SoldDataset
 from pricing.pipeline import run as run_pipeline
@@ -156,6 +156,10 @@ def _apply_outputs(rec: PropertyForSale, row: dict) -> None:
             _carried = _to_float(row.get("price_numeric"))
         if _carried and _carried > 0:
             rec.asking_price = _carried
+    elif rec.listing_type == "guide" and rec.asking_basis == GUIDE_BASIS:
+        # A disclosed floor remains a labelled guide after every reprice.
+        # It is not a firm asking price and the pipeline suppresses its margin.
+        rec.asking_price = _to_float(row.get("price_numeric"))
     elif rec.listing_type not in ("fixed", "", None):
         # And the other direction, which is what makes re-pricing a REPAIR.
         #
@@ -177,7 +181,7 @@ def _apply_outputs(rec: PropertyForSale, row: dict) -> None:
     rec.can_subdivide = bool(row.get("can_subdivide", False))
 
 
-def _sold_df(db: Session, region: str) -> pd.DataFrame | None:
+def _sold_df(db: Session, region: str, *, published_only: bool = False) -> pd.DataFrame | None:
     """Every loaded sold batch (staged or published), as the pipeline df.
 
     This is the dataset every valuation is priced against, so taking only the
@@ -189,7 +193,7 @@ def _sold_df(db: Session, region: str) -> pd.DataFrame | None:
     batch_ids = [b.id for b in db.query(ImportBatch.id)
                  .filter(ImportBatch.batch_type == BatchType.SOLD.value,
                          ImportBatch.region == region,
-                         ImportBatch.status.in_(("staged", "preview", "published")))
+                         ImportBatch.status.in_(("published",) if published_only else ("staged", "preview", "published")))
                  .all()]
     if not batch_ids:
         return None
@@ -210,8 +214,22 @@ def _sold_df(db: Session, region: str) -> pd.DataFrame | None:
             PropertySold.sold_date, PropertySold.days_on_market)
          .filter(PropertySold.import_batch_id.in_(batch_ids))
          .yield_per(5_000))
+    records = q
+    if published_only:
+        # A later source can dispute a transaction already imported. Keep the
+        # original evidence, but omit that dated sale until review resolves it.
+        from models import PortalListing
+        from portals.sold_acceptance import identity
+        disputed = {identity({'address': row.address, 'suburb': row.suburb,
+                              'sold_date': row.sold_date})
+                    for row in db.query(PortalListing.address, PortalListing.suburb,
+                                        PortalListing.sold_date)
+                    .filter(PortalListing.kind == 'sold', PortalListing.status == 'pending',
+                            PortalListing.price_flag.isnot(None), PortalListing.price_flag != '')}
+        records = (row for row in q if identity({'address': row.address,
+                   'suburb': row.suburb, 'sold_date': row.sold_date}) not in disputed)
     return pd.DataFrame.from_records(
-        list(q),
+        list(records),
         columns=["address", "suburb", "district", "property_type", "key_bedrooms",
                  "key_bathrooms", "key_floor_area", "key_land_area",
                  "price_numeric", "cv_numeric", "land_value_numeric",
@@ -252,7 +270,8 @@ REPRICE_CHUNK = 500
 
 def reprice_batch(db: Session, batch_id: int, *, region: str = "Auckland",
                   commit: bool = False, tol: float = 0.005,
-                  chunk: int = REPRICE_CHUNK, on_chunk=None) -> RepriceResult:
+                  chunk: int = REPRICE_CHUNK, on_chunk=None,
+                  commit_chunks: bool = True, published_only: bool = False) -> RepriceResult:
     """Re-run pricing on every listing in a batch using its CURRENT stored
     attributes. With commit=False it computes and reports the diff but writes
     nothing (used by validate_noop). tol = fractional change treated as 'same'.
@@ -275,7 +294,7 @@ def reprice_batch(db: Session, batch_id: int, *, region: str = "Auckland",
     if not ids:
         res.error = "no listings in batch"
         return res
-    sold_df = _sold_df(db, region)
+    sold_df = _sold_df(db, region, published_only=True) if published_only else _sold_df(db, region)
     if sold_df is None or sold_df.empty:
         res.error = "no sold batch to price against"
         return res
@@ -324,8 +343,11 @@ def reprice_batch(db: Session, batch_id: int, *, region: str = "Auckland",
         if commit:
             # Per chunk, so a run that is killed halfway has still saved half its
             # work rather than none of it.
-            db.commit()
-            res.committed = True
+            if commit_chunks:
+                db.commit()
+                res.committed = True
+            else:
+                db.flush()  # Caller owns the single publication transaction.
         # Let the chunk go. Without this the identity map keeps every object
         # from every chunk and the chunking buys nothing.
         del df, enriched, recs

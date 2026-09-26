@@ -86,6 +86,20 @@ class Job:
             log.warning("worker: %s finished in %.0fs", self.name, took)
 
 
+class DurableJob(Job):
+    """Poll eligibility every five minutes; retain daily success across restarts."""
+    def due(self,now):
+        return self.enabled() and (self.last_run is None or now-self.last_run>=300)
+
+    def run(self):
+        from db import engine
+        from portals.schedule import run_due
+        self.last_run=time.monotonic()
+        try:run_due(engine,self.name,self.every,self.fn)
+        except Exception:
+            log.exception('worker: %s failed; retry eligible in five minutes',self.name)
+
+
 def build_jobs() -> list[Job]:
     """Everything this process is responsible for."""
     from portals.daily import enabled as portals_enabled
@@ -94,14 +108,16 @@ def build_jobs() -> list[Job]:
     from portals.delisted import run_once as delisted_run
     from sold_sweep import run_once as sold_sweep_run
     from staged_stages import auto_reprice_stale_batches
+    from portals.daily_pricing import run_once as daily_pricing_run, enabled as daily_pricing_enabled
 
     return [
-        # New listings daily, sales weekly. See portals/listings.py for why
-        # those cadences and what each costs.
-        Job("new listings sweep", 24 * 60 * 60, sweep_new_listings,
+        # New and sold records daily, with review required before approval.
+        DurableJob("new listings sweep", 24 * 60 * 60, sweep_new_listings,
             enabled=portals_enabled),
-        Job("sold sweep", 7 * 24 * 60 * 60, sweep_sold_listings,
+        DurableJob("sold sweep", 24 * 60 * 60, sweep_sold_listings,
             enabled=portals_enabled),
+        DurableJob("daily validated pricing", 24 * 60 * 60, daily_pricing_run,
+            enabled=daily_pricing_enabled),
         Job("daily portal pass", 24 * 60 * 60, portals_run,
             enabled=portals_enabled),
         # Is the advertisement still up? A listing that has come off a portal

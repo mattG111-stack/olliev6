@@ -32,10 +32,8 @@ from portals.runner import run_portal_job
 log = logging.getLogger(__name__)
 
 EVERY_SECONDS = 24 * 60 * 60
-# Sales are swept WEEKLY, not nightly. A week-old sale is still a comp, where a
-# week-old listing is often already under offer — and the cadence is what makes
-# it about $13 a month for both portals instead of $90.
-SOLD_EVERY_DAYS = 7
+# Refresh sold evidence daily; valid disclosed transactions are auto-accepted.
+SOLD_EVERY_DAYS = 1
 # A daily pass should be a handful of properties. If it ever wants hundreds,
 # something upstream has changed and a human should look before we spend it.
 DAILY_CAP = 60
@@ -83,7 +81,7 @@ def sweep_new_listings() -> dict:
 
 
 def sweep_sold_listings() -> dict:
-    """The weekly pass for sales. Never raises; this runs unattended."""
+    """The daily pass for sales. Never raises; this runs unattended."""
     from portals.listings import sweep_sold
 
     db = SessionLocal()
@@ -91,10 +89,10 @@ def sweep_sold_listings() -> dict:
         got = sweep_sold(db)
         found = sum(v["new"] for v in got.values())
         if found:
-            log.warning("weekly sold sweep: %d sales waiting for review", found)
+            log.warning("daily sold sweep: %d validated sales saved", found)
         return got
     except Exception:                             # noqa: BLE001
-        log.exception("weekly sold sweep failed")
+        log.exception("daily sold sweep failed")
         return {}
     finally:
         db.close()
@@ -139,8 +137,7 @@ def start(*, every: int = EVERY_SECONDS, first_after: int = FIRST_RUN_AFTER) -> 
                 # New listings first — the time-sensitive half. A failure in
                 # either must not stop the other, so they are caught separately.
                 sweep_new_listings()
-                # Sales once a week. Counted in passes rather than read off the
-                # calendar, so a restart cannot land two sweeps in one day.
+                # Sales are collected on each daily pass; snapshots retain history.
                 if day % SOLD_EVERY_DAYS == 0:
                     sweep_sold_listings()
                 day += 1

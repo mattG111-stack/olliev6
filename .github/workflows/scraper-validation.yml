@@ -1,0 +1,74 @@
+name: Scraper database validation
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      public_checks:
+        description: Run bounded read-only source checks (stop on access restrictions)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  worker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dedicated scraper image
+        run: docker build -f Dockerfile.scraper -t apex-scraper-check .
+      - name: Verify disabled startup without database or collection
+        run: >-
+          docker run --rm --network none
+          -e DATABASE_URL=postgresql+psycopg://synthetic:unused@127.0.0.1:5432/no_database
+          -e JWT_SECRET=synthetic-image-test-only
+          -e SCRAPER_ENABLED=false -e PORTALS_DAILY=false
+          -e SCRAPER_DAILY_PRICING=false apex-scraper-check
+          python -c "import scraper_worker,worker; jobs=scraper_worker.jobs(); assert len(jobs)==3; assert not any(j.enabled() for j in jobs); assert worker.run(jobs=jobs,max_ticks=1)==0"
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: apex_test
+          POSTGRES_PASSWORD: synthetic_test_only
+          POSTGRES_DB: apex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apex_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://apex_test:synthetic_test_only@localhost:5432/apex_test
+      JWT_SECRET: synthetic-ci-only-not-production
+      SCRAPER_ENABLED: 'false'
+      PORTALS_DAILY: 'false'
+      SCRAPER_DAILY_PRICING: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-scraper.txt pytest
+      - run: python -m playwright install --with-deps chromium --only-shell
+      - name: Database, rollback, scheduling and review checks
+        run: >-
+          python -m pytest -o addopts='' -q
+          tests/test_sold_acceptance.py tests/test_daily_pricing.py
+          tests/test_scraped_price_paths.py tests/test_a_guide_price_is_a_real_number.py
+          tests/test_durable_schedule.py tests/test_collection_storage.py
+          tests/test_direct_collector.py tests/test_public_adapters.py
+          tests/test_collection_pagination.py tests/test_new_listings.py
+          tests/test_incremental_collection.py
+          tests/test_property_evidence.py
+          tests/test_rendered_discovery.py
+      - name: Bounded public Homes discovery (read only)
+        if: github.event_name == 'workflow_dispatch' && inputs.public_checks
+        continue-on-error: true
+        timeout-minutes: 2
+        run: python scripts/check_homes_discovery.py
+      - name: Bounded public parser checks (read only)
+        if: github.event_name == 'workflow_dispatch' && inputs.public_checks
+        continue-on-error: true
+        timeout-minutes: 3
+        run: python scripts/check_public_parsers.py
