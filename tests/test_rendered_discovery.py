@@ -118,8 +118,8 @@ def test_virtualized_windows_keep_every_observed_link(monkeypatch, windows, tota
         def count(self): return 1
         def evaluate(self, script): self.index = min(self.index + 1, len(windows)-1)
         def wait_for_function(self, script, *, arg, timeout):
-            assert isinstance(arg, list)  # Compare identities, not current DOM length.
-            if not any(url(x) not in arg for x in windows[self.index]):
+            assert isinstance(arg["known"], list)  # Compare identities, not current DOM length.
+            if not any(url(x) not in arg["known"] for x in windows[self.index]):
                 raise TimeoutError('no unseen links')
     def url(x): return f'https://homes.co.nz/address/auckland/example/{x}/abc'
     page = Page()

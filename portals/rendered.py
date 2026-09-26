@@ -89,11 +89,11 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3):
         if container.count()!=1:break
         container.evaluate('(el) => { el.scrollTop=el.scrollHeight; }')
         try:
-            page.wait_for_function("""known =>
+            page.wait_for_function("""({known, base}) =>
                 /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
                 [...document.querySelectorAll('a[href*="/address/auckland/"]')]
-                    .some(a => !known.includes(a.href.split('?')[0].split('#')[0]))
-            """,arg=list(discovered),timeout=min(timeout_ms,10000))
+                    .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
+            """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,10000))
         except Exception:
             # An unchanged window is partial coverage, never an empty region.
             html=rendered_html(page,url,timeout_ms,restricted)

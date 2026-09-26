@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime, timezone
 from portals.incremental import start, stop_after_page, finish
 
@@ -87,3 +88,45 @@ def test_unfinished_or_partial_discovery_never_advances_successful_watermark():
         finish(s,NOW.isoformat())
         assert 'last_successful_scan_started_at' not in s
         assert 'last_full_pass_at' not in s
+
+
+
+def test_undisclosed_sale_is_revisited_when_it_disappears_from_search(monkeypatch):
+    from portals.direct import collect, page_data
+    from config import settings
+    import json
+    seed = 'https://www.oneroof.co.nz/search/sold/example'
+    detail = 'https://www.oneroof.co.nz/property/example'
+    newer = 'https://www.oneroof.co.nz/property/newer'
+    monkeypatch.setattr(settings, 'scraper_seeds', json.dumps({'oneroof':{'sold':[seed]}}))
+    monkeypatch.setattr(settings, 'scraper_max_pages', 4)
+    phase = [0]; calls = []
+    class Pages:
+        def get(self, url): calls.append(url); return url
+    def extract(url, source):
+        target = (detail if phase[0] == 0 else newer) if url == seed else url
+        return {target: {'target':target}}
+    monkeypatch.setattr(page_data, 'extract', extract)
+    monkeypatch.setattr(page_data, 'normalise', lambda source, kind, url, raw: {
+        'address':'1 Example Road' if url==detail else '2 Example Road',
+        'region':'Auckland', 'scraped_at':'2026-09-26', 'sold_date':'2026-09-01',
+        'sale_price':900000 if phase[0] and url==detail else None})
+    state = {}
+    collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+    assert state['sold_recheck_urls'] == [detail]
+    phase[0] = 1; calls.clear()
+    rows = collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+    assert detail in calls and seed in calls
+    assert next(r for r in rows if r['url']==detail)['sale_price'] == 900000
+    assert state['sold_recheck_urls'] == [newer]
+
+
+def test_untrusted_sold_recheck_url_cannot_leave_source(monkeypatch):
+    from portals.direct import collect, CollectorUnavailable
+    from config import settings
+    import json
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'sold':['https://homes.co.nz/map/auckland']}}))
+    class NoRequests:
+        def get(self,url): raise AssertionError('must validate before requesting')
+    with pytest.raises(CollectorUnavailable):
+        collect('homes',kind='sold',transport=NoRequests(),checkpoint={'sold_recheck_urls':['http://127.0.0.1/private']})

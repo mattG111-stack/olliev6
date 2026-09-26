@@ -223,6 +223,14 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
     for pending_url in pending:validate_url(pending_url, source)
     rows, seen, queue = {}, set(), list(dict.fromkeys(pending or seeds))
     page_limit = max(1, min(settings.scraper_max_pages, 30))
+    # A sale may be listed before its price is disclosed. Revisit a bounded
+    # rotating set of those exact observed URLs, independently of search order.
+    rechecks = list(dict.fromkeys(state.get('sold_recheck_urls', []))) if kind == 'sold' else []
+    for target in rechecks:
+        validate_url(target, source)
+    if rechecks and not pending:
+        due = rechecks[:min(5, page_limit // 2)]
+        queue = list(dict.fromkeys(due + queue))
     fetched = 0
     cap = max(1, min(int(cap), 1000))
     try:
@@ -299,6 +307,25 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                         row['provenance'][key] = enriched['provenance'][key]
             row['raw_source'] = {'search': row['raw_source'], 'detail': detail}
             row['source_conflicts'] = conflicts
+        if kind == 'sold':
+            # Remove resolved observations; move still-undisclosed ones to the
+            # back so a repeatedly missing price cannot monopolise refreshes.
+            from datetime import date as calendar_date
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as clock_datetime
+            import math
+            for record_url, row in rows.items():
+                rechecks = [target for target in rechecks if target != record_url]
+                price = row.get('sale_price')
+                valid_price = isinstance(price, (int, float)) and not isinstance(price, bool) and math.isfinite(price) and price > 0
+                try:
+                    dated = calendar_date.fromisoformat(str(row.get('sold_date')))
+                    valid_date = calendar_date(1800, 1, 1) <= dated <= clock_datetime.now(ZoneInfo('Pacific/Auckland')).date()
+                except (TypeError, ValueError):
+                    valid_date = False
+                if not valid_price or not valid_date:
+                    rechecks.append(record_url)
+            state['sold_recheck_urls'] = rechecks
         state['pending_urls'] = list(dict.fromkeys(pending_details + queue))
         state['last_saved_at'] = page_data.now()
         incremental.finish(state,state['last_saved_at'])
