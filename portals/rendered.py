@@ -152,12 +152,16 @@ def rendered_html(page, url, timeout_ms, restricted, discovery_only=False):
         # carousel nodes. Individual detail evidence is still fetched/stored.
         # Limit the compact evidence too; never disable the transport guard.
         snapshot=page.evaluate('''() => ({
-            denied: /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
-              !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]'),
+            challengeText: /verify you are human|access denied|captcha/i.test(document.body.innerText),
+            challengeWidget: !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]'),
             links: [...new Set([...document.querySelectorAll('a[href*="/address/auckland/"]')].map(a => a.href))]
         })''')
-        if restricted or snapshot['denied']:
-            raise CollectorUnavailable('Homes rendering stopped: access restriction')
+        if restricted:
+            raise CollectorUnavailable('Homes rendering stopped: access restriction (source response)')
+        if snapshot['challengeText']:
+            raise CollectorUnavailable('Homes rendering stopped: access restriction (visible challenge text)')
+        if snapshot['challengeWidget']:
+            raise CollectorUnavailable('Homes rendering stopped: access restriction (challenge widget)')
         html=''.join(f'<a href="{escape(link,quote=True)}">Observed property</a>' for link in snapshot['links'])
     else:
         html=page.content()

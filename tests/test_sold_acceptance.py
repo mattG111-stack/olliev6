@@ -140,3 +140,22 @@ def test_untracked_existing_sale_is_not_rewritten_by_enrichment(db_session,monke
     result=run(db_session,monkeypatch,[sale(floor_area_m2=140)])
     assert result['skipped']==1 and result['enriched']==0
     assert db_session.query(PropertySold).one().floor_area_m2 is None
+
+
+def test_portal_copy_and_images_do_not_quarantine_agreed_sale_facts(db_session,monkeypatch):
+    import json
+    from models import PortalListing
+    first=sale(description='Sunny family home',image_url='https://images.example/one.jpg',image_count=3)
+    second={**sale(description='Three-bedroom property',image_url='https://images.example/two.jpg',image_count=5,floor_area_m2=140),
+            'source':'homes','url':'https://homes.co.nz/address/auckland/example/1/abc'}
+    result=run(db_session,monkeypatch,[first,second])
+    assert result['new']==1 and result['quarantined']==0
+    assert db_session.query(PropertySold).one().floor_area_m2==140
+    evidence=json.loads(db_session.query(PortalListing).one().raw_json)
+    assert {row['description'] for row in evidence['source_snapshots']}=={'Sunny family home','Three-bedroom property'}
+    assert {row['image_count'] for row in evidence['source_snapshots']}=={3,5}
+    # Real pricing/property disagreement still blocks the record.
+    second['sale_price']=800000
+    result=run(db_session,monkeypatch,[first,second])
+    assert result['quarantined']==1
+    assert db_session.query(PropertySold).one().sale_price==900000

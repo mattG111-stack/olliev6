@@ -2,6 +2,11 @@ name: Scraper database validation
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      public_checks:
+        description: Run bounded read-only source checks (stop on access restrictions)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -58,10 +63,12 @@ jobs:
           tests/test_property_evidence.py
           tests/test_rendered_discovery.py
       - name: Bounded public Homes discovery (read only)
+        if: github.event_name == 'workflow_dispatch' && inputs.public_checks
         continue-on-error: true
         timeout-minutes: 2
         run: python scripts/check_homes_discovery.py
       - name: Bounded public parser checks (read only)
+        if: github.event_name == 'workflow_dispatch' && inputs.public_checks
         continue-on-error: true
         timeout-minutes: 3
         run: python scripts/check_public_parsers.py

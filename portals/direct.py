@@ -385,6 +385,7 @@ def merge_records(rows):
     # Site-local identifiers have no cross-source meaning. Keep each original
     # ID in source_snapshots, but never turn different portal IDs into a dispute.
     metadata = {'source','url','source_id','property_id','scraped_at','raw_source','provenance','collection_scope','source_conflicts','conflicts','_apex_direct','sale_history'}
+    presentation = {'description','image_url','image_urls','image_count'}
     for group in grouped.values():
         merged = dict(group[0]); provenance = {}; conflicts = {}
         for row in group:
@@ -397,7 +398,10 @@ def merge_records(rows):
                     merged[key]=value
                 if merged[key]==value:
                     provenance.setdefault(key,[]).append(origin)
-                else:
+                elif key not in presentation:
+                    # Portal copy and CDN image URLs naturally differ. Keep
+                    # every version in source_snapshots without labelling that
+                    # a disagreement over the home's measurable facts.
                     conflicts.setdefault(key,[]).append({'value':value,**origin})
         from portals.evidence import history
         sales=history(group)
