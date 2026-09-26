@@ -91,7 +91,8 @@ def test_unfinished_or_partial_discovery_never_advances_successful_watermark():
 
 
 
-def test_undisclosed_sale_is_revisited_when_it_disappears_from_search(monkeypatch):
+@pytest.mark.parametrize("persist", [False, True])
+def test_undisclosed_sale_is_revisited_when_it_disappears_from_search(monkeypatch, db_session, persist):
     from portals.direct import collect, page_data
     from config import settings
     import json
@@ -103,21 +104,37 @@ def test_undisclosed_sale_is_revisited_when_it_disappears_from_search(monkeypatc
     phase = [0]; calls = []
     class Pages:
         def get(self, url): calls.append(url); return url
+        def close(self): pass
     def extract(url, source):
         target = (detail if phase[0] == 0 else newer) if url == seed else url
         return {target: {'target':target}}
     monkeypatch.setattr(page_data, 'extract', extract)
     monkeypatch.setattr(page_data, 'normalise', lambda source, kind, url, raw: {
         'address':'1 Example Road' if url==detail else '2 Example Road',
-        'region':'Auckland', 'scraped_at':'2026-09-26', 'sold_date':'2026-09-01',
+        'region':'Auckland', 'suburb':'Example', 'district':'Auckland City',
+        'scraped_at':'2026-09-26', 'sold_date':'2026-09-01',
         'sale_price':900000 if phase[0] and url==detail else None})
+    from portals.storage import collect_and_stage
+    from portals import checkpoints
+    from models import PropertySold
+    monkeypatch.setattr('portals.direct.Transport', lambda source: Pages())
     state = {}
-    collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+    if persist:
+        collect_and_stage(db_session,sources=['oneroof'],kind='sold',cap=5)
+        state = checkpoints.load(db_session,'oneroof','sold')
+        assert db_session.query(PropertySold).count() == 0
+    else:
+        collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
     assert state['sold_recheck_urls'] == [detail]
     phase[0] = 1; calls.clear()
-    rows = collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+    if persist:
+        collect_and_stage(db_session,sources=['oneroof'],kind='sold',cap=5)
+        state = checkpoints.load(db_session,'oneroof','sold')
+        assert db_session.query(PropertySold).one().sale_price == 900000
+    else:
+        rows = collect('oneroof',kind='sold',transport=Pages(),checkpoint=state)
+        assert next(r for r in rows if r['url']==detail)['sale_price'] == 900000
     assert detail in calls and seed in calls
-    assert next(r for r in rows if r['url']==detail)['sale_price'] == 900000
     assert state['sold_recheck_urls'] == [newer]
 
 
