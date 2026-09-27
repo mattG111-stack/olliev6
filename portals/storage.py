@@ -44,6 +44,13 @@ def retain_missing_facts(previous, current):
             or any(not previous.get(k) or previous.get(k)!=current.get(k)
                    for k in ('source','url'))):
         return current
+    try:
+        old_time=datetime.fromisoformat(previous['scraped_at'].replace('Z','+00:00'))
+        new_time=datetime.fromisoformat(current['scraped_at'].replace('Z','+00:00'))
+        if old_time.tzinfo and new_time.tzinfo and new_time<old_time:
+            return previous
+    except (KeyError,TypeError,ValueError,AttributeError):
+        pass
     fields=('beds','baths','carspaces','floor_area_m2','land_area_m2',
             'building_age','property_type','zoning','type_of_title')
     retained={k:previous[k] for k in fields

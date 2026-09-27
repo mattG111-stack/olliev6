@@ -229,6 +229,19 @@ def test_retained_disputed_measurement_stays_quarantined(db_session,monkeypatch)
     assert json.loads(row.raw_json)['source_snapshots'][0]['source_conflicts']['floor_area_m2']==[140,180]
 
 
+def test_buffered_older_observation_cannot_replace_newer_facts_or_price(db_session,monkeypatch):
+    current=sample(floor_area_m2=140,land_area_m2=500,price_numeric=850000)
+    current['scraped_at']='2026-09-26T10:00:00+00:00'
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**kw:[current])
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    current=sample(land_area_m2=600,price_numeric=900000)
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    row=db_session.query(PortalListing).one()
+    assert (row.floor_area_m2,row.land_area_m2,row.price_numeric)==(140,500,850000)
+    assert json.loads(row.raw_json)['source_snapshots'][0]['scraped_at']=='2026-09-26T10:00:00+00:00'
+    assert db_session.query(PortalObservation).count()==2
+
+
 @pytest.mark.parametrize('change',[{'address':'2/25 Example Road'},
                                   {'district':'Other district'},
                                   {'region':'Other region'}])
