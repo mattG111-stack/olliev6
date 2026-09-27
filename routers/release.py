@@ -1745,3 +1745,47 @@ def ml_diagnostic_csv(region: str = "Auckland", batch_id: int | None = None,
         headers={"Content-Disposition":
                  f'attachment; filename="apex_pricing_diagnostic_{region}.csv"'},
     )
+
+
+# Scraped listings have an explicit private pricing review, separate from CSV.
+class PortalSelection(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+
+
+@router.get("/release/download-counts")
+def downloaded_counts(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import download_counts
+    return download_counts(db)
+
+
+@router.post("/release/portal-review/price")
+def price_portal_review(body: PortalSelection, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import start, run
+    job, created = start(db, body.ids, admin.id)
+    if created:
+        threading.Thread(target=run, args=(job.id,), daemon=True).start()
+    return {"job_id":job.id}
+
+
+@router.get("/release/portal-review")
+def get_portal_review(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import review
+    return review(db)
+
+
+@router.post("/release/portal-review/{listing_id}/remove")
+def remove_portal_review(listing_id: int, removed: bool = True, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import remove
+    try: remove(db,listing_id,removed)
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(status_code=409,detail=str(exc))
+    return {"removed":removed}
+
+
+@router.post("/release/portal-review/live")
+def publish_portal_review(body: PortalSelection, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import publish
+    try: count=publish(db,body.ids,admin.id)
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(status_code=409,detail=str(exc))
+    return {"published":count}

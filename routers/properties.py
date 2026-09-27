@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import Integer, and_, case, desc, func, not_, or_
 from sqlalchemy.orm import Session
@@ -57,7 +57,19 @@ from prior_price import ADVERTISED_BASIS
 from release import MARGIN_MAX_PCT
 from security import admin_from_header, require_active, require_admin
 
-router = APIRouter(prefix="/api/properties", tags=["properties"])
+def exclude_portal_drafts(request: Request, db: Session = Depends(get_db)):
+    """Unpublished portal pricing has its own admin-only review endpoint."""
+    value = request.path_params.get("property_id")
+    if value is None: return
+    try: property_id = int(value)
+    except (ValueError, TypeError): return
+    draft = db.query(PropertyForSale.id).join(ImportBatch,
+        PropertyForSale.import_batch_id == ImportBatch.id).filter(
+        PropertyForSale.id == property_id, ImportBatch.status == "portal_review").first()
+    if draft: raise HTTPException(status_code=404, detail="Not found")
+
+
+router = APIRouter(prefix="/api/properties", tags=["properties"], dependencies=[Depends(exclude_portal_drafts)])
 
 # NZ title types. Sold data stores numeric codes ("1"/"3"); for-sale stores text
 # ("Freehold"/"Cross-Lease"). _title_bucket canonicalises both to FH/LH/CL/UT. We
