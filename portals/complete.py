@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from models import PortalListing
+from models import ImportBatch, PortalListing, PropertyForSale
 from propertyvalue import PV_OK, pv_lookup_status
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,18 @@ CHUNK = 25
 MAX_CHUNK = 100
 
 
+def fillable_rows(db: Session, kind: str):
+    # A priced source is fillable only while its property is still private.
+    # Enrich the source; review_flow requires repricing changed inputs before Live.
+    private_ids = select(PropertyForSale.id).join(ImportBatch).where(
+        ImportBatch.status == 'portal_review', ImportBatch.is_active.is_(False))
+    return db.query(PortalListing).filter(
+        PortalListing.kind == kind,
+        or_(PortalListing.status == 'pending', and_(
+            PortalListing.kind == 'for_sale', PortalListing.status == 'priced',
+            PortalListing.property_id.in_(private_ids))))
+
+
 def fill_pending(db: Session, *, kind: str = "for_sale",
                  limit: int = CHUNK, after_id: int = 0) -> dict:
     """Fill the gaps on one chunk of pending rows, and say what is left.
@@ -117,11 +130,10 @@ def fill_pending(db: Session, *, kind: str = "for_sale",
     SCANNED, whether or not it needed anything, so progress is guaranteed.
     """
     limit = max(1, min(int(limit or CHUNK), MAX_CHUNK))
-    scanned = (db.query(PortalListing)
-               .filter(PortalListing.status == "pending",
-                       PortalListing.kind == kind,
-                       PortalListing.id > int(after_id or 0))
-               .order_by(PortalListing.id).limit(limit).all())
+    scanned = (fillable_rows(db, kind)
+               .filter(PortalListing.id > int(after_id or 0))
+               .order_by(PortalListing.id).limit(limit)
+               .with_for_update(of=PortalListing).all())
     rows = [r for r in scanned if needs_filling(r)]
     last_id = scanned[-1].id if scanned else int(after_id or 0)
 
@@ -147,10 +159,7 @@ def fill_pending(db: Session, *, kind: str = "for_sale",
     db.commit()
 
     with_cv_after = sum(1 for r in rows if not _blank(r.cv_numeric))
-    remaining = (db.query(PortalListing)
-                 .filter(PortalListing.status == "pending",
-                         PortalListing.kind == kind,
-                         PortalListing.id > last_id).count())
+    remaining = fillable_rows(db, kind).filter(PortalListing.id > last_id).count()
     return {
         "looked_up": looked,
         "fields_filled": fields,

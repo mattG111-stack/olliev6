@@ -60,6 +60,7 @@ jobs:
           tests/test_direct_collector.py tests/test_public_adapters.py
           tests/test_collection_pagination.py tests/test_new_listings.py
           tests/test_incremental_collection.py tests/test_review_listing_details.py tests/test_portal_review_flow.py
+          tests/test_portal_complete.py tests/test_filling_gaps_does_not_time_out.py
           tests/test_property_evidence.py tests/test_external_estimates_cache.py tests/test_enrichment_address_identity.py
           tests/test_rendered_discovery.py
           tests/test_gone_link_is_not_a_sale.py tests/test_the_link_check_gets_round_the_book.py
