@@ -373,3 +373,59 @@ def test_cross_source_agent_metadata_retains_snapshots_and_real_conflicts():
     merged=merge_records([a,b])[0]
     assert set(merged['conflicts'])=={'beds'}
     assert merged['price_flag']
+
+
+@pytest.mark.parametrize('code',[404,410])
+@pytest.mark.parametrize('resume',[True,False])
+def test_missing_oneroof_detail_is_retained_and_does_not_stop_next_record(monkeypatch,code,resume):
+    seed='https://www.oneroof.co.nz/search/sold/region_auckland-35_page_1'
+    missing='https://www.oneroof.co.nz/property/auckland/example/missing/abc'
+    good='https://www.oneroof.co.nz/property/auckland/example/good/def'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',3)
+    raw={'street':'2 Example Road','suburb':'Example','region':'Auckland'}
+    monkeypatch.setattr(page_data,'extract',lambda html,source:({missing:raw,good:raw} if html=='search' else {good:raw}))
+    calls=[]
+    def handler(request):
+        url=str(request.url);calls.append(url)
+        if request.url.path=='/robots.txt':return httpx.Response(200,text='User-agent: *\nAllow: /')
+        if url==missing:return httpx.Response(code,text='Missing property detail')
+        return httpx.Response(200,text='search' if url==seed else 'detail')
+    state={'pending_urls':[missing,good]} if resume else {}
+    results=collect('oneroof',kind='sold',transport=Transport('oneroof',client=client_for(handler)),checkpoint=state,isolate_records=True)
+    rejected=[r for r in results if r.get('_collection_rejected')]
+    valid=[r for r in results if not r.get('_collection_rejected')]
+    assert len(rejected)==len(valid)==1 and valid[0]['url']==good
+    assert rejected[0]['raw_source']['http_status']==code
+    assert rejected[0]['raw_source']['html']=='Missing property detail'
+    assert state['record_failures'][missing]['http_status']==code
+    assert missing not in state['pending_urls']
+    assert not any(r.get('sold_date') or r.get('sale_price') for r in rejected)
+    state['pending_urls']=[missing,good]
+    calls.clear()
+    collect('oneroof',kind='sold',transport=Transport('oneroof',client=client_for(handler)),checkpoint=state,isolate_records=True)
+    assert missing not in calls  # deferred retry survives checkpoint reuse
+
+
+@pytest.mark.parametrize('code,challenge',[(403,False),(429,False),(500,False),(404,True)])
+def test_missing_page_isolation_never_swallows_access_or_outage(monkeypatch,code,challenge):
+    seed='https://www.oneroof.co.nz/search/sold'
+    detail='https://www.oneroof.co.nz/property/auckland/example/abc'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[seed]}}))
+    def handler(request):
+        if request.url.path=='/robots.txt':return httpx.Response(200,text='User-agent: *\nAllow: /')
+        return httpx.Response(code,text='verify you are human' if challenge else 'Unavailable')
+    state={'pending_urls':[detail]}
+    with pytest.raises(CollectorUnavailable):
+        collect('oneroof',kind='sold',transport=Transport('oneroof',client=client_for(handler)),checkpoint=state,isolate_records=True)
+    assert not state['record_failures']
+
+
+@pytest.mark.parametrize('isolate',[False,True])
+def test_missing_search_still_fails_source(monkeypatch,isolate):
+    seed='https://www.oneroof.co.nz/search/sold'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'oneroof':{'sold':[seed]}}))
+    def handler(request):
+        return httpx.Response(200,text='User-agent: *\nAllow: /') if request.url.path=='/robots.txt' else httpx.Response(404,text='Missing search')
+    with pytest.raises(CollectorUnavailable,match='HTTP 404'):
+        collect('oneroof',kind='sold',transport=Transport('oneroof',client=client_for(handler)),checkpoint={},isolate_records=isolate)

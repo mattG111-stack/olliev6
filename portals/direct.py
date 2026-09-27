@@ -37,6 +37,13 @@ class CollectorUnavailable(RuntimeError):
     pass
 
 
+class MissingSourcePage(CollectorUnavailable):
+    """A bounded, non-challenge 404/410 response, not a sale or delisting."""
+    def __init__(self, status_code, url, html):
+        super().__init__(f'Source returned HTTP {status_code}')
+        self.status_code, self.url, self.html = status_code, url, html
+
+
 def failure_code(exc):
     """Allowlisted diagnostics only; never persist arbitrary exception text."""
     message=str(exc)
@@ -199,6 +206,8 @@ class Transport:
             result = self.get(target, redirects + 1)
             self.resolved_urls[url] = self.resolved_urls.get(target, target)
             return result
+        if code in (404,410):
+            raise MissingSourcePage(code,url,text)
         if code != 200:
             raise CollectorUnavailable(f'Source returned HTTP {code}')
         self.resolved_urls[url] = url
@@ -375,6 +384,9 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
         rejected.append({'source':source,'kind':kind,'url':url,'_collection_rejected':True,
             'reason_code':type(exc).__name__,'resolved_url':final_url,
             'raw_source':{'search':search,'details':details,'html':html}})
+        if isinstance(exc,MissingSourcePage):
+            rejected[-1]['raw_source']['http_status']=exc.status_code
+            failures[url]['http_status']=exc.status_code
     fetched = 0
     cap = max(1, min(int(cap), 1000))
     try:
@@ -383,7 +395,18 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
             if url in seen:
                 continue
             seen.add(url)
-            text = transport.get(url)
+            try:
+                text = transport.get(url)
+            except MissingSourcePage as exc:
+                # An observed OneRoof property detail must not block every
+                # later sold record. Search failures still stop the source.
+                if not (isolate_records and source=='oneroof'
+                        and url not in seeds and urlsplit(url).path.startswith('/property/')
+                        and (url in pending or url in buffered or url in rechecks or url in failures)):
+                    raise
+                fetched += 1
+                reject(url,exc.url,exc.html,buffered.pop(url,None),None,exc)
+                continue
             fetched += 1
             extracted = page_data.extract(text, source)
             saved_search=buffered.pop(url,None)
@@ -500,7 +523,17 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                 pending_details.append(record_url)
                 buffered[record_url]=row['raw_source']
                 continue
-            detail_text = transport.get(record_url)
+            try:
+                detail_text = transport.get(record_url)
+            except MissingSourcePage as exc:
+                if not (isolate_records and source=='oneroof'
+                        and record_url not in seeds and urlsplit(record_url).path.startswith('/property/')):
+                    raise
+                fetched += 1
+                seen.add(record_url)
+                reject(record_url,exc.url,exc.html,row['raw_source'],None,exc)
+                rows.pop(record_url,None)
+                continue
             fetched += 1
             seen.add(record_url)
             resolved_url=getattr(transport,'resolved_urls',{}).get(record_url,record_url)
