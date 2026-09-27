@@ -78,6 +78,14 @@ def price_one(db, source, batch_id, dataset, rent, model):
         prop = db.get(PropertyForSale, source.property_id)
         if not prop or prop.import_batch_id != batch_id:
             raise ValueError('Only private review drafts can be repriced here')
+        # Enrichment may have corrected the source after the first pricing run.
+        # Refresh mapped source facts before calculating, retaining this draft's
+        # identity and batch. Never copy SQLAlchemy state or pricing outputs.
+        from sqlalchemy import inspect
+        fresh = property_from_listing(source, batch_id)
+        for attr in inspect(fresh).mapper.column_attrs:
+            if attr.key not in ('id', 'import_batch_id') and attr.key in vars(fresh):
+                setattr(prop, attr.key, getattr(fresh, attr.key))
     else:
         prop = property_from_listing(source, batch_id)
     # Portals differ in casing. Reuse the most common exact spelling in the

@@ -151,3 +151,33 @@ def test_portal_case_normalization_and_draft_reprice_preserve_identity(db_sessio
     assert db.query(PropertyForSale).filter_by(import_batch_id=b.id).count()==1
     live=batch(db);p.import_batch_id=live.id;db.commit()
     with pytest.raises(ValueError,match='private'):flow.price_one(db,r,b.id,dataset,rent,None)
+
+
+def test_repricing_refreshes_source_facts_without_duplicate_or_live_write(db_session,monkeypatch):
+    import pandas as pd
+    import reprice
+    from types import SimpleNamespace
+    db=db_session;live=batch(db);b=batch(db,flow.DRAFT,False)
+    old=PropertyForSale(import_batch_id=live.id,address='9 Other Road',suburb='Test',fair_value=777000)
+    db.add(old)
+    r=PortalListing(source='homes',kind='for_sale',status='pending',address='1/5 Test Road',address_key='1-5',suburb='TEST',floor_area_m2=100,land_area_m2=300,price_numeric=700000,image_url='https://example.test/one.jpg')
+    db.add(r);db.commit();observed=[]
+    def pipeline(df,*args,**kwargs):
+        observed.append(dict(df.iloc[0]))
+        return pd.DataFrame([{'fair_value':float(df.iloc[0]['key_floor_area'])*8000}])
+    monkeypatch.setattr(reprice,'run_pipeline',pipeline)
+    dataset=SimpleNamespace(df=pd.DataFrame({'suburb':['Test']}))
+    p=flow.price_one(db,r,b.id,dataset,None,None);db.commit();pid=p.id
+    r.floor_area_m2=150;r.land_area_m2=400;r.baths=2
+    r.prior_sale_price=650000;r.prior_sale_date='2022-02-03'
+    r.image_url='https://example.test/new.jpg'
+    r.image_urls='https://example.test/new.jpg\nhttps://example.test/two.jpg'
+    db.commit()
+    p=flow.price_one(db,r,b.id,dataset,None,None);db.commit()
+    assert observed[-1]['key_floor_area']==150 and observed[-1]['key_land_area']==400
+    assert p.id==pid and p.fair_value==1200000 and p.baths==2
+    assert p.image_url==r.image_url and p.image_urls==r.image_urls
+    assert p.valuation_last_sold_value==650000 and p.valuation_last_sold_date=='2022-02-03'
+    assert p.suburb=='Test' and r.suburb=='TEST'
+    assert db.query(PropertyForSale).filter_by(import_batch_id=b.id).count()==1
+    assert old.fair_value==777000 and old.import_batch_id==live.id
