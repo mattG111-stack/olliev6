@@ -71,13 +71,21 @@ def _blank(v) -> bool:
 def needs_filling(row: PortalListing) -> bool:
     """Would a lookup add anything? A row with everything already is not worth
     the request, and a weekly load of these adds up."""
-    return any(_blank(getattr(row, ours, None)) for ours, _ in _FILLABLE)
+    from portals.oneroof_backfill import property_url
+    return (any(_blank(getattr(row, ours, None)) for ours, _ in _FILLABLE)
+            or bool(property_url(row.url) and (not row.image_url or not row.image_urls)))
 
 
 def fill_one(db: Session, row: PortalListing) -> tuple[int, str]:
     """(fields filled, status). Commits nothing — the caller batches that."""
     if not row.address:
         return 0, "no address"
+    # OneRoof is the primary backfill when an exact observed property link is
+    # available. A failed OneRoof request is reported, not retried via proxies.
+    from portals.oneroof_backfill import fill
+    result = fill(db, row)
+    if result is not None:
+        return result
     q = ", ".join(x for x in (row.address, (row.suburb or "").strip(), "Auckland")
                   if x and x.lower() != "nan")
     rec, status = pv_lookup_status(q)
