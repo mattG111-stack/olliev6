@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import json
 import re
 import time
 
@@ -80,21 +81,28 @@ def _hosts_from_our_own_listings() -> frozenset[str]:
     out: set[str] = set()
     db = SessionLocal()
     try:
-        rows = (db.query(PropertyForSale.image_url)
-                .filter(PropertyForSale.image_url.isnot(None))
-                .limit(4000).all())
-        for (u,) in rows:
-            try:
-                h = (httpx.URL(u).host or "").lower()
-            except Exception:                          # noqa: BLE001
-                continue
-            if not h:
-                continue
-            # Registrable domain, so a CDN shard we have not seen before still
-            # works: img7.example.com is allowed by example.com.
-            parts = h.split(".")
-            out.add(".".join(parts[-3:]) if len(parts) > 2 and parts[-2] in
-                    ("co", "com", "net", "org") else ".".join(parts[-2:]))
+        # New portal/CDN hosts may appear after thousands of legacy rows.
+        # Stream all saved covers and galleries rather than sampling a prefix.
+        rows = db.query(PropertyForSale.image_url, PropertyForSale.image_urls).yield_per(500)
+        for cover, gallery in rows:
+            urls = [cover] if cover else []
+            if gallery:
+                try:
+                    parsed = json.loads(gallery)
+                except (ValueError, TypeError):
+                    parsed = gallery.splitlines()
+                if isinstance(parsed, list):
+                    urls.extend(u for u in parsed if isinstance(u, str))
+            for u in urls:
+                try:
+                    h = (httpx.URL(u).host or "").lower()
+                except Exception:                          # noqa: BLE001
+                    continue
+                if not h:
+                    continue
+                parts = h.split(".")
+                out.add(".".join(parts[-3:]) if len(parts) > 2 and parts[-2] in
+                        ("co", "com", "net", "org") else ".".join(parts[-2:]))
     except Exception:                                  # noqa: BLE001
         log.exception("could not read the image hosts from the listings")
     finally:
