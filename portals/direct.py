@@ -39,6 +39,9 @@ def failure_code(exc):
     message=str(exc)
     codes={
         'Source or proxy connection failed':'connection_failed',
+        'Source or proxy request timed out':'connection_timeout',
+        'Proxy transport failed':'proxy_transport_failed',
+        'Source connection could not be established':'connect_failed',
         'Could not establish robots rules':'robots_unavailable',
         'Source robots rules disallow this URL':'robots_disallowed',
         'Page exceeds collection size limit':'page_size_limit',
@@ -161,6 +164,12 @@ class Transport:
                 return response.status_code, '', text
         except CollectorUnavailable:
             raise
+        except httpx.TimeoutException:
+            raise CollectorUnavailable('Source or proxy request timed out') from None
+        except httpx.ProxyError:
+            raise CollectorUnavailable('Proxy transport failed') from None
+        except httpx.ConnectError:
+            raise CollectorUnavailable('Source connection could not be established') from None
         except Exception:
             raise CollectorUnavailable('Source or proxy connection failed') from None
 
@@ -399,6 +408,15 @@ def collect(source, *, kind='for_sale', cap=300, suburb=None, transport=None, ch
                     for target in discovered+next_pages(text,url,source):
                         if target not in seen and target not in queue and (not isolate_records or due(target)):queue.append(target)
                     continue
+            # Map discovery yields bare detail URLs, without buffered card data.
+            # An empty detail must not freeze every later queued house.
+            # Transport stops access restrictions before this branch.
+            if (not extracted and isolate_records and source == 'homes'
+                    and urlsplit(requested_url).path.startswith('/address/auckland/')
+                    and requested_url in pending):
+                reject(requested_url,url,text,saved_search,extracted,
+                       RecordRejected('Observed Homes detail has no usable property data'))
+                continue
             if not extracted and source == 'homes':
                 from portals.rendered import property_links, discovery_info
                 coverage=discovery_info(text)

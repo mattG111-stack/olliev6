@@ -272,3 +272,42 @@ def test_oneroof_explicit_days_normalised_with_raw_evidence_retained():
 def test_failure_diagnostics_are_allowlisted(message,code):
     from portals.direct import failure_code
     assert failure_code(CollectorUnavailable(message))==code
+
+
+@pytest.mark.parametrize('error,code',[(httpx.ReadTimeout,'connection_timeout'),
+    (httpx.ProxyError,'proxy_transport_failed'),(httpx.ConnectError,'connect_failed')])
+def test_transport_failure_categories_do_not_expose_credentials(error,code):
+    from portals.direct import failure_code
+    def handler(r):raise error('http://user:secret@proxy.example')
+    t=Transport('homes',client=client_for(handler))
+    with pytest.raises(CollectorUnavailable) as got:t.get('https://homes.co.nz/address')
+    assert failure_code(got.value)==code
+    assert 'secret' not in str(got.value)
+
+
+def test_bare_homes_detail_rejection_does_not_freeze_pending_queue(monkeypatch):
+    bad='https://homes.co.nz/address/auckland/example/1/abc'
+    good='https://homes.co.nz/address/auckland/example/2/def'
+    seed='https://homes.co.nz/map/auckland'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'for_sale':[seed]}}))
+    monkeypatch.setattr(settings,'scraper_max_pages',3)
+    class Pages:
+        def get(self,url):
+            if url==bad:return '<html>temporary empty property shell</html>'
+            return '<script type="application/ld+json">'+json.dumps({'@type':'RealEstateListing','url':good,'about':{'@type':'House','address':{'streetAddress':'2 Example Road','addressLocality':'Example','addressRegion':'Auckland'}}})+'</script>'
+    state={'pending_urls':[bad,good]}
+    rows=collect('homes',transport=Pages(),checkpoint=state,isolate_records=True)
+    valid=[r for r in rows if not r.get('_collection_rejected')]
+    rejected=[r for r in rows if r.get('_collection_rejected')]
+    assert len(valid)==len(rejected)==1 and valid[0]['url']==good
+    assert 'empty property shell' in rejected[0]['raw_source']['html']
+    assert state['pending_urls']==[] and state['record_failures'][bad]['retry_after']
+
+
+def test_empty_homes_discovery_still_fails_source(monkeypatch):
+    seed='https://homes.co.nz/map/auckland'
+    monkeypatch.setattr(settings,'scraper_seeds',json.dumps({'homes':{'for_sale':[seed]}}))
+    class Pages:
+        def get(self,url):return '<html>empty discovery</html>'
+    with pytest.raises(CollectorUnavailable,match='adapter needs checking'):
+        collect('homes',transport=Pages(),checkpoint={'pending_urls':[seed]},isolate_records=True)
