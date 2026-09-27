@@ -177,6 +177,20 @@ def normalise(site,kind,url,raw,collected=None):
         for item in (pub.get('data') or []):
             if item.get('alias') in ('ld','ed','unitary','cond','council'):
                 n[{'ld':'legal_description','ed':'estate_description','unitary':'zoning','cond':'condition','council':'council'}[item['alias']]]=item.get('value')
+        # Public-record area entries are separate from the advert's area fields.
+        # Only explicit square-metre/hectare values are usable; retain disputes.
+        for item in (pub.get('data') or []):
+            field={'floorarea':'key_floor_area','landarea':'key_land_area'}.get(item.get('alias'))
+            if not field:continue
+            value=html.unescape(str(item.get('value') or '')).strip()
+            match=re.fullmatch(r'([\d,.]+)\s*(m²|m2|sqm|ha)',value,re.I)
+            candidate=area(match[1],match[2]) if match else None
+            if candidate is None or candidate<=0:continue
+            existing=n.get(field)
+            if existing is None or existing<=0:n[field]=candidate
+            elif existing!=candidate:
+                target={'key_floor_area':'floor_area_m2','key_land_area':'land_area_m2'}[field]
+                n.setdefault('source_conflicts',{})[target]=[existing,candidate]
         sold=a.get('soldInfo') or {}
         if kind=='sold':n.update(sale_price=number(sold.get('soldPrice')),sold_date=date(sold.get('soldDate')))
         # Search ranking prices are NOT advertised asking prices.

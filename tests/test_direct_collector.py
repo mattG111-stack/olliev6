@@ -311,3 +311,28 @@ def test_empty_homes_discovery_still_fails_source(monkeypatch):
         def get(self,url):return '<html>empty discovery</html>'
     with pytest.raises(CollectorUnavailable,match='adapter needs checking'):
         collect('homes',transport=Pages(),checkpoint={'pending_urls':[seed]},isolate_records=True)
+
+
+def test_oneroof_public_area_fills_zero_and_flags_conflicting_land():
+    from portals.direct import merge_detail_evidence
+    raw={'street':'15 Example Court','suburb':'Example','region':'Auckland',
+         'floorAreaString':'0m&sup2;','landAreaString':'882m&sup2;',
+         'publicRecords':{'data':[{'alias':'floorarea','value':'210m&sup2;'},
+                                  {'alias':'landarea','value':'881m&sup2;'}]}}
+    row=canonical('oneroof','for_sale','https://www.oneroof.co.nz/property/example',raw)
+    assert row['floor_area_m2']==210 and row['land_area_m2']==882
+    assert row['source_conflicts']['land_area_m2']==[882,881]
+    assert row['raw_source']==raw
+    search=canonical('oneroof','for_sale',row['url'],{**raw,'publicRecords':{}})
+    merged=merge_detail_evidence(search,row,raw)
+    assert merged['floor_area_m2']==210
+    assert merged['source_conflicts']['land_area_m2']==[882,881]
+    assert merge_records([merged])[0]['price_flag']
+
+
+@pytest.mark.parametrize('value,expected',[('1.25 ha',12500),('210 m²',210),
+    ('210 sqm',210),('210',None),('unknown',None),('0m²',None),('-20m²',None)])
+def test_public_area_requires_positive_explicit_units(value,expected):
+    raw={'publicRecords':{'data':[{'alias':'landarea','value':value}]}}
+    row=canonical('oneroof','for_sale','https://www.oneroof.co.nz/property/example',raw)
+    assert row.get('land_area_m2')==expected
