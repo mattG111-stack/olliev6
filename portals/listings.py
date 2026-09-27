@@ -777,7 +777,51 @@ def approve(db: Session, listing_id: int, *, user_id: int | None = None,
         db.commit()
         return False, "the weekly file already has this property"
 
-    prop = PropertyForSale(import_batch_id=batch.id)
+    prop = property_from_listing(row, batch.id)
+    db.add(prop)
+    db.flush()
+
+    row.status = "approved"
+    row.property_id = prop.id
+    row.decided_at = datetime.now(timezone.utc)
+    row.decided_by_id = user_id
+    db.commit()
+
+    try:
+        (reprice or reprice_one)(db, prop.id)
+    except ValueError:
+        pass                                      # nothing to price against yet
+    except Exception as e:                        # noqa: BLE001
+        log.info("pricing a new portal listing failed for %s: %s", prop.id, e)
+    return True, ""
+
+
+def reject(db: Session, listing_id: int, *, user_id: int | None = None) -> bool:
+    """Refuse one, and keep it. Tomorrow's sweep finds the same listing on the
+    same portal, and the record of the decision is what stops it coming back
+    looking new."""
+    row = db.get(PortalListing, listing_id)
+    if row is None or row.status != "pending":
+        return False
+    row.status = "rejected"
+    row.decided_at = datetime.now(timezone.utc)
+    row.decided_by_id = user_id
+    db.commit()
+    return True
+
+
+def pending(db: Session, *, kind: str | None = None,
+            limit: int = 200) -> list[PortalListing]:
+    q = db.query(PortalListing).filter(PortalListing.status == "pending")
+    if kind:
+        q = q.filter(PortalListing.kind == kind)
+    return (q.order_by(PortalListing.created_at.desc(), PortalListing.id.desc())
+            .limit(limit).all())
+
+
+def property_from_listing(row: PortalListing, batch_id: int) -> PropertyForSale:
+    """Materialise source facts without saving, pricing or publishing."""
+    prop = PropertyForSale(import_batch_id=batch_id)
     for field in _CARRIED:
         setattr(prop, field, getattr(row, field))
     # beds/baths/cars are floats on a scraped row and integers on a listing, so
@@ -838,42 +882,4 @@ def approve(db: Session, listing_id: int, *, user_id: int | None = None,
     from portals.evidence import apply_to_property
     apply_to_property(prop, row.raw_json)
     prop.asking_price = row.price_numeric
-    db.add(prop)
-    db.flush()
-
-    row.status = "approved"
-    row.property_id = prop.id
-    row.decided_at = datetime.now(timezone.utc)
-    row.decided_by_id = user_id
-    db.commit()
-
-    try:
-        (reprice or reprice_one)(db, prop.id)
-    except ValueError:
-        pass                                      # nothing to price against yet
-    except Exception as e:                        # noqa: BLE001
-        log.info("pricing a new portal listing failed for %s: %s", prop.id, e)
-    return True, ""
-
-
-def reject(db: Session, listing_id: int, *, user_id: int | None = None) -> bool:
-    """Refuse one, and keep it. Tomorrow's sweep finds the same listing on the
-    same portal, and the record of the decision is what stops it coming back
-    looking new."""
-    row = db.get(PortalListing, listing_id)
-    if row is None or row.status != "pending":
-        return False
-    row.status = "rejected"
-    row.decided_at = datetime.now(timezone.utc)
-    row.decided_by_id = user_id
-    db.commit()
-    return True
-
-
-def pending(db: Session, *, kind: str | None = None,
-            limit: int = 200) -> list[PortalListing]:
-    q = db.query(PortalListing).filter(PortalListing.status == "pending")
-    if kind:
-        q = q.filter(PortalListing.kind == kind)
-    return (q.order_by(PortalListing.created_at.desc(), PortalListing.id.desc())
-            .limit(limit).all())
+    return prop
