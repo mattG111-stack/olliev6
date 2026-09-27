@@ -114,3 +114,15 @@ def test_public_property_routes_refuse_private_drafts(db_session):
     with pytest.raises(HTTPException) as exc:exclude_portal_drafts(request,db)
     assert exc.value.status_code==404
     b.status='published';db.commit();exclude_portal_drafts(request,db)
+
+def test_real_pipeline_prices_private_draft_without_changing_live(db_session):
+    from tests.test_daily_pricing import _batches
+    from reprice import _sold_df, _rent_rates
+    from pricing.comps import SoldDataset
+    db=db_session;live,_=_batches(db,1);before=db.query(PropertyForSale).filter_by(import_batch_id=live.id).one()
+    b=batch(db,flow.DRAFT,False)
+    r=PortalListing(source='homes',kind='for_sale',status='pending',address='3/12 Test Road',address_key='3-12-test',suburb='Papakura',district='Papakura',property_type='House',beds=3,baths=1,floor_area_m2=140,land_area_m2=600,cv_numeric=900000,land_value_numeric=500000,improvement_value_numeric=400000,price_numeric=850000,type_of_title='Freehold')
+    db.add(r);db.commit()
+    p=flow.price_one(db,r,b.id,SoldDataset(_sold_df(db,'Auckland',published_only=True)),_rent_rates(db,'Auckland'),None);db.commit()
+    assert p.fair_value is not None and p.fair_value>0 and r.status=='priced'
+    assert before.fair_value is None and p.import_batch_id==b.id and not b.is_active
