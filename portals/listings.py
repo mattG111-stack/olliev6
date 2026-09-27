@@ -511,7 +511,10 @@ def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None, 
 
     pending = {}
     if refresh_pending:
-        for existing in db.query(PortalListing).filter(PortalListing.status == 'pending').all():
+        from portals.complete import fillable_rows
+        candidates = fillable_rows(db, kind).filter(
+            PortalListing.address_key.in_([r['address_key'] for r in rows]))
+        for existing in candidates.with_for_update(of=PortalListing).all():
             existing_key = _sale_key({'address_key':existing.address_key,'sold_date':existing.sold_date}) if existing.kind=='sold' else existing.address_key
             pending[(existing.source,existing.kind,existing_key)] = existing
     protected = {'id','status','created_at','decided_at','decided_by_id','property_id'}
@@ -523,8 +526,8 @@ def record(db: Session, rows: list[dict], *, refresh_pending=False, stats=None, 
         key = (_sale_key(row) if row["kind"] == "sold" else row["address_key"])
         old = pending.get((row['source'],row['kind'],key))
         if old is not None and key not in have:
-            # Refresh pending evidence only. Approved/rejected rows retain the
-            # human decision; every incoming snapshot is stored separately.
+            # Refresh unapproved source evidence, including private priced
+            # drafts. Changed inputs require repricing before publication.
             if row['kind']=='for_sale':
                 old.price_numeric=row.get('price_numeric')
             old.price_flag=row.get('price_flag') or (_price_flag(db,row) if row['kind']=='sold' else None)

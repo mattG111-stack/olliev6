@@ -299,3 +299,53 @@ def test_safe_failure_reason_persists_through_cooldown(db_session,monkeypatch):
         collect_and_stage(db_session,sources=['trademe'],kind='for_sale',cap=1)
         run=db_session.query(PortalCollectionRun).order_by(PortalCollectionRun.id.desc()).first()
         assert json.loads(run.summary_json)['trademe']['reason_code']=='connection_failed'
+
+
+def test_later_detail_refreshes_private_priced_source_without_changing_valuation(db_session,monkeypatch):
+    from models import ImportBatch
+    from portals.review_flow import changed_source_fields
+    db=db_session
+    current=sample(price_numeric=900000,floor_area_m2=None)
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**k:[current])
+    def run():return collect_and_stage(db,sources=['oneroof'],kind='for_sale',cap=5)['merged']
+    run();r=db.query(PortalListing).one()
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='private',status='portal_review',is_active=False)
+    db.add(b);db.flush()
+    from portals.listings import property_from_listing
+    p=property_from_listing(r,b.id);p.fair_value=950000
+    db.add(p);db.flush();r.property_id=p.id;r.status='priced';db.commit()
+    current['floor_area_m2']=125
+    assert run()['refreshed']==1
+    db.refresh(r);db.refresh(p)
+    assert r.floor_area_m2==125 and r.status=='priced' and r.property_id==p.id
+    assert p.floor_area_m2 is None and p.fair_value==950000 and p.import_batch_id==b.id
+    assert 'floor_area_m2' in changed_source_fields(r,p)
+    assert db.query(PortalObservation).count()==2
+    # Once published, later detail evidence must not mutate the live row/source.
+    b.status='published';b.is_active=True;r.status='approved';db.commit()
+    current['floor_area_m2']=140
+    assert run()['refreshed']==0
+    db.refresh(r);db.refresh(p)
+    assert r.floor_area_m2==125 and p.floor_area_m2 is None
+
+
+def test_priced_private_review_retains_other_source_evidence(db_session):
+    from models import ImportBatch
+    from portals.storage import with_pending_evidence
+    from portals.listings import to_listing
+    from portals.direct import merge_records
+    db=db_session
+    first=sample(floor_area_m2=100)
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='private',status='portal_review',is_active=False)
+    db.add(b);db.flush()
+    p=PropertyForSale(import_batch_id=b.id,address=first['address'],suburb=first['suburb'])
+    db.add(p);db.flush()
+    r=PortalListing(**to_listing('oneroof',first),status='priced',property_id=p.id)
+    db.add(r);db.commit()
+    second={**first,'source':'homes','url':'https://homes.co.nz/address/auckland/example/x','floor_area_m2':150}
+    combined=with_pending_evidence(db,[second])
+    assert {x['source'] for x in combined}=={'oneroof','homes'}
+    merged=merge_records(combined)
+    assert merged[0]['conflicts']['floor_area_m2']
+    r.status='approved';b.status='published';b.is_active=True;db.commit()
+    assert with_pending_evidence(db,[second])==[second]

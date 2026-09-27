@@ -37,6 +37,7 @@ def with_pending_evidence(db, collected):
     Retain other sources for the conservative identity/conflict merger.
     """
     from models import PortalListing
+    from portals.complete import fillable_rows
     from portals.page_data import match_key
     from trademe import address_key
     if not collected:
@@ -48,8 +49,7 @@ def with_pending_evidence(db, collected):
     keys={address_key(row.get('address'),row.get('suburb')) for row in collected}
     current={(row['source'],row['url']):row for row in collected}
     combined=[];seen=set()
-    prior=(db.query(PortalListing).filter(PortalListing.kind=='for_sale',
-        PortalListing.status=='pending',PortalListing.address_key.in_(keys))
+    prior=(fillable_rows(db,'for_sale').filter(PortalListing.address_key.in_(keys))
         .order_by(PortalListing.id.desc()))
     for pending in prior:
         try:data=json.loads(pending.raw_json or '{}')
