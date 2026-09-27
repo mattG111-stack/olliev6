@@ -25,7 +25,10 @@ HOSTS = {
 }
 USER_AGENT = 'ApexPropertyCollector/2.0'
 MAX_BYTES = 5_000_000
-PRESENTATION_FIELDS = {'title','description','images','image_url','image_urls','image_count'}
+# Agent/agency representations vary between search and detail pages (including
+# ratings and contact metadata). Originals remain in raw evidence/snapshots;
+# these differences are not disagreements about the property or its price.
+PRESENTATION_FIELDS = {'title','description','images','image_url','image_urls','image_count','agency','agents'}
 _lock = threading.Lock()
 _rotation = itertools.count()
 _last_request = {}
