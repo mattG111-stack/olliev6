@@ -257,10 +257,11 @@ def test_interrupted_pricing_resumes_checkpoint_without_repricing_saved_rows(db_
     calls=[]; crash=[True]
     def price(db,row,bid,*args):
         calls.append(row.id)
-        if row.id==ids[1] and crash[0]:raise KeyboardInterrupt('simulated process loss')
         if row.id==ids[2]:raise ValueError('Missing source data')
         p=PropertyForSale(import_batch_id=bid,address=row.address,fair_value=800000)
-        db.add(p);db.flush();row.property_id=p.id;row.status='priced'
+        db.add(p);db.flush()
+        if row.id==ids[1] and crash[0]:raise KeyboardInterrupt('simulated process loss after flush')
+        row.property_id=p.id;row.status='priced'
     monkeypatch.setattr(flow,'price_one',price)
     with pytest.raises(KeyboardInterrupt): flow.run(jid)
     db.expire_all()
@@ -288,3 +289,13 @@ def test_postgres_job_lock_prevents_duplicate_runner(db_session,monkeypatch):
         finally:
             owner.execute(text('SELECT pg_advisory_unlock(792634902, 123)'));owner.commit()
     flow.run(123);assert calls==[123]
+
+
+def test_legacy_interrupted_job_releases_stuck_state_without_guessing_checkpoint(db_session):
+    db=db_session;j,_=flow.start(db,[1,2],None)
+    j.status='running';j.rows_inserted=1;db.commit()
+    flow.run(j.id);db.expire_all()
+    assert j.status=='failed' and 'Run pricing again' in j.error_message
+    assert j.rows_inserted==1
+    next_job,created=flow.start(db,[1,2],None)
+    assert created and next_job.id!=j.id

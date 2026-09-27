@@ -146,6 +146,14 @@ def _run(db, job_id):
     if job is None or job.filename != JOB or job.status not in ('pending', 'running'): return
     payload = json.loads(job.result_json)
     ids, batch_id = payload['ids'], payload['batch_id']
+    if 'completed_ids' not in payload and (job.rows_inserted or job.rows_rejected):
+        # Older deployments committed row data separately from progress. There
+        # is no reliable resume offset: retain drafts and permit an explicit rerun.
+        job.status = 'failed'
+        job.error_message = 'Interrupted older pricing run; saved drafts retained. Run pricing again.'
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return
     try:
         job.status='running'; job.started_at=job.started_at or datetime.now(timezone.utc); db.commit()
         sold = _sold_df(db,'Auckland',published_only=True)
