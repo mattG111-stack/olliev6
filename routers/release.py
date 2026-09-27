@@ -1111,6 +1111,30 @@ class NewListingOut(BaseModel):
     # often real, and throwing those away teaches the model a market that does
     # not exist.
     price_flag: str | None = None
+    photos: list[str] = Field(default_factory=list)
+    details: dict = Field(default_factory=dict)
+
+
+def _review_details(row) -> dict:
+    """Expose stored review evidence only; never fetch, infer or publish data."""
+    from urllib.parse import urlsplit
+    images = []
+    for value in [row.image_url, *(row.image_urls or "").splitlines()]:
+        if value and urlsplit(value).scheme in ("https", "http") and urlsplit(value).hostname and value not in images:
+            images.append(value)
+    fields = ("zoning", "type_of_title", "building_age", "condition", "description",
+              "sale_method", "days_on_market", "prior_sale_price", "prior_sale_date",
+              "last_sold_price", "last_sold_date", "estimate_low", "estimate_high")
+    details = {key: getattr(row, key, None) for key in fields}
+    try:
+        raw = json.loads(row.raw_json or "{}")
+    except (ValueError, TypeError):
+        raw = {}
+    # Only normalized, allowlisted facts. Never expose raw payloads or secrets.
+    extra = {key: raw[key] for key in ("land_slope_contour", "building_condition", "view_type",
+             "title_reference", "rates_annual", "lounges", "has_swimming_pool", "garage_area_m2")
+             if isinstance(raw, dict) and isinstance(raw.get(key), (str, int, float, bool))}
+    return dict(photos=images, details={**details, **extra})
 
 
 class NewListingsOut(BaseModel):
@@ -1119,7 +1143,7 @@ class NewListingsOut(BaseModel):
 
 
 @router.get("/release/listings/new", response_model=NewListingsOut)
-def new_listings(limit: int = 200, admin: User = Depends(require_admin),
+def new_listings(limit: int = 200, offset: int = 0, admin: User = Depends(require_admin),
                  db: Session = Depends(get_db)) -> NewListingsOut:
     """Listings the daily sweep found that the weekly file has not reached.
 
@@ -1131,9 +1155,11 @@ def new_listings(limit: int = 200, admin: User = Depends(require_admin),
     from models import PortalListing
     from portals.listings import pending as pending_listings
 
-    rows = pending_listings(db, limit=limit)
+    rows = (db.query(PortalListing).filter(PortalListing.status == "pending", PortalListing.kind == "for_sale")
+            .order_by(PortalListing.created_at.desc(), PortalListing.id.desc())
+            .offset(max(0, offset)).limit(max(1, min(limit, 200))).all())
     total = (db.query(PortalListing)
-             .filter(PortalListing.status == "pending").count())
+             .filter(PortalListing.status == "pending", PortalListing.kind == "for_sale").count())
     return NewListingsOut(
         pending=total,
         listings=[
@@ -1145,7 +1171,8 @@ def new_listings(limit: int = 200, admin: User = Depends(require_admin),
                 land_area_m2=r.land_area_m2, beds=r.beds, baths=r.baths,
                 carspaces=r.carspaces, estimate=r.estimate,
                 listed_date=r.listed_date, image_url=r.image_url,
-                has_council_data=bool(r.cv_numeric),
+                has_council_data=bool(r.cv_numeric), price_flag=r.price_flag,
+                **_review_details(r),
             )
             for r in rows
         ],
@@ -1407,7 +1434,7 @@ def decide_new_listings(body: DecideIn, admin: User = Depends(require_admin),
 
 
 @router.get("/release/listings/sold", response_model=NewListingsOut)
-def new_sales(limit: int = 200, admin: User = Depends(require_admin),
+def new_sales(limit: int = 200, offset: int = 0, admin: User = Depends(require_admin),
               db: Session = Depends(get_db)) -> NewListingsOut:
     """Sales the weekly sweep found that our own sold files have not got.
 
@@ -1420,7 +1447,9 @@ def new_sales(limit: int = 200, admin: User = Depends(require_admin),
     from models import PortalListing
     from portals.listings import pending as pending_listings
 
-    rows = pending_listings(db, kind="sold", limit=limit)
+    rows = (db.query(PortalListing).filter(PortalListing.status == "pending", PortalListing.kind == "sold")
+            .order_by(PortalListing.created_at.desc(), PortalListing.id.desc())
+            .offset(max(0, offset)).limit(max(1, min(limit, 200))).all())
     total = (db.query(PortalListing)
              .filter(PortalListing.status == "pending",
                      PortalListing.kind == "sold").count())
@@ -1438,6 +1467,7 @@ def new_sales(limit: int = 200, admin: User = Depends(require_admin),
                 listed_date=r.sold_date, image_url=r.image_url,
                 has_council_data=bool(r.cv_numeric),
                 price_flag=r.price_flag,
+                carspaces=r.carspaces, estimate=r.estimate, **_review_details(r),
             )
             for r in rows
         ],
