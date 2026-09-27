@@ -240,3 +240,62 @@ def test_readiness_blocks_unsafe_release_and_explains_it(db_session,monkeypatch,
     db.rollback()
     assert p.import_batch_id==goodp.import_batch_id==b.id
     assert r.status==good.status=='priced'
+
+
+def test_interrupted_pricing_resumes_checkpoint_without_repricing_saved_rows(db_session,monkeypatch):
+    import json
+    import pandas as pd
+    import reprice, ml.store, pricing.comps
+    db=db_session
+    rows=[PortalListing(source='homes',kind='for_sale',status='pending',address=f'{i} Test Road') for i in (1,2,3)]
+    db.add_all(rows);db.commit();ids=[r.id for r in rows]
+    job,_=flow.start(db,ids,None);jid=job.id
+    monkeypatch.setattr(reprice,'_sold_df',lambda *a,**k:pd.DataFrame([{'sale_price':800000}]))
+    monkeypatch.setattr(reprice,'_rent_rates',lambda *a:None)
+    monkeypatch.setattr(ml.store,'live_model',lambda *a:None)
+    monkeypatch.setattr(pricing.comps,'SoldDataset',lambda x:x)
+    calls=[]; crash=[True]
+    def price(db,row,bid,*args):
+        calls.append(row.id)
+        if row.id==ids[2]:raise ValueError('Missing source data')
+        p=PropertyForSale(import_batch_id=bid,address=row.address,fair_value=800000)
+        db.add(p);db.flush()
+        if row.id==ids[1] and crash[0]:raise KeyboardInterrupt('simulated process loss after flush')
+        row.property_id=p.id;row.status='priced'
+    monkeypatch.setattr(flow,'price_one',price)
+    with pytest.raises(KeyboardInterrupt): flow.run(jid)
+    db.expire_all()
+    assert job.status=='running' and job.rows_inserted==1
+    assert json.loads(job.result_json)['completed_ids']==[ids[0]]
+    assert db.query(PropertyForSale).count()==1
+    crash[0]=False;flow.resume_pending();db.expire_all()
+    assert job.status=='completed' and job.rows_inserted==2 and job.rows_rejected==1
+    assert json.loads(job.result_json)['completed_ids']==ids
+    assert calls.count(ids[0])==1 and db.query(PropertyForSale).count()==2
+    flow.run(jid);flow.resume_pending()
+    assert calls==[ids[0],ids[1],ids[1],ids[2]]
+    assert rows[2].status=='pending'
+
+
+def test_postgres_job_lock_prevents_duplicate_runner(db_session,monkeypatch):
+    from db import engine
+    from sqlalchemy import text
+    if engine.dialect.name!='postgresql':pytest.skip('PostgreSQL session-lock regression')
+    calls=[];monkeypatch.setattr(flow,'_run',lambda db,jid:calls.append(jid))
+    with engine.connect() as owner:
+        owner.execute(text('SELECT pg_advisory_lock(792634902, 123)'));owner.commit()
+        try:
+            flow.run(123);assert calls==[]
+        finally:
+            owner.execute(text('SELECT pg_advisory_unlock(792634902, 123)'));owner.commit()
+    flow.run(123);assert calls==[123]
+
+
+def test_legacy_interrupted_job_releases_stuck_state_without_guessing_checkpoint(db_session):
+    db=db_session;j,_=flow.start(db,[1,2],None)
+    j.status='running';j.rows_inserted=1;db.commit()
+    flow.run(j.id);db.expire_all()
+    assert j.status=='failed' and 'Run pricing again' in j.error_message
+    assert j.rows_inserted==1
+    next_job,created=flow.start(db,[1,2],None)
+    assert created and next_job.id!=j.id

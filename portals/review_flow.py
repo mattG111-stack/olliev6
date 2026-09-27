@@ -106,44 +106,87 @@ def price_one(db, source, batch_id, dataset, rent, model):
 
 
 def run(job_id):
-    import json
+    # Keep the PostgreSQL session lock on one dedicated connection across commits.
+    # An API thread and recovery worker cannot price the same job concurrently.
+    from db import engine, SessionLocal
+    with engine.connect() as connection:
+        postgres = connection.dialect.name == 'postgresql'
+        acquired = False
+        try:
+            if postgres:
+                acquired = bool(connection.execute(text(
+                    'SELECT pg_try_advisory_lock(792634902, :job)'), {'job':job_id}).scalar())
+                connection.commit()
+                if not acquired: return
+            with SessionLocal(bind=connection) as db:
+                _run(db, job_id)
+        finally:
+            if acquired:
+                connection.rollback()
+                connection.execute(text('SELECT pg_advisory_unlock(792634902, :job)'), {'job':job_id})
+                connection.commit()
+
+
+def resume_pending():
+    """One persisted unfinished request per tick; never create or publish a job."""
     from db import SessionLocal
+    with SessionLocal() as db:
+        job = db.query(IngestJob).filter(IngestJob.filename == JOB,
+            IngestJob.status.in_(('pending','running'))).order_by(IngestJob.id).first()
+        job_id = job.id if job else None
+    if job_id is not None: run(job_id)
+
+
+def _run(db, job_id):
+    import json
     from reprice import _sold_df, _rent_rates
     from pricing.comps import SoldDataset
     from ml.store import live_model
-    with SessionLocal() as db:
-        job = db.get(IngestJob, job_id)
-        payload = json.loads(job.result_json)
-        ids, batch_id = payload['ids'], payload['batch_id']
-        try:
-            job.status='running'; job.started_at=datetime.now(timezone.utc); db.commit()
-            sold = _sold_df(db,'Auckland',published_only=True)
-            if sold is None or sold.empty: raise ValueError('No published comparable sales available')
-            dataset, rent, model = SoldDataset(sold), _rent_rates(db,'Auckland'), live_model(db)
-            priced, errors = 0, []
-            for i, sid in enumerate(ids):
-                try:
-                    row = db.query(PortalListing).filter_by(id=sid).with_for_update().first()
-                    if row is None or row.kind != 'for_sale' or row.status not in ('pending','priced'):
-                        raise ValueError('Listing is no longer awaiting pricing')
-                    if row.delisted_at: raise ValueError('Listing is no longer advertised')
-                    price_one(db,row,batch_id,dataset,rent,model)
-                    row.decided_by_id=payload['user_id']; row.decided_at=datetime.now(timezone.utc)
-                    db.commit(); priced += 1
-                except Exception as exc:
-                    db.rollback()
-                    # Keep failed inputs pending so they can be corrected and retried.
-                    errors.append({'id':sid,'error':str(exc)[:160] if isinstance(exc,ValueError) else 'Pricing failed; listing retained for retry'})
-                job=db.get(IngestJob,job_id)
-                job.stage=f'Priced {i+1}/{len(ids)}'; job.progress_pct=min(99,int((i+1)*100/len(ids)))
-                job.rows_inserted=priced; job.rows_rejected=len(errors)
-                job.result_json=json.dumps({**payload,'errors':errors}); db.commit()
-            job.status='completed'; job.progress_pct=100; job.stage=f'{priced} priced · {len(errors)} need attention'
-            job.completed_at=datetime.now(timezone.utc); db.commit()
-        except Exception as exc:
-            db.rollback(); job=db.get(IngestJob,job_id); job.status='failed'
-            job.error_message=str(exc)[:200] if isinstance(exc,ValueError) else 'Pricing failed; saved drafts remain available'
-            job.completed_at=datetime.now(timezone.utc); db.commit()
+    job = db.get(IngestJob, job_id)
+    if job is None or job.filename != JOB or job.status not in ('pending', 'running'): return
+    payload = json.loads(job.result_json)
+    ids, batch_id = payload['ids'], payload['batch_id']
+    if 'completed_ids' not in payload and (job.rows_inserted or job.rows_rejected):
+        # Older deployments committed row data separately from progress. There
+        # is no reliable resume offset: retain drafts and permit an explicit rerun.
+        job.status = 'failed'
+        job.error_message = 'Interrupted older pricing run; saved drafts retained. Run pricing again.'
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return
+    try:
+        job.status='running'; job.started_at=job.started_at or datetime.now(timezone.utc); db.commit()
+        sold = _sold_df(db,'Auckland',published_only=True)
+        if sold is None or sold.empty: raise ValueError('No published comparable sales available')
+        dataset, rent, model = SoldDataset(sold), _rent_rates(db,'Auckland'), live_model(db)
+        done = set(payload.get('completed_ids', []))
+        errors = list(payload.get('errors', []))
+        priced = job.rows_inserted or 0
+        for i, sid in enumerate(ids):
+            if sid in done: continue
+            try:
+                row = db.query(PortalListing).filter_by(id=sid).with_for_update().first()
+                if row is None or row.kind != 'for_sale' or row.status not in ('pending','priced'):
+                    raise ValueError('Listing is no longer awaiting pricing')
+                if row.delisted_at: raise ValueError('Listing is no longer advertised')
+                price_one(db,row,batch_id,dataset,rent,model)
+                row.decided_by_id=payload['user_id']; row.decided_at=datetime.now(timezone.utc)
+                priced += 1
+            except Exception as exc:
+                db.rollback()
+                # Keep failed inputs pending so they can be corrected and retried.
+                errors.append({'id':sid,'error':str(exc)[:160] if isinstance(exc,ValueError) else 'Pricing failed; listing retained for retry'})
+            done.add(sid)
+            job=db.get(IngestJob,job_id)
+            job.stage=f'Priced {i+1}/{len(ids)}'; job.progress_pct=min(99,int((i+1)*100/len(ids)))
+            job.rows_inserted=priced; job.rows_rejected=len(errors)
+            job.result_json=json.dumps({**payload,'errors':errors,'completed_ids':sorted(done)}); db.commit()
+        job.status='completed'; job.progress_pct=100; job.stage=f'{priced} priced · {len(errors)} need attention'
+        job.completed_at=datetime.now(timezone.utc); db.commit()
+    except Exception as exc:
+        db.rollback(); job=db.get(IngestJob,job_id); job.status='failed'
+        job.error_message=str(exc)[:200] if isinstance(exc,ValueError) else 'Pricing failed; saved drafts remain available'
+        job.completed_at=datetime.now(timezone.utc); db.commit()
 
 
 def changed_source_fields(row, prop):
