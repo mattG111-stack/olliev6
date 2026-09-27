@@ -299,3 +299,48 @@ def test_legacy_interrupted_job_releases_stuck_state_without_guessing_checkpoint
     assert j.rows_inserted==1
     next_job,created=flow.start(db,[1,2],None)
     assert created and next_job.id!=j.id
+
+
+def test_fill_missing_reaches_private_priced_rows_and_requires_repricing(db_session, monkeypatch):
+    from portals import complete
+    db=db_session
+    live=batch(db); private=batch(db,flow.DRAFT,False)
+    r,p=draft(db,private)
+    r.land_area_m2=p.land_area_m2=None
+    # Even a corrupt priced status must not allow enrichment of a live property.
+    live_source,live_prop=draft(db,live,'2/2 Test Road')
+    live_source.land_area_m2=live_prop.land_area_m2=None
+    removed,removed_prop=draft(db,private,'3/2 Test Road')
+    removed.status='removed'; removed.land_area_m2=removed_prop.land_area_m2=None
+    db.commit()
+    calls=[]
+    def lookup(query):
+        calls.append(query)
+        return {'land_area_m2':310},complete.PV_OK
+    monkeypatch.setattr(complete,'pv_lookup_status',lookup)
+    result=complete.fill_pending(db)
+    assert result['scanned']==result['looked_up']==result['fields_filled']==1
+    assert result['remaining']==0 and len(calls)==1
+    db.expire_all()
+    assert r.status=='priced' and r.land_area_m2==310
+    assert p.land_area_m2 is None and p.fair_value==900000
+    assert live_source.land_area_m2 is None and removed.land_area_m2 is None
+    assert 'Source details changed; run pricing again' in flow.readiness(r,p)
+    monkeypatch.setenv('PORTAL_REVIEW_PUBLISH_ENABLED','true')
+    with pytest.raises(ValueError,match='run pricing again'):
+        flow.publish(db,[r.id],None)
+    db.rollback()
+    assert p.import_batch_id==private.id
+
+
+def test_fill_missing_cursor_counts_pending_and_private_priced(db_session,monkeypatch):
+    from portals import complete
+    db=db_session;private=batch(db,flow.DRAFT,False)
+    r,p=draft(db,private)
+    pending=PortalListing(source='homes',kind='for_sale',status='pending',address='Next Road')
+    db.add(pending);db.commit()
+    monkeypatch.setattr(complete,'pv_lookup_status',lambda query:(None,'not_found'))
+    first=complete.fill_pending(db,limit=1)
+    second=complete.fill_pending(db,limit=1,after_id=first['last_id'])
+    assert first['last_id']==r.id and first['remaining']==1
+    assert second['last_id']==pending.id and second['remaining']==0
