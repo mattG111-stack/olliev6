@@ -285,7 +285,7 @@ def merge_detail_evidence(row, enriched, detail):
     conflicts = {k: [row[k], value] for k, value in enriched.items()
                  if page_data.present(row.get(k)) and page_data.present(value)
                  and row[k] != value and k not in PRESENTATION_FIELDS
-                 and k not in ('raw_source', 'provenance', 'scraped_at')
+                 and k not in ('raw_source', 'provenance', 'scraped_at', 'source_conflicts')
                  and not (pin_variation and k in ('latitude','longitude'))}
     for key,value in enriched.items():
         fuller=(key=='description' and isinstance(value,str) and len(value)>len(str(row.get(key) or '')))
@@ -295,6 +295,9 @@ def merge_detail_evidence(row, enriched, detail):
     from portals.sources import _all_urls
     row['images']=list(dict.fromkeys(_all_urls(row.get('images'))+_all_urls(enriched.get('images'))))
     row['raw_source']={'search':row['raw_source'],'detail':detail}
+    for evidence in (row.get('source_conflicts',{}),enriched.get('source_conflicts',{})):
+        for field,values in evidence.items():
+            conflicts[field]=list(dict.fromkeys(conflicts.get(field,[])+values))
     row['source_conflicts']=conflicts
     return row
 
