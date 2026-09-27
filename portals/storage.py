@@ -30,6 +30,41 @@ def latest_runs(db):
     return result
 
 
+def retain_missing_facts(previous, current):
+    """A sparse repeat observation cannot erase same-property physical facts.
+
+    Prices, sale status and listing copy always come from the new observation.
+    Keep the original field timestamp so an old measurement is never presented
+    as newly observed. The unmodified observations remain in PortalObservation.
+    """
+    from portals.page_data import match_key, present
+    key=match_key(previous)
+    if (not key or key!=match_key(current) or current.get('kind')!='for_sale'
+            or previous.get('kind')!='for_sale'
+            or any(not previous.get(k) or previous.get(k)!=current.get(k)
+                   for k in ('source','url'))):
+        return current
+    fields=('beds','baths','carspaces','floor_area_m2','land_area_m2',
+            'building_age','property_type','zoning','type_of_title')
+    retained={k:previous[k] for k in fields
+              if present(previous.get(k)) and not present(current.get(k))}
+    if not retained:return current
+    result=deepcopy(current)
+    origins=result.setdefault('provenance',{})
+    old_origins=previous.get('provenance') or {}
+    evidence={}
+    for field,value in retained.items():
+        origin=old_origins.get(field) or {'source':previous['source'],
+            'url':previous['url'],'collected_at':previous.get('scraped_at')}
+        result[field]=deepcopy(value)
+        origins[field]=deepcopy(origin)
+        evidence[field]={'value':deepcopy(value),'provenance':deepcopy(origin)}
+        if field in (previous.get('source_conflicts') or {}):
+            result.setdefault('source_conflicts',{})[field]=deepcopy(previous['source_conflicts'][field])
+    result['raw_source']={'current':result.get('raw_source'), 'retained_facts':evidence}
+    return result
+
+
 def with_pending_evidence(db, collected):
     """Join later-source facts to pending review evidence, never live records.
 
@@ -61,7 +96,9 @@ def with_pending_evidence(db, collected):
                 continue
             identity=(row.get('source'),row.get('url'))
             if not all(identity) or identity in seen:continue
-            combined.append(current.pop(identity,row));seen.add(identity)
+            fresh=current.pop(identity,None)
+            combined.append(retain_missing_facts(row,fresh) if fresh is not None else row)
+            seen.add(identity)
     combined.extend(current.values())
     return combined
 

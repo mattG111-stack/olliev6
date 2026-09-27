@@ -180,6 +180,55 @@ def test_cross_run_source_refresh_replaces_its_own_old_price(db_session,monkeypa
     assert db_session.query(PortalObservation).count()==3
 
 
+def test_sparse_same_source_refresh_retains_measurements_with_original_provenance(db_session,monkeypatch):
+    first=sample(price_numeric=900000,beds=3,floor_area_m2=140,land_area_m2=500)
+    current=first
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**kw:[current])
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    current=sample(price_display='By negotiation')
+    current['scraped_at']='2026-09-26T10:00:00Z'
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    row=db_session.query(PortalListing).one()
+    assert (row.beds,row.floor_area_m2,row.land_area_m2)==(3,140,500)
+    assert row.price_numeric is None
+    evidence=json.loads(row.raw_json)
+    assert evidence['provenance']['floor_area_m2'][0]['collected_at']==first['scraped_at']
+    assert evidence['source_snapshots'][0]['raw_source']['retained_facts']['floor_area_m2']['value']==140
+    observation=json.loads(db_session.query(PortalObservation).order_by(PortalObservation.id.desc()).first().payload_json)
+    assert 'floor_area_m2' not in observation
+    assert db_session.query(PropertyForSale).count()==0
+    # A later explicit correction supersedes the old fact without creating a
+    # same-source dispute, and its observation timestamp is used.
+    current=sample(floor_area_m2=155)
+    current['scraped_at']='2026-09-27T10:00:00Z'
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    assert row.floor_area_m2==155 and row.land_area_m2==500
+    evidence=json.loads(row.raw_json)
+    assert evidence['provenance']['floor_area_m2'][0]['collected_at']==current['scraped_at']
+    assert evidence['provenance']['land_area_m2'][0]['collected_at']==first['scraped_at']
+
+
+@pytest.mark.parametrize('change',[{'address':'2/25 Example Road'},{'district':'Other district'},
+    {'region':'Other region'},{'url':'https://www.oneroof.co.nz/property/other'},
+    {'source':'homes'},{'kind':'sold'},{'district':None}])
+def test_retained_facts_require_same_exact_source_property(change):
+    from portals.storage import retain_missing_facts
+    old=sample(floor_area_m2=140)
+    current={**sample(),**change}
+    assert 'floor_area_m2' not in retain_missing_facts(old,current)
+
+
+def test_retained_disputed_measurement_stays_quarantined(db_session,monkeypatch):
+    current=sample(floor_area_m2=140,source_conflicts={'floor_area_m2':[140,180]})
+    monkeypatch.setattr('portals.direct.collect',lambda *a,**kw:[current])
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    current=sample()
+    collect_and_stage(db_session,sources=['oneroof'],kind='for_sale',cap=5)
+    row=db_session.query(PortalListing).one()
+    assert row.floor_area_m2==140 and row.price_flag
+    assert json.loads(row.raw_json)['source_snapshots'][0]['source_conflicts']['floor_area_m2']==[140,180]
+
+
 @pytest.mark.parametrize('change',[{'address':'2/25 Example Road'},
                                   {'district':'Other district'},
                                   {'region':'Other region'}])

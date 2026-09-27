@@ -625,7 +625,8 @@ def merge_records(rows):
                 if not page_data.present(merged.get(key)):
                     merged[key]=value
                 if merged[key]==value:
-                    provenance.setdefault(key,[]).append(origin)
+                    field_origin=(row.get('provenance') or {}).get(key) or origin
+                    provenance.setdefault(key,[]).extend(field_origin if isinstance(field_origin,list) else [field_origin])
                 elif key not in PRESENTATION_FIELDS:
                     # Portal copy and CDN image URLs naturally differ. Keep
                     # every version in source_snapshots without labelling that
