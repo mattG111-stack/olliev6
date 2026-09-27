@@ -3170,7 +3170,7 @@ def property_history(property_id: int, db: Session = Depends(get_db)) -> History
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
 
-    q = db.query(PropertyForSale).join(ImportBatch, ImportBatch.id == PropertyForSale.import_batch_id)
+    q = db.query(PropertyForSale).join(ImportBatch, ImportBatch.id == PropertyForSale.import_batch_id).filter(ImportBatch.status != "portal_review")
     if p.slug_id:
         q = q.filter(PropertyForSale.slug_id == p.slug_id)
     elif p.address and p.suburb:

@@ -126,3 +126,11 @@ def test_real_pipeline_prices_private_draft_without_changing_live(db_session):
     p=flow.price_one(db,r,b.id,SoldDataset(_sold_df(db,'Auckland',published_only=True)),_rent_rates(db,'Auckland'),None);db.commit()
     assert p.fair_value is not None and p.fair_value>0 and r.status=='priced'
     assert before.fair_value is None and p.import_batch_id==b.id and not b.is_active
+
+
+def test_live_history_excludes_unpublished_portal_prices(db_session):
+    from routers.properties import property_history
+    db=db_session;live=batch(db);p=PropertyForSale(import_batch_id=live.id,address='1/2 Test Road',suburb='Test')
+    db.add(p);db.commit();b=batch(db,flow.DRAFT,False);draft(db,b)
+    history=property_history(p.id,db)
+    assert len(history.points)==1 and history.points[0].batch_id==live.id
