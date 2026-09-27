@@ -146,6 +146,21 @@ def run(job_id):
             job.completed_at=datetime.now(timezone.utc); db.commit()
 
 
+def changed_source_fields(row, prop):
+    """Reject stale draft inputs, including exact unit and source price changes."""
+    from portals.listings import property_from_listing
+    fresh = property_from_listing(row, prop.import_batch_id)
+    fields = ('address', 'suburb', 'district', 'property_type', 'asking_price',
+        'sale_method', 'cv_numeric', 'land_value_numeric', 'improvement_value_numeric',
+        'floor_area_m2', 'land_area_m2', 'beds', 'baths', 'cars', 'building_age',
+        'type_of_title', 'zoning', 'description', 'latitude', 'longitude',
+        'valuation_last_sold_value', 'valuation_last_sold_date')
+    def normalized(value):
+        return value.strip().casefold() if isinstance(value, str) else value
+    return [field for field in fields
+            if normalized(getattr(fresh, field)) != normalized(getattr(prop, field))]
+
+
 def review(db):
     rows = db.query(PortalListing,PropertyForSale).join(PropertyForSale,
         PortalListing.property_id == PropertyForSale.id).join(ImportBatch,
@@ -154,7 +169,8 @@ def review(db):
         PortalListing.status.in_(('priced','removed'))).order_by(PortalListing.id.desc()).all()
     return {'publish_enabled':publication_enabled(), 'rows':[{
         'id':r.id,'address':p.address,'suburb':p.suburb,'asking':p.asking_price,
-        'value':p.fair_value,'held':p.is_held,'reason':p.hold_reason,
+        'value':p.fair_value,'held':bool(p.is_held or changed_source_fields(r,p)),
+        'reason':('Source details changed; run pricing again' if changed_source_fields(r,p) else p.hold_reason),
         'removed':r.status=='removed','image_url':r.image_url,
         'floor':p.floor_area_m2,'land':p.land_area_m2} for r,p in rows]}
 
@@ -182,6 +198,7 @@ def publish(db, ids, user_id):
         if row is None or row.status!='priced': raise ValueError('A selected listing is no longer ready')
         prop=db.get(PropertyForSale,row.property_id)
         if not prop or db.get(ImportBatch,prop.import_batch_id).status!=DRAFT: raise ValueError('Not a draft listing')
+        if changed_source_fields(row, prop): raise ValueError('Source details changed; run pricing again before going live')
         if row.price_flag or row.delisted_at or prop.is_held or not prop.fair_value or prop.fair_value<=0: raise ValueError('Resolve held or unpriced listings before going live')
         key=address_key(prop.address,prop.suburb)
         if not key or key in keys: raise ValueError('A selected property already exists in a current batch')

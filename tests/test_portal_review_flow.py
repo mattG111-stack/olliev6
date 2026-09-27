@@ -181,3 +181,26 @@ def test_repricing_refreshes_source_facts_without_duplicate_or_live_write(db_ses
     assert p.suburb=='Test' and r.suburb=='TEST'
     assert db.query(PropertyForSale).filter_by(import_batch_id=b.id).count()==1
     assert old.fair_value==777000 and old.import_batch_id==live.id
+
+
+@pytest.mark.parametrize('field,value', [('floor_area_m2',150), ('land_area_m2',400),
+    ('beds',4), ('baths',2), ('carspaces',2), ('price_numeric',750000),
+    ('address','2/2 Test Road'), ('prior_sale_price',600000), ('building_age','2023')])
+def test_publish_rejects_source_changes_after_pricing(db_session,monkeypatch,field,value):
+    db=db_session;live=batch(db);b=batch(db,flow.DRAFT,False);r,p=draft(db,b)
+    r2,p2=draft(db,b,'3/2 Test Road')
+    setattr(r,field,value);db.commit()
+    monkeypatch.setenv('PORTAL_REVIEW_PUBLISH_ENABLED','true')
+    reviewed=next(x for x in flow.review(db)['rows'] if x['id']==r.id)
+    assert reviewed['held'] and 'run pricing again' in reviewed['reason']
+    with pytest.raises(ValueError,match='run pricing again'):flow.publish(db,[r2.id,r.id],None)
+    db.rollback()
+    assert p.import_batch_id==p2.import_batch_id==b.id and r.status=='priced'
+
+
+def test_source_case_normalization_does_not_block_publication(db_session,monkeypatch):
+    db=db_session;live=batch(db);b=batch(db,flow.DRAFT,False);r,p=draft(db,b)
+    r.suburb='TEST';db.commit()
+    monkeypatch.setenv('PORTAL_REVIEW_PUBLISH_ENABLED','true')
+    assert not flow.changed_source_fields(r,p)
+    assert flow.publish(db,[r.id],None)==1
