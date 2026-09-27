@@ -336,3 +336,40 @@ def test_public_area_requires_positive_explicit_units(value,expected):
     raw={'publicRecords':{'data':[{'alias':'landarea','value':value}]}}
     row=canonical('oneroof','for_sale','https://www.oneroof.co.nz/property/example',raw)
     assert row.get('land_area_m2')==expected
+
+
+def test_search_detail_agent_metadata_is_retained_without_price_conflict():
+    from portals.direct import merge_detail_evidence
+    search_raw={'agency':{'name':'Example Agency'},'agents':[{'name':'Example Agent'}]}
+    detail_raw={'agency':{'name':'Example Agency','rating':4.9},'agents':[{'name':'Example Agent','ratingCount':12}]}
+    search=row(**search_raw,raw_source=search_raw,provenance={})
+    detail=row(**detail_raw,raw_source=detail_raw,provenance={})
+    merged=merge_detail_evidence(search,detail,detail_raw)
+    assert merged['source_conflicts']=={}
+    assert merged['raw_source']=={'search':search_raw,'detail':detail_raw}
+    assert not merge_records([merged])[0].get('price_flag')
+
+
+@pytest.mark.parametrize('field,before,after',[
+    ('beds',3,4),('floor_area_m2',100,150),('land_area_m2',400,500),
+    ('price_numeric',900000,950000),('sold_price',900000,950000),
+    ('sold_date','2026-01-01','2026-02-01'),('address','1/25 Example Road','2/25 Example Road')])
+def test_agent_metadata_exception_does_not_hide_property_disagreements(field,before,after):
+    from portals.direct import merge_detail_evidence
+    search={**row(raw_source={},provenance={},agents=[{'name':'Agent'}]),field:before}
+    detail={**row(raw_source={},provenance={},agents=[{'name':'Agent','rating':5}]),field:after}
+    merged=merge_detail_evidence(search,detail,{field:after})
+    assert merged['source_conflicts']=={field:[before,after]}
+    assert merge_records([merged])[0]['price_flag']
+
+
+def test_cross_source_agent_metadata_retains_snapshots_and_real_conflicts():
+    a=row(agency={'name':'Agency A'},agents=[{'name':'Agent A'}],beds=3)
+    b=row('trademe',agency={'name':'Agency B'},agents=[{'name':'Agent B'}],beds=3)
+    merged=merge_records([a,b])[0]
+    assert not merged.get('price_flag')
+    assert merged['source_snapshots']==[a,b]
+    b['beds']=4
+    merged=merge_records([a,b])[0]
+    assert set(merged['conflicts'])=={'beds'}
+    assert merged['price_flag']
