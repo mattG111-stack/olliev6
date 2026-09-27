@@ -8,9 +8,12 @@ def batch(db,status='published',active=True):
     db.add(b);db.flush();return b
 
 def draft(db,b,address='1/2 Test Road',held=False):
-    p=PropertyForSale(import_batch_id=b.id,address=address,suburb='Test',fair_value=900000,is_held=held)
+    import json
+    facts=dict(floor_area_m2=100,land_area_m2=300,beds=3,baths=1,cv_numeric=900000,image_url='https://example.test/photo.jpg')
+    p=PropertyForSale(import_batch_id=b.id,address=address,suburb='Test',fair_value=900000,is_held=held,confidence='high',comps_used=8,**facts)
     db.add(p);db.flush()
-    r=PortalListing(source='oneroof',kind='for_sale',status='priced',address=address,suburb='Test',address_key=address,property_id=p.id)
+    r=PortalListing(source='oneroof',kind='for_sale',status='priced',address=address,suburb='Test',address_key=address,property_id=p.id,**facts,
+        raw_json=json.dumps({'_apex_direct':True,'address':address,'suburb':'Test','scraped_at':datetime.now(timezone.utc).isoformat()}))
     db.add(r);db.commit();return r,p
 
 def test_counts_midnight_dst_week_source_dedup(db_session):
@@ -204,3 +207,36 @@ def test_source_case_normalization_does_not_block_publication(db_session,monkeyp
     monkeypatch.setenv('PORTAL_REVIEW_PUBLISH_ENABLED','true')
     assert not flow.changed_source_fields(r,p)
     assert flow.publish(db,[r.id],None)==1
+
+
+@pytest.mark.parametrize('defect', ['missing_floor','missing_baths','missing_photo','weak_comps',
+    'low_confidence','outlier','nan_value','raw_conflict','wrong_unit','old_evidence',
+    'future_evidence','invalid_json','legacy_evidence'])
+def test_readiness_blocks_unsafe_release_and_explains_it(db_session,monkeypatch,defect):
+    import json
+    from datetime import timedelta
+    db=db_session;live=batch(db);b=batch(db,flow.DRAFT,False);r,p=draft(db,b)
+    good,goodp=draft(db,b,'3/2 Test Road');raw=json.loads(r.raw_json)
+    if defect=='missing_floor': r.floor_area_m2=p.floor_area_m2=None
+    elif defect=='missing_baths': r.baths=p.baths=None
+    elif defect=='missing_photo': r.image_url=p.image_url=None
+    elif defect=='weak_comps': p.comps_used=4
+    elif defect=='low_confidence': p.confidence='low'
+    elif defect=='outlier': p.fair_value=2000000
+    elif defect=='nan_value': p.fair_value=float('nan')
+    elif defect=='raw_conflict': raw['source_conflicts']={'floor_area_m2':[100,180]}
+    elif defect=='wrong_unit': raw['address']='2 Test Road'
+    elif defect=='old_evidence': raw['scraped_at']=(datetime.now(timezone.utc)-timedelta(days=8)).isoformat()
+    elif defect=='future_evidence': raw['scraped_at']=(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()
+    elif defect=='legacy_evidence': raw.pop('_apex_direct')
+    r.raw_json='not json' if defect=='invalid_json' else json.dumps(raw)
+    db.commit()
+    reasons=flow.readiness(r,p)
+    assert reasons and flow.readiness(good,goodp)==[]
+    visible=next(x for x in flow.review(db)['rows'] if x['id']==r.id)
+    assert visible['held'] and visible['readiness_reasons']==reasons
+    monkeypatch.setenv('PORTAL_REVIEW_PUBLISH_ENABLED','true')
+    with pytest.raises(ValueError): flow.publish(db,[good.id,r.id],None)
+    db.rollback()
+    assert p.import_batch_id==goodp.import_batch_id==b.id
+    assert r.status==good.status=='priced'
