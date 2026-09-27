@@ -82,6 +82,8 @@ def render_homes(url, *, proxy=None, timeout_ms=30000, max_batches=50):
 
 def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3, max_elapsed_ms=60000):
     """Load bounded public result batches; retain the displayed coverage count."""
+    from playwright.sync_api import TimeoutError as BrowserTimeout
+    interrupted=False
     deadline=time.monotonic()+max(0,max_elapsed_ms)/1000
     html=rendered_html(page,url,timeout_ms,restricted,True)
     discovered = dict.fromkeys(property_links(html, url))
@@ -110,14 +112,25 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3, max_
                 [...document.querySelectorAll('a[href*="/address/auckland/"]')]
                     .some(a => !known.includes(new URL(a.getAttribute('href'), base).href.split('?')[0].split('#')[0]))
             """,arg={'known':list(discovered), 'base':url},timeout=min(timeout_ms,10000))
-        except Exception:
-            # Capture the final window after a timeout; no new identities
-            # means partial coverage, never an empty or completed region.
-            html=rendered_html(page,url,timeout_ms,restricted,True)
-            discovered.update(dict.fromkeys(property_links(html,url)))
-        else:
-            html=rendered_html(page,url,timeout_ms,restricted,True)
-            discovered.update(dict.fromkeys(property_links(html,url)))
+        except (TimeoutError, BrowserTimeout):
+            # A stalled cursor may still leave a usable final window.
+            pass
+        try:
+            window=rendered_html(page,url,timeout_ms,restricted,True)
+        except BrowserTimeout:
+            # Preserve only previously validated windows. A late spinner must
+            # not erase their checkpoint, but restrictions still fail closed.
+            from portals.direct import CollectorUnavailable
+            blocked=page.evaluate("""() =>
+                /verify you are human|access denied|captcha/i.test(document.body.innerText) ||
+                !!document.querySelector('[class*="cf-chl-"],.g-recaptcha,[class*="hcaptcha"],iframe[src*="captcha"]')
+            """)
+            if restricted or blocked:
+                raise CollectorUnavailable('Homes rendering stopped: access restriction')
+            interrupted=True
+            break
+        html=window
+        discovered.update(dict.fromkeys(property_links(html,url)))
         after=container.evaluate('el => ({top:el.scrollTop, height:el.scrollHeight})')
         if after['top']==before['top'] and after['height']==before['height'] and len(discovered)==count:
             break
@@ -132,7 +145,7 @@ def load_homes_results(page, url, timeout_ms, restricted, *, max_batches=3, max_
     # Never certify coverage against an obsolete, smaller initial count.
     final_match=re.search(r'([\d,]+)\s+properties\b',page.locator('body').inner_text(),re.I)
     total=int(final_match[1].replace(',','')) if final_match else None
-    complete=total is not None and count>=total
+    complete=not interrupted and total is not None and count>=total
     return html+f'<meta name="apex-homes-coverage" data-loaded="{count}" data-total="{total if total is not None else "unknown"}" data-complete="{str(complete).lower()}">'
 
 

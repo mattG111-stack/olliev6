@@ -411,3 +411,55 @@ def test_discovery_time_budget_keeps_observed_urls_and_marks_partial(monkeypatch
     result=rendered.load_homes_results(Page(),'https://homes.co.nz/map',1000,[],max_batches=50,max_elapsed_ms=0)
     assert rendered.property_links(result,'https://homes.co.nz/map')==['https://homes.co.nz/address/auckland/example/1/abc']
     assert rendered.discovery_info(result)=={'loaded':1,'total':100,'complete':False}
+
+
+@pytest.mark.parametrize('restriction', ['', 'widget', 'response'])
+def test_late_homes_spinner_keeps_checkpoint_only_without_restrictions(restriction):
+    from playwright.sync_api import sync_playwright
+    from portals.rendered import load_homes_results, discovery_info
+    fixture = """<body><span id="total">3 properties</span>
+      <div class="drawerContentContainer" style="height:100px;overflow:auto">
+        <div style="height:400px"><a href="/address/auckland/example/1/abc">One</a></div>
+      </div><script>
+      const box=document.querySelector('.drawerContentContainer');
+      box.addEventListener('scroll',()=>{
+        if(box.scrollTop>0 && !document.querySelector('[role="progressbar"]')){
+          document.querySelector('#total').innerText='1 properties';
+          box.innerHTML='<div style="height:400px"><div role="progressbar">Loading</div></div>';
+          if(RESTRICTION==='widget') document.body.insertAdjacentHTML('beforeend','<div class="g-recaptcha"></div>');
+        }
+      });</script></body>""".replace('RESTRICTION', json.dumps(restriction))
+    # The response restriction arrives after the first validated window.
+    restricted=[]
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page()
+            page.set_content(fixture)
+            if restriction=='response':
+                page.expose_function('recordRestriction',lambda:restricted.append('access'))
+                page.evaluate("""() => document.querySelector('.drawerContentContainer')
+                    .addEventListener('scroll',()=>{if(document.querySelector('[role="progressbar"]')) window.recordRestriction();})""")
+            if restriction:
+                with pytest.raises(CollectorUnavailable,match='restriction'):
+                    load_homes_results(page,'https://homes.co.nz/map',200,restricted,max_batches=3)
+            else:
+                result=load_homes_results(page,'https://homes.co.nz/map',200,restricted,max_batches=3)
+                assert property_links(result,'https://homes.co.nz/map')==[
+                    'https://homes.co.nz/address/auckland/example/1/abc']
+                # Even a smaller final total cannot certify a timed-out scan.
+                assert discovery_info(result)=={'loaded':1,'total':1,'complete':False}
+        finally:browser.close()
+
+
+def test_initial_homes_spinner_is_not_partial_success():
+    from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+    from portals.rendered import load_homes_results
+    with sync_playwright() as runtime:
+        browser=runtime.chromium.launch(headless=True)
+        try:
+            page=browser.new_page()
+            page.set_content('<body>3 properties<div role="progressbar">Loading</div></body>')
+            with pytest.raises(BrowserTimeout):
+                load_homes_results(page,'https://homes.co.nz/map',100,[],max_batches=3)
+        finally:browser.close()
