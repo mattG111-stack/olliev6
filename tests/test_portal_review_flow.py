@@ -101,7 +101,8 @@ def test_price_calculation_saves_only_to_draft(db_session,monkeypatch):
         assert df.iloc[0]['address']=='1/5 Test Road'
         return pd.DataFrame([{'fair_value':800000}])
     monkeypatch.setattr(reprice,'run_pipeline',pipeline)
-    p=flow.price_one(db,r,b.id,None,None,None);db.commit()
+    from types import SimpleNamespace
+    p=flow.price_one(db,r,b.id,SimpleNamespace(df=pd.DataFrame({"suburb":["Test"]})),None,None);db.commit()
     assert r.status=='priced' and p.import_batch_id==b.id and not b.is_active
     assert p.fair_value==800000
 
@@ -134,3 +135,19 @@ def test_live_history_excludes_unpublished_portal_prices(db_session):
     db.add(p);db.commit();b=batch(db,flow.DRAFT,False);draft(db,b)
     history=property_history(p.id,db)
     assert len(history.points)==1 and history.points[0].batch_id==live.id
+
+
+def test_portal_case_normalization_and_draft_reprice_preserve_identity(db_session):
+    from tests.test_daily_pricing import _batches
+    from reprice import _sold_df, _rent_rates
+    from pricing.comps import SoldDataset
+    db=db_session;_batches(db,1);b=batch(db,flow.DRAFT,False)
+    r=PortalListing(source='homes',kind='for_sale',status='pending',address='3/12 Test Road',address_key='3-12-test',suburb='PAPAKURA',district='PAPAKURA',property_type='House',beds=3,baths=1,floor_area_m2=140,land_area_m2=600,cv_numeric=900000,land_value_numeric=500000,improvement_value_numeric=400000,price_numeric=850000,type_of_title='Freehold')
+    db.add(r);db.commit();dataset=SoldDataset(_sold_df(db,'Auckland',published_only=True));rent=_rent_rates(db,'Auckland')
+    p=flow.price_one(db,r,b.id,dataset,rent,None);db.commit();pid=p.id;value=p.fair_value
+    assert p.suburb==p.district=='Papakura' and r.suburb=='PAPAKURA' and p.address=='3/12 Test Road'
+    p2=flow.price_one(db,r,b.id,dataset,rent,None);db.commit()
+    assert p2.id==pid and p2.fair_value==value
+    assert db.query(PropertyForSale).filter_by(import_batch_id=b.id).count()==1
+    live=batch(db);p.import_batch_id=live.id;db.commit()
+    with pytest.raises(ValueError,match='private'):flow.price_one(db,r,b.id,dataset,rent,None)

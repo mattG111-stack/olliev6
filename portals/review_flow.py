@@ -74,7 +74,20 @@ def price_one(db, source, batch_id, dataset, rent, model):
     from portals.listings import property_from_listing
     from reprice import _row_to_input, _apply_outputs, run_pipeline
     from release import _hold_reason
-    prop = property_from_listing(source, batch_id)
+    if source.status == 'priced':
+        prop = db.get(PropertyForSale, source.property_id)
+        if not prop or prop.import_batch_id != batch_id:
+            raise ValueError('Only private review drafts can be repriced here')
+    else:
+        prop = property_from_listing(source, batch_id)
+    # Portals differ in casing. Reuse the most common exact spelling in the
+    # comparable dataset; never fuzzy-match suburbs or change source evidence.
+    for field in ('suburb', 'district'):
+        value = getattr(prop, field, None)
+        if value and field in dataset.df.columns:
+            counts = dataset.df[field].dropna().astype(str).str.strip().value_counts()
+            match = next((name for name in counts.index if name.casefold() == str(value).strip().casefold()), None)
+            if match: setattr(prop, field, match)
     outputs = run_pipeline(pd.DataFrame([_row_to_input(prop)]), dataset, rent, model=model)
     _apply_outputs(prop, outputs.iloc[0].to_dict())
     reason = source.price_flag or _hold_reason(prop)
@@ -103,7 +116,7 @@ def run(job_id):
             for i, sid in enumerate(ids):
                 try:
                     row = db.query(PortalListing).filter_by(id=sid).with_for_update().first()
-                    if row is None or row.kind != 'for_sale' or row.status != 'pending':
+                    if row is None or row.kind != 'for_sale' or row.status not in ('pending','priced'):
                         raise ValueError('Listing is no longer awaiting pricing')
                     if row.delisted_at: raise ValueError('Listing is no longer advertised')
                     price_one(db,row,batch_id,dataset,rent,model)
