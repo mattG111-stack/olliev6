@@ -161,18 +161,60 @@ def changed_source_fields(row, prop):
             if normalized(getattr(fresh, field)) != normalized(getattr(prop, field))]
 
 
+def readiness(row, prop, existing=(), now=None):
+    """Conservative portal release checks; never alter the valuation or evidence."""
+    import json
+    import math
+    now = now or datetime.now(timezone.utc)
+    reasons = []
+    if row.status != 'priced': reasons.append('Not awaiting publication')
+    if row.delisted_at: reasons.append('Listing is no longer advertised')
+    if row.price_flag: reasons.append('Resolve source conflict: ' + row.price_flag)
+    if prop.is_held: reasons.append(prop.hold_reason or 'Pricing held this listing')
+    if changed_source_fields(row, prop): reasons.append('Source details changed; run pricing again')
+    try:
+        raw = json.loads(row.raw_json or '{}')
+        if not isinstance(raw, dict): raw = {}
+    except (ValueError, TypeError): raw = {}
+    if not raw.get('_apex_direct'): reasons.append('Source evidence needs individual review')
+    if raw.get('conflicts') or raw.get('source_conflicts'): reasons.append('Resolve retained source disagreements')
+    try:
+        when = datetime.fromisoformat(raw.get('scraped_at', '').replace('Z', '+00:00'))
+        if when.tzinfo is None: when = when.replace(tzinfo=timezone.utc)
+        if not now - timedelta(days=7) <= when <= now: raise ValueError()
+    except (ValueError, TypeError, AttributeError): reasons.append('Refresh source evidence before publication')
+    key = address_key(prop.address, prop.suburb)
+    if not key or key != address_key(raw.get('address'), raw.get('suburb')):
+        reasons.append('Source address does not match this property and unit')
+    if key in existing: reasons.append('Property already exists in a current batch')
+    def positive(value):
+        return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+    for field, label in (('floor_area_m2','floor area'), ('land_area_m2','land area'),
+                         ('beds','bedrooms'), ('baths','bathrooms')):
+        if not positive(getattr(prop, field)): reasons.append('Missing usable ' + label)
+    if not prop.image_url or not row.image_url: reasons.append('Missing photograph')
+    if prop.confidence not in ('high', 'medium') or not positive(prop.comps_used) or prop.comps_used < 5:
+        reasons.append('Insufficient comparable support for publication')
+    if not positive(prop.fair_value) or not positive(prop.cv_numeric) or not .6 <= prop.fair_value / prop.cv_numeric <= 1.5:
+        reasons.append('Valuation requires individual outlier review')
+    return list(dict.fromkeys(reasons))
+
+
 def review(db):
     rows = db.query(PortalListing,PropertyForSale).join(PropertyForSale,
         PortalListing.property_id == PropertyForSale.id).join(ImportBatch,
         PropertyForSale.import_batch_id == ImportBatch.id).filter(
         ImportBatch.status==DRAFT, PortalListing.kind=='for_sale',
         PortalListing.status.in_(('priced','removed'))).order_by(PortalListing.id.desc()).all()
+    from portals.listings import _live_keys
+    existing = _live_keys(db)
+    reviewed = [(r, p, readiness(r, p, existing)) for r, p in rows]
     return {'publish_enabled':publication_enabled(), 'rows':[{
         'id':r.id,'address':p.address,'suburb':p.suburb,'asking':p.asking_price,
-        'value':p.fair_value,'held':bool(p.is_held or changed_source_fields(r,p)),
-        'reason':('Source details changed; run pricing again' if changed_source_fields(r,p) else p.hold_reason),
+        'value':p.fair_value,'held':bool(reasons),
+        'reason':'; '.join(reasons) or None,'readiness_reasons':reasons,
         'removed':r.status=='removed','image_url':r.image_url,
-        'floor':p.floor_area_m2,'land':p.land_area_m2} for r,p in rows]}
+        'floor':p.floor_area_m2,'land':p.land_area_m2} for r,p,reasons in reviewed]}
 
 
 def remove(db, sid, removed):
@@ -198,8 +240,8 @@ def publish(db, ids, user_id):
         if row is None or row.status!='priced': raise ValueError('A selected listing is no longer ready')
         prop=db.get(PropertyForSale,row.property_id)
         if not prop or db.get(ImportBatch,prop.import_batch_id).status!=DRAFT: raise ValueError('Not a draft listing')
-        if changed_source_fields(row, prop): raise ValueError('Source details changed; run pricing again before going live')
-        if row.price_flag or row.delisted_at or prop.is_held or not prop.fair_value or prop.fair_value<=0: raise ValueError('Resolve held or unpriced listings before going live')
+        reasons = readiness(row, prop, keys)
+        if reasons: raise ValueError('; '.join(reasons))
         key=address_key(prop.address,prop.suburb)
         if not key or key in keys: raise ValueError('A selected property already exists in a current batch')
         keys.add(key); prepared.append((row,prop))
