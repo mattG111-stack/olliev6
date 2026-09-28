@@ -86,12 +86,13 @@ def test_price_worker_uses_published_sales_and_leaves_failures_pending(db_sessio
     monkeypatch.setattr(pricing.comps,'SoldDataset',lambda x:x)
     def price(db,row,bid,*args):
         if row.id==ids[1]:raise ValueError('No usable floor area')
-        p=PropertyForSale(import_batch_id=bid,address=row.address,suburb=row.suburb,fair_value=800000)
+        from portals.listings import property_from_listing
+        p=property_from_listing(row,bid);p.fair_value=800000
         db.add(p);db.flush();row.property_id=p.id;row.status='priced'
     monkeypatch.setattr(flow,'price_one',price)
     flow.run(jid);db.expire_all()
     assert flags==[True]
-    assert r.status=='priced' and r2.status=='pending'
+    assert r.status=='removed' and r2.status=='pending'
     assert j.status=='completed' and j.rows_inserted==1 and j.rows_rejected==1 and j.progress_pct==100
     assert not db.get(ImportBatch,db.get(PropertyForSale,r.property_id).import_batch_id).is_active
 
@@ -392,3 +393,34 @@ def test_publication_minimum_two_comparables(db_session,count,confidence,blocked
     db=db_session;b=batch(db,flow.DRAFT,False);r,p=draft(db,b)
     p.comps_used=count;p.confidence=confidence
     assert ('Insufficient comparable support for publication' in flow.readiness(r,p)) is blocked
+
+
+def test_automatic_deletion_keeps_ready_and_live_and_supports_undo(db_session):
+    import json
+    db=db_session;live=batch(db);private=batch(db,flow.DRAFT,False)
+    good,gp=draft(db,private)
+    bad,bp=draft(db,private,'2 Test Road',True);bp.hold_reason='Below $10,000 margin'
+    published,pp=draft(db,live,'3 Test Road',True)
+    before=json.loads(bad.raw_json)
+    result=flow.remove_ineligible_drafts(db,[good.id,bad.id,published.id],job_id=999)
+    db.commit()
+    assert result==[bad.id] and bad.status=='removed'
+    assert good.status==published.status=='priced'
+    assert bp.import_batch_id==private.id and pp.import_batch_id==live.id
+    raw=json.loads(bad.raw_json)
+    assert all(raw[k]==v for k,v in before.items())
+    assert 'Below $10,000 margin' in raw['_apex_review_deletions'][0]['reasons']
+    assert flow.remove_ineligible_drafts(db,[bad.id])==[]
+    flow.remove(db,bad.id,False)
+    assert bad.status=='priced' and db.get(PropertyForSale,bp.id) is not None
+
+
+def test_automatic_deletion_missing_inputs_but_not_changed_complete_source(db_session):
+    db=db_session;b=batch(db,flow.DRAFT,False)
+    missing,p=draft(db,b);missing.land_area_m2=None
+    changed,p2=draft(db,b,'4 Test Road');changed.floor_area_m2=150
+    pending=PortalListing(source='homes',kind='for_sale',status='pending')
+    db.add(pending);db.commit()
+    assert flow.remove_ineligible_drafts(db,[missing.id,changed.id,pending.id])==[missing.id]
+    db.commit()
+    assert changed.status=='priced' and pending.status=='pending'
