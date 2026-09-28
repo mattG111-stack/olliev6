@@ -272,7 +272,7 @@ def readiness(row, prop, existing=(), now=None):
                          ('beds','bedrooms'), ('baths','bathrooms')):
         if not positive(getattr(prop, field)): reasons.append('Missing usable ' + label)
     if not prop.image_url or not row.image_url: reasons.append('Missing photograph')
-    if prop.confidence not in ('high', 'medium') or not positive(prop.comps_used) or prop.comps_used < 5:
+    if prop.confidence not in ('high', 'medium') or not positive(prop.comps_used) or prop.comps_used < 2:
         reasons.append('Insufficient comparable support for publication')
     if not positive(prop.fair_value) or not positive(prop.cv_numeric) or not .6 <= prop.fair_value / prop.cv_numeric <= 1.5:
         reasons.append('Valuation requires individual outlier review')
