@@ -397,3 +397,19 @@ def _approved_existing(db, row):
     db.commit()
     approve(db, row.id, reprice=lambda *a, **k: None)
     return db.query(PropertyForSale).one()
+
+
+@pytest.fixture(autouse=True)
+def enable_legacy_lookup_for_mapping_contracts(monkeypatch):
+    # These tests exercise the legacy field-mapping contract with mocked data.
+    monkeypatch.setenv('PORTAL_PROPERTYVALUE_FALLBACK_ENABLED', 'true')
+
+
+def test_unavailable_legacy_fallback_is_disabled_by_default(db_session, monkeypatch):
+    from portals.complete import fill_one
+    monkeypatch.delenv('PORTAL_PROPERTYVALUE_FALLBACK_ENABLED', raising=False)
+    monkeypatch.setattr('portals.oneroof_backfill.fill', lambda *a: None)
+    monkeypatch.setattr('portals.complete.pv_lookup_status', lambda *a: pytest.fail('dead fallback called'))
+    row=PortalListing(source='trademe',kind='for_sale',status='pending',address='1 Test Road')
+    assert fill_one(db_session,row)==(0,'unreachable')
+    assert row.status=='pending' and row.cv_numeric is None
