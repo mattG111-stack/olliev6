@@ -215,7 +215,13 @@ def _run(db, job_id):
             job.stage=f'Priced {i+1}/{len(ids)}'; job.progress_pct=min(99,int((i+1)*100/len(ids)))
             job.rows_inserted=priced; job.rows_rejected=len(errors)
             job.result_json=json.dumps({**payload,'errors':errors,'completed_ids':sorted(done)}); db.commit()
-        job.status='completed'; job.progress_pct=100; job.stage=f'{priced} priced · {len(errors)} need attention'
+        # Only successful decisions are deleted from review. Processing failures
+        # stay retryable; the source and private property are never purged.
+        failed = {item['id'] for item in errors}
+        candidates = (done - failed) | {int(sid) for sid in payload.get('excluded_missing_data', {})}
+        removed = remove_ineligible_drafts(db, candidates, job_id=job_id)
+        job.result_json=json.dumps({**payload,'errors':errors,'completed_ids':sorted(done),'automatically_removed':removed})
+        job.status='completed'; job.progress_pct=100; job.stage=f'{priced} priced · {len(removed)} deleted · {len(errors)} processing errors'
         job.completed_at=datetime.now(timezone.utc); db.commit()
     except Exception as exc:
         db.rollback(); job=db.get(IngestJob,job_id); job.status='failed'
@@ -296,6 +302,45 @@ def review(db):
         'exclusion_reason':('Missing ' + ', '.join(missing_required_data(r))) if missing_required_data(r) else None,
         'image_url':r.image_url,
         'floor':p.floor_area_m2,'land':p.land_area_m2} for r,p,reasons in reviewed]}
+
+
+def remove_ineligible_drafts(db, ids, *, job_id=None):
+    """Recoverable deletion of assessed private drafts; caller commits atomically."""
+    import json
+    from portals.listings import _live_keys
+    lock(db)
+    existing = _live_keys(db)
+    removed = []
+    for sid in sorted(set(ids)):
+        row = db.query(PortalListing).filter_by(id=sid).with_for_update().first()
+        if row is None or row.kind != 'for_sale' or row.status != 'priced':
+            continue
+        prop = db.get(PropertyForSale, row.property_id)
+        batch = db.get(ImportBatch, prop.import_batch_id) if prop else None
+        if not batch or batch.status != DRAFT or batch.is_active:
+            continue
+        reasons = readiness(row, prop, existing)
+        if not reasons:
+            continue
+        # Evidence changed after pricing: reassess it rather than deleting a
+        # potentially valid listing using an outdated valuation.
+        if changed_source_fields(row, prop) and not missing_required_data(row):
+            continue
+        try:
+            raw = json.loads(row.raw_json or '{}')
+        except (ValueError, TypeError):
+            raw = None
+        if not isinstance(raw, dict):
+            raw = {'retained_original_raw': row.raw_json}
+        history = raw.get('_apex_review_deletions')
+        if not isinstance(history, list): history = []
+        raw['_apex_review_deletions'] = history + [{
+            'at': datetime.now(timezone.utc).isoformat(),
+            'job_id': job_id, 'reasons': reasons}]
+        row.raw_json = json.dumps(raw)
+        row.status = 'removed'
+        removed.append(sid)
+    return removed
 
 
 def remove(db, sid, removed):
