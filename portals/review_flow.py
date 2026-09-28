@@ -69,6 +69,18 @@ def start(db, ids, user_id):
     return job, True
 
 
+def start_all_drafts(db, user_id):
+    """Snapshot all current private drafts, including held rows, into one job."""
+    lock(db)
+    ids = [sid for (sid,) in db.query(PortalListing.id).join(PropertyForSale,
+        PortalListing.property_id == PropertyForSale.id).join(ImportBatch,
+        PropertyForSale.import_batch_id == ImportBatch.id).filter(
+        ImportBatch.status == DRAFT, ImportBatch.is_active.is_(False),
+        PortalListing.kind == 'for_sale', PortalListing.status == 'priced'
+    ).order_by(PortalListing.id).all()]
+    return start(db, ids, user_id)
+
+
 def price_one(db, source, batch_id, dataset, rent, model):
     import pandas as pd
     from portals.listings import property_from_listing

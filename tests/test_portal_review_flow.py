@@ -344,3 +344,21 @@ def test_fill_missing_cursor_counts_pending_and_private_priced(db_session,monkey
     second=complete.fill_pending(db,limit=1,after_id=first['last_id'])
     assert first['last_id']==r.id and first['remaining']==1
     assert second['last_id']==pending.id and second['remaining']==0
+
+
+def test_reprice_all_snapshots_more_than_200_private_drafts(db_session):
+    import json
+    db=db_session
+    b=batch(db,flow.DRAFT,False)
+    expected=[]
+    for i in range(205):
+        r,p=draft(db,b,address=f'{i} Test Road',held=bool(i%2));expected.append(r.id)
+    removed,_=draft(db,b,address='Removed');removed.status='removed'
+    live=batch(db);draft(db,live,address='Live')
+    active_draft=batch(db,flow.DRAFT,True);draft(db,active_draft,address='Active draft')
+    db.commit()
+    job,created=flow.start_all_drafts(db,None)
+    assert created and json.loads(job.result_json)['ids']==expected
+    same,created=flow.start_all_drafts(db,None)
+    assert not created and same.id==job.id
+    assert live.is_active and job.rows_total==205
