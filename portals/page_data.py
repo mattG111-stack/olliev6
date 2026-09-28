@@ -165,6 +165,8 @@ def normalise(site,kind,url,raw,collected=None):
         a=raw;pub=a.get('publicRecords') or {};pub=pub if isinstance(pub,dict) else {};avm=a.get('avm') or {};avm=avm if isinstance(avm,dict) else {}
         n.update(address=a.get('street'),suburb=a.get('suburb'),district=a.get('district'),region=a.get('region'),listing_id=pick(a,'houseId','id'),property_id=a.get('propertyId'),property_type=a.get('category'),latitude=number(a.get('lat')),longitude=number(a.get('lng')))
         for dest,keys in {'key_bedrooms':('bedrooms',),'key_bathrooms':('bathrooms',),'key_carspaces':('carspaces',),'cv_numeric':('rv',),'year_built':('buildingAge',)}.items():n[dest]=number(pick(a,*keys))
+        # A decade such as 1950s is not the exact year 1950.
+        n['year_built'] = a.get('buildingAge')
         n['key_floor_area']=area(pick(a,'floorArea','floorarea'),a.get('floorAreaUnit'))
         n['key_land_area']=area(pick(a,'landArea','landarea'),a.get('landAreaUnit'))
         # Text includes explicit units; numeric unit codes are not guessed.

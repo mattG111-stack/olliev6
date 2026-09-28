@@ -70,3 +70,10 @@ def test_source_failure_pauses_following_rows(db_session,monkeypatch):
     db_session.commit()
     assert B.fill(db_session,row)==(0,'unreachable')
     assert len(calls)==1
+
+
+def test_oneroof_building_decade_is_preserved():
+    raw={'street':'24 Lomandra Street','suburb':'Westgate','buildingAge':'1950s'}
+    result=B.direct.canonical('oneroof','for_sale',URL,raw)
+    assert result['building_age']=='1950s'
+    assert B.to_listing('oneroof',result)['building_age']=='1950s'
