@@ -326,7 +326,13 @@ def test_a_run_whose_container_died_does_not_lock_the_button(db_session, admin,
     db_session.commit()
 
     again = admin.post("/api/admin/release/listings/fill?kind=for_sale")
-    assert again.status_code == 200, again.text
+    assert again.status_code == 409, again.text
+    # The durable worker resumes the existing request instead of spending on
+    # a second job for the same queue.
+    from portals.fill_worker import run_pending
+    run_pending()
+    db_session.expire_all()
+    assert db_session.get(IngestJob, started["job_id"]).status == "completed"
 
 
 def test_a_customer_cannot_spend_the_lookup_allowance(db_session, pending):
@@ -391,3 +397,37 @@ def test_database_failure_is_reported_not_left_running(db_session, monkeypatch):
     assert saved.status == 'failed'
     assert 'IntegrityError' in saved.error_message
     assert saved.completed_at is not None
+
+
+def test_button_queues_work_for_configured_worker(db_session, admin, pending, never_reachable):
+    from models import IngestJob
+    from portals.fill_worker import run_pending
+    result = admin.post('/api/admin/release/listings/fill?kind=for_sale')
+    assert result.status_code == 200
+    jid = result.json()['job_id']
+    assert never_reachable['n'] == 0
+    assert db_session.get(IngestJob, jid).status == 'pending'
+    run_pending()
+    db_session.expire_all()
+    assert db_session.get(IngestJob, jid).status == 'completed'
+    assert never_reachable['n'] == 60
+
+
+def test_resume_uses_saved_cursor(db_session, pending, never_reachable):
+    import json
+    from models import IngestJob
+    from portals.fill_worker import run_pending
+    from staged_stages import create_stage_job
+    first = complete.fill_pending(db_session)
+    job = create_stage_job(db_session, stage='filling', batch_id=None,
+                           region='Auckland', uploaded_by_id=None)
+    jid = job.id
+    job.result_json = json.dumps({'kind':'for_sale', 'after_id':first['last_id'],
+        'todo':60, 'counts':{k:first[k] for k in ('looked_up','fields_filled',
+        'council_records_found','not_found','blocked','unreachable')}})
+    job.status = 'running'
+    db_session.commit()
+    run_pending()
+    db_session.expire_all()
+    assert db_session.get(IngestJob, jid).status == 'completed'
+    assert never_reachable['n'] == 60

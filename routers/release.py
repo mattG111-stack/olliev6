@@ -1299,11 +1299,16 @@ def _run_fill_job(job_id: int, *, kind: str) -> None:
     total = {"looked_up": 0, "fields_filled": 0, "council_records_found": 0,
              "not_found": 0, "blocked": 0, "unreachable": 0}
     try:
+        job = db.get(IngestJob, job_id)
+        if job is None or job.status not in ('pending', 'running'):
+            return
+        state = json.loads(job.result_json or '{}')
+        total.update(state.get('counts', {}))
+        after = state.get('after_id', 0)
+        todo = state.get('todo', 0)
         _update(db, job_id, status="running", stage="filling",
-                started_at=datetime.now(timezone.utc), progress_pct=1)
-
-        after = 0
-        todo = 0
+                started_at=job.started_at or datetime.now(timezone.utc),
+                progress_pct=job.progress_pct or 1)
         while True:
             # Cooperative stop, checked between chunks — the same contract the
             # enrich stage uses, so Cancel means the same thing on both.
@@ -1337,7 +1342,9 @@ def _run_fill_job(job_id: int, *, kind: str) -> None:
             _update(db, job_id,
                     progress_pct=max(1, min(99, int(100 * done / max(1, todo)))),
                     rows_total=todo, rows_inserted=total["fields_filled"],
-                    stage=f"filling {done:,}/{todo:,}"[:60])
+                    stage=f"filling {done:,}/{todo:,}"[:60],
+                    result_json=json.dumps({'kind': kind, 'after_id': after,
+                                            'todo': todo, 'counts': total}))
 
         record(db, stage="portals", event="pending_filled",
                count=total["looked_up"],
@@ -1391,14 +1398,17 @@ def fill_new_listings(kind: str = "for_sale",
     # second bill against the council-record account for an answer we already
     # have — and a run that died with its container is auto-cleared here rather
     # than locking the button for ever.
-    if stage_running(db, None, "filling"):
+    if db.query(IngestJob.id).filter(
+            IngestJob.filename == 'filling',
+            IngestJob.status.in_(('pending', 'running'))).first():
         raise HTTPException(status_code=409,
                             detail="Filling the gaps is already running.")
     job = create_stage_job(db, stage="filling", batch_id=None,
                            region="Auckland", uploaded_by_id=admin.id)
     jid = job.id
-    threading.Thread(target=_run_fill_job, args=(jid,),
-                     kwargs={"kind": kind}, daemon=True).start()
+    job.result_json = json.dumps({'kind': kind})
+    job.stage = 'Waiting for scraper worker'
+    db.commit()
     return StageStarted(job_id=jid, batch_id=0, stage="filling")
 
 
