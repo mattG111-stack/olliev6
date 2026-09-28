@@ -152,14 +152,25 @@ def fill_pending(db: Session, *, kind: str = "for_sale",
 
     looked = fields = not_found = unreachable = blocked = 0
     with_cv_before = sum(1 for r in rows if not _blank(r.cv_numeric))
-    for r in rows:
+    paused = False
+    processed = []
+    for r in scanned:
+        if not needs_filling(r):
+            processed.append(r)
+            continue
         looked += 1
         try:
             n, status = fill_one(db, r)
         except Exception as e:                       # noqa: BLE001
             log.info("filling a pending listing failed for %s: %s", r.id, e)
             unreachable += 1
+            processed.append(r)
             continue
+        if status == "paused":
+            looked -= 1
+            paused = True
+            break
+        processed.append(r)
         fields += n
         if status == "not_found":
             not_found += 1
@@ -171,6 +182,7 @@ def fill_pending(db: Session, *, kind: str = "for_sale",
             db.commit()
     db.commit()
 
+    last_id = processed[-1].id if processed else int(after_id or 0)
     with_cv_after = sum(1 for r in rows if not _blank(r.cv_numeric))
     remaining = fillable_rows(db, kind).filter(PortalListing.id > last_id).count()
     return {
@@ -186,5 +198,6 @@ def fill_pending(db: Session, *, kind: str = "for_sale",
         # progress line, not for deciding when to stop.
         "last_id": last_id,
         "remaining": remaining,
-        "scanned": len(scanned),
+        "scanned": len(processed),
+        **({"paused": True} if paused else {}),
     }

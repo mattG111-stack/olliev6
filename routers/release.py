@@ -1323,6 +1323,17 @@ def _run_fill_job(job_id: int, *, kind: str) -> None:
                 return
 
             out = fill_pending(db, kind=kind, after_id=after)
+            if out.get("paused"):
+                for k in total:
+                    total[k] += out[k]
+                after = out["last_id"]
+                if todo == 0:
+                    todo = out["remaining"] + out["scanned"]
+                _update(db, job_id, stage="Waiting for OneRoof; will resume",
+                        rows_inserted=total["fields_filled"],
+                        result_json=json.dumps({'kind': kind, 'after_id': after,
+                                                'todo': todo, 'counts': total}))
+                return
             if not out["scanned"]:
                 break
             # Guard against a cursor that stops advancing. Without it a bug

@@ -66,9 +66,9 @@ def test_source_failure_pauses_following_rows(db_session,monkeypatch):
         calls.append(url)
         raise B.direct.CollectorUnavailable('Source paused after access restriction')
     monkeypatch.setattr(B,'fetch',fail)
-    assert B.fill(db_session,row)==(0,'unreachable')
+    assert B.fill(db_session,row)==(0,'paused')
     db_session.commit()
-    assert B.fill(db_session,row)==(0,'unreachable')
+    assert B.fill(db_session,row)==(0,'paused')
     assert len(calls)==1
 
 
@@ -88,7 +88,7 @@ def test_source_failure_pauses_same_uncommitted_chunk(db_session, monkeypatch):
         raise B.direct.CollectorUnavailable('Source unavailable')
     monkeypatch.setattr(B, 'fetch', fail)
     for _ in range(25):
-        assert B.fill(db_session, row) == (0, 'unreachable')
+        assert B.fill(db_session, row) == (0, 'paused')
     db_session.commit()
     assert len(calls) == 1
     assert db_session.query(B.AppSetting).filter_by(
@@ -125,3 +125,25 @@ def test_age_resolution_preserves_other_conflicts(db_session):
     row=_pending(db_session,url=URL,building_age='2021',price_flag='Source records disagree — review source evidence before approval',raw_json=json.dumps({'source_conflicts':{'building_age':['2021','2020s'],'floor_area_m2':[100,150]}}))
     assert resolve_compatible_age(row)
     assert row.price_flag and json.loads(row.raw_json)['source_conflicts']['floor_area_m2']==[100,150]
+
+
+def test_pause_preserves_cursor_and_resumes_same_property(db_session, monkeypatch):
+    from models import AppSetting
+    row = _pending(db_session, url=URL)
+    calls = []
+    def fail(url):
+        calls.append(url)
+        raise B.direct.CollectorUnavailable('source unavailable')
+    monkeypatch.setattr(B, 'fetch', fail)
+    first = fill_pending(db_session)
+    assert first['paused'] and first['scanned'] == 0
+    assert first['last_id'] == 0 and first['looked_up'] == 0
+    second = fill_pending(db_session, after_id=first['last_id'])
+    assert second['paused'] and calls == [URL]
+    cooldown = db_session.get(AppSetting, 'scraper.backfill.oneroof.retry_after')
+    cooldown.value = '2000-01-01T00:00:00+00:00'
+    db_session.commit()
+    monkeypatch.setattr(B, 'fetch', lambda url: item())
+    resumed = fill_pending(db_session, after_id=second['last_id'])
+    assert not resumed.get('paused') and resumed['last_id'] == row.id
+    assert resumed['fields_filled'] > 0
