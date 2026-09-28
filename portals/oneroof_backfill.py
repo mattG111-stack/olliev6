@@ -130,7 +130,7 @@ def fill(db, row):
                   checkpoints.load(db, 'oneroof', 'for_sale').get('source_retry_after')):
         try:
             if until and datetime.fromisoformat(until) > now:
-                return 0, 'unreachable'
+                return 0, 'paused'
         except (ValueError, TypeError):
             pass
     try:
@@ -155,4 +155,4 @@ def fill(db, row):
             index_elements=['key'], set_={'value': until}))
         if cooldown is not None:
             db.expire(cooldown)
-        return 0, 'unreachable' 
+        return 0, 'paused' 
