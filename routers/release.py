@@ -1778,6 +1778,18 @@ def price_portal_review(body: PortalSelection, admin: User = Depends(require_adm
     return {"job_id":job.id}
 
 
+@router.post("/release/portal-review/reprice-all")
+def reprice_all_portal_drafts(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.review_flow import start_all_drafts, run
+    try:
+        job, created = start_all_drafts(db, admin.id)
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(status_code=409, detail=str(exc))
+    if created:
+        threading.Thread(target=run, args=(job.id,), daemon=True).start()
+    return {"job_id": job.id}
+
+
 @router.get("/release/portal-review")
 def get_portal_review(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     from portals.review_flow import review
