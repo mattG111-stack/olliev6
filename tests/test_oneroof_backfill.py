@@ -93,3 +93,35 @@ def test_source_failure_pauses_same_uncommitted_chunk(db_session, monkeypatch):
     assert len(calls) == 1
     assert db_session.query(B.AppSetting).filter_by(
         key='scraper.backfill.oneroof.retry_after').count() == 1
+
+
+@pytest.mark.parametrize('values,expected', [(['2021','2020s'],True),(['1930','1930s'],True),(['2010','2020s'],False),(['2021','2022','2020s'],False),(['unknown','2020s'],False),(['2026','2020s'],True)])
+def test_age_evidence_precision(values,expected):
+    from portals.age_evidence import compatible
+    assert compatible(values) is expected
+
+
+def test_compatible_age_backfill_preserves_exact_year(db_session):
+    row=_pending(db_session,url=URL,building_age='2021')
+    B.apply(row,item(building_age='2020s'))
+    assert row.building_age=='2021'
+    assert 'building_age' not in json.loads(row.raw_json)['source_conflicts']
+
+
+def test_existing_age_hold_resolution_archives_evidence(db_session):
+    from portals.age_evidence import resolve_compatible_age
+    flag='Source records disagree — review source evidence before approval'
+    row=_pending(db_session,url=URL,building_age='2021',price_flag=flag,raw_json=json.dumps({'building_age':'2021','source_conflicts':{'building_age':['2021','2020s']},'source_snapshots':[{'building_age':'2020s'}]}))
+    assert resolve_compatible_age(row)
+    raw=json.loads(row.raw_json)
+    assert row.price_flag is None and row.building_age=='2021'
+    assert raw['compatible_age_resolutions'][0]['evidence']==['2021','2020s']
+    assert raw['source_snapshots']==[{'building_age':'2020s'}]
+    assert not resolve_compatible_age(row)
+
+
+def test_age_resolution_preserves_other_conflicts(db_session):
+    from portals.age_evidence import resolve_compatible_age
+    row=_pending(db_session,url=URL,building_age='2021',price_flag='Source records disagree — review source evidence before approval',raw_json=json.dumps({'source_conflicts':{'building_age':['2021','2020s'],'floor_area_m2':[100,150]}}))
+    assert resolve_compatible_age(row)
+    assert row.price_flag and json.loads(row.raw_json)['source_conflicts']['floor_area_m2']==[100,150]

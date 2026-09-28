@@ -50,12 +50,30 @@ def publication_enabled():
     return os.getenv('PORTAL_REVIEW_PUBLISH_ENABLED','false').lower() == 'true'
 
 
+def missing_required_data(row):
+    """Incomplete inputs are excluded, but remain available for later enrichment."""
+    import math
+    missing = []
+    for field, label in (('floor_area_m2', 'floor area'), ('land_area_m2', 'land area'),
+                         ('cv_numeric', 'council valuation'), ('beds', 'bedrooms'), ('baths', 'bathrooms')):
+        value = getattr(row, field, None)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            missing.append(label)
+    for field, label in (('address', 'address'), ('suburb', 'suburb'), ('image_url', 'photo')):
+        if not str(getattr(row, field, None) or '').strip(): missing.append(label)
+    return missing
+
+
 def start(db, ids, user_id):
     lock(db)
     running = db.query(IngestJob).filter(IngestJob.filename == JOB,
         IngestJob.status.in_(('pending','running'))).first()
     if running: return running, False
     if not ids: raise ValueError('Select at least one listing to price')
+    candidates = db.query(PortalListing).filter(PortalListing.id.in_(ids)).all()
+    excluded = {r.id: missing_required_data(r) for r in candidates if missing_required_data(r)}
+    ids = [sid for sid in ids if sid not in excluded]
+    if not ids: raise ValueError('All selected properties are excluded because required data is missing')
     batch = db.query(ImportBatch).filter_by(status=DRAFT, region='Auckland').first()
     if batch is None:
         batch = ImportBatch(batch_type='for_sale', filename='Portal pricing review',
@@ -64,7 +82,7 @@ def start(db, ids, user_id):
     import json
     job = IngestJob(batch_type='for_sale', filename=JOB, status='pending', stage='Waiting to price',
         progress_pct=0, rows_total=len(set(ids)), rows_inserted=0,
-        result_json=json.dumps({'ids':list(dict.fromkeys(ids)), 'batch_id':batch.id, 'user_id':user_id}))
+        result_json=json.dumps({'ids':list(dict.fromkeys(ids)), 'batch_id':batch.id, 'user_id':user_id, 'excluded_missing_data':excluded}))
     db.add(job); db.commit(); db.refresh(job)
     return job, True
 
@@ -100,6 +118,8 @@ def price_one(db, source, batch_id, dataset, rent, model):
                 setattr(prop, attr.key, getattr(fresh, attr.key))
     else:
         prop = property_from_listing(source, batch_id)
+    from portals.age_evidence import resolve_compatible_age
+    resolve_compatible_age(source)
     # Portals differ in casing. Reuse the most common exact spelling in the
     # comparable dataset; never fuzzy-match suburbs or change source evidence.
     for field in ('suburb', 'district'):
@@ -181,6 +201,8 @@ def _run(db, job_id):
                 if row is None or row.kind != 'for_sale' or row.status not in ('pending','priced'):
                     raise ValueError('Listing is no longer awaiting pricing')
                 if row.delisted_at: raise ValueError('Listing is no longer advertised')
+                missing = missing_required_data(row)
+                if missing: raise ValueError('Excluded — missing ' + ', '.join(missing))
                 price_one(db,row,batch_id,dataset,rent,model)
                 row.decided_by_id=payload['user_id']; row.decided_at=datetime.now(timezone.utc)
                 priced += 1
@@ -222,6 +244,8 @@ def readiness(row, prop, existing=(), now=None):
     import math
     now = now or datetime.now(timezone.utc)
     reasons = []
+    missing = missing_required_data(row)
+    if missing: reasons.append('Excluded — missing ' + ', '.join(missing))
     if row.status != 'priced': reasons.append('Not awaiting publication')
     if row.delisted_at: reasons.append('Listing is no longer advertised')
     if row.price_flag: reasons.append('Resolve source conflict: ' + row.price_flag)
@@ -268,7 +292,9 @@ def review(db):
         'id':r.id,'address':p.address,'suburb':p.suburb,'asking':p.asking_price,
         'value':p.fair_value,'held':bool(reasons),
         'reason':'; '.join(reasons) or None,'readiness_reasons':reasons,
-        'removed':r.status=='removed','image_url':r.image_url,
+        'removed':r.status=='removed','excluded':bool(missing_required_data(r)),
+        'exclusion_reason':('Missing ' + ', '.join(missing_required_data(r))) if missing_required_data(r) else None,
+        'image_url':r.image_url,
         'floor':p.floor_area_m2,'land':p.land_area_m2} for r,p,reasons in reviewed]}
 
 

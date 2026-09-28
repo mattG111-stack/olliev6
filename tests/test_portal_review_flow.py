@@ -73,6 +73,8 @@ def test_price_worker_uses_published_sales_and_leaves_failures_pending(db_sessio
     db=db_session
     r=PortalListing(source='oneroof',kind='for_sale',status='pending',address='2/9 Test Road',suburb='Test',address_key='2-9')
     r2=PortalListing(source='homes',kind='for_sale',status='pending',address='3/9 Test Road',suburb='Test',address_key='3-9')
+    for row in (r,r2):
+        row.floor_area_m2=100;row.land_area_m2=300;row.cv_numeric=900000;row.beds=3;row.baths=1;row.image_url='https://example.test/p.jpg'
     db.add_all([r,r2]);db.commit();ids=[r.id,r2.id];j,_=flow.start(db,ids,None);jid=j.id
     flags=[]
     def sales(db,region,*,published_only=False):
@@ -248,6 +250,8 @@ def test_interrupted_pricing_resumes_checkpoint_without_repricing_saved_rows(db_
     import reprice, ml.store, pricing.comps
     db=db_session
     rows=[PortalListing(source='homes',kind='for_sale',status='pending',address=f'{i} Test Road') for i in (1,2,3)]
+    for row in rows:
+        row.suburb='Test';row.floor_area_m2=100;row.land_area_m2=300;row.cv_numeric=900000;row.beds=3;row.baths=1;row.image_url='https://example.test/p.jpg'
     db.add_all(rows);db.commit();ids=[r.id for r in rows]
     job,_=flow.start(db,ids,None);jid=job.id
     monkeypatch.setattr(reprice,'_sold_df',lambda *a,**k:pd.DataFrame([{'sale_price':800000}]))
@@ -362,3 +366,22 @@ def test_reprice_all_snapshots_more_than_200_private_drafts(db_session):
     same,created=flow.start_all_drafts(db,None)
     assert not created and same.id==job.id
     assert live.is_active and job.rows_total==205
+
+
+def test_incomplete_drafts_excluded_from_job_and_review(db_session):
+    import json
+    db=db_session;b=batch(db,flow.DRAFT,False)
+    complete,_=draft(db,b,address='1 Test Road')
+    incomplete,p=draft(db,b,address='2 Test Road');incomplete.land_area_m2=None;db.commit()
+    out=flow.review(db)['rows'];row=next(r for r in out if r['id']==incomplete.id)
+    assert row['excluded'] and row['exclusion_reason']=='Missing land area'
+    job,_=flow.start_all_drafts(db,None)
+    assert json.loads(job.result_json)['ids']==[complete.id]
+    assert incomplete.status=='priced' and p.import_batch_id==b.id
+    incomplete.land_area_m2=300;db.commit()
+    assert not next(r for r in flow.review(db)['rows'] if r['id']==incomplete.id)['excluded']
+
+
+def test_all_incomplete_cannot_start_pricing(db_session):
+    db=db_session;b=batch(db,flow.DRAFT,False);r,_=draft(db,b);r.floor_area_m2=None;db.commit()
+    with pytest.raises(ValueError,match='excluded'):flow.start(db,[r.id],None)

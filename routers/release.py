@@ -1772,7 +1772,10 @@ def downloaded_counts(_: User = Depends(require_admin), db: Session = Depends(ge
 @router.post("/release/portal-review/price")
 def price_portal_review(body: PortalSelection, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     from portals.review_flow import start, run
-    job, created = start(db, body.ids, admin.id)
+    try:
+        job, created = start(db, body.ids, admin.id)
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(status_code=409, detail=str(exc))
     if created:
         threading.Thread(target=run, args=(job.id,), daemon=True).start()
     return {"job_id":job.id}
