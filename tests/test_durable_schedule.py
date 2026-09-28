@@ -144,8 +144,8 @@ def test_failed_sources_do_not_mark_the_daily_job_successful(db_session):
 
 @pytest.mark.parametrize('name',['new listings sweep','sold sweep'])
 @pytest.mark.parametrize('previous,next_run',[
-    ('2026-09-26T17:00:00+00:00','2026-09-27T16:00:00+00:00'),
-    ('2027-04-03T16:00:00+00:00','2027-04-04T17:00:00+00:00'),
+    ('2026-09-25T17:00:00+00:00','2026-09-26T16:00:00+00:00'),
+    ('2027-04-02T16:00:00+00:00','2027-04-03T17:00:00+00:00'),
 ])
 def test_collection_fixed_auckland_5am_across_dst(db_session,name,previous,next_run):
     engine=db_session.get_bind();calls=[]

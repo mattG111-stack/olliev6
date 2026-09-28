@@ -34,13 +34,16 @@ def download_counts(db, now=None):
         PortalListing.kind.in_(('for_sale','sold'))).group_by(
             PortalListing.kind, PortalListing.address_key)
     result = {k: {'today': 0, 'week': 0} for k in ('for_sale','sold')}
+    daily = {(local.date()-timedelta(days=i)).isoformat(): {'for_sale':0,'sold':0} for i in range(30)}
     for kind, _, first in q:
         if first is None: continue
         if first.tzinfo is None: first = first.replace(tzinfo=timezone.utc)
         if first > now: continue
+        date = first.astimezone(ZoneInfo('Pacific/Auckland')).date().isoformat()
+        daily.setdefault(date, {'for_sale':0,'sold':0})[kind] += 1
         if first >= week: result[kind]['week'] += 1
         if first >= today: result[kind]['today'] += 1
-    return {**result, 'timezone':'Pacific/Auckland', 'week_starts':week.date().isoformat(),
+    return {**result, 'daily':[{'date':date, **daily[date]} for date in sorted(daily, reverse=True)], 'timezone':'Pacific/Auckland', 'week_starts':week.date().isoformat(),
             'as_of':now.isoformat(), 'definition':'Distinct properties first saved from the three portals. Sold includes records awaiting validation; these are downloads, not approved comparable sales.'}
 
 

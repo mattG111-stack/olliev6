@@ -307,6 +307,7 @@ def test_legacy_interrupted_job_releases_stuck_state_without_guessing_checkpoint
 
 
 def test_fill_missing_reaches_private_priced_rows_and_requires_repricing(db_session, monkeypatch):
+    monkeypatch.setenv("PORTAL_PROPERTYVALUE_FALLBACK_ENABLED", "true")
     from portals import complete
     db=db_session
     live=batch(db); private=batch(db,flow.DRAFT,False)
@@ -424,3 +425,15 @@ def test_automatic_deletion_missing_inputs_but_not_changed_complete_source(db_se
     assert flow.remove_ineligible_drafts(db,[missing.id,changed.id,pending.id])==[missing.id]
     db.commit()
     assert changed.status=='priced' and pending.status=='pending'
+
+
+def test_daily_download_history_uses_auckland_dates_and_first_seen(db_session):
+    db=db_session
+    for source,key,when in [('homes','same','2026-09-27T10:59:00+00:00'),('oneroof','same','2026-09-27T11:01:00+00:00'),('homes','new','2026-09-27T11:02:00+00:00')]:
+        db.add(PortalListing(source=source,kind='for_sale',status='pending',address_key=key,created_at=datetime.fromisoformat(when)))
+    db.add(PortalListing(source='homes',kind='sold',status='pending',address_key='sale',created_at=datetime.fromisoformat('2026-09-27T11:03:00+00:00')))
+    db.commit()
+    days={x['date']:x for x in flow.download_counts(db,datetime.fromisoformat('2026-09-27T12:00:00+00:00'))['daily']}
+    assert days['2026-09-28']=={'date':'2026-09-28','for_sale':1,'sold':1}
+    assert days['2026-09-27']['for_sale']==1
+    assert days['2026-09-26']['for_sale']==0
