@@ -1,7 +1,8 @@
 """Durable successful-run timestamps and a PostgreSQL cross-worker lock."""
 import hashlib
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from models import AppSetting
@@ -23,7 +24,12 @@ def run_due(engine, name, every, fn, *, now=None):
                 state=db.get(AppSetting,key)
                 if state and state.value:
                     last=datetime.fromisoformat(state.value)
-                    if (now-last).total_seconds()<every:return False
+                    if name in ('new listings sweep', 'sold sweep'):
+                        local = now.astimezone(ZoneInfo('Pacific/Auckland'))
+                        slot = local.replace(hour=5, minute=0, second=0, microsecond=0)
+                        if local < slot: slot -= timedelta(days=1)
+                        if last >= slot.astimezone(timezone.utc): return False
+                    elif (now-last).total_seconds()<every:return False
                 db.commit()
                 result=fn()
                 if result=={}:raise RuntimeError('Scheduled collector reported failure')

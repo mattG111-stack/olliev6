@@ -141,3 +141,23 @@ def test_failed_sources_do_not_mark_the_daily_job_successful(db_session):
     assert run_due(db_session.get_bind(),name,86400,lambda:{'merged':{'new':1,'failed_sources':1}})
     assert db_session.get(AppSetting,key) is None
 
+
+@pytest.mark.parametrize('name',['new listings sweep','sold sweep'])
+@pytest.mark.parametrize('previous,next_run',[
+    ('2026-09-25T17:00:00+00:00','2026-09-26T16:00:00+00:00'),
+    ('2027-04-02T16:00:00+00:00','2027-04-03T17:00:00+00:00'),
+])
+def test_collection_fixed_auckland_5am_across_dst(db_session,name,previous,next_run):
+    engine=db_session.get_bind();calls=[]
+    first=datetime.fromisoformat(previous);next_time=datetime.fromisoformat(next_run)
+    assert run_due(engine,name,86400,lambda:calls.append(1),now=first)
+    assert not run_due(engine,name,86400,lambda:calls.append(1),now=next_time-timedelta(seconds=1))
+    assert run_due(engine,name,86400,lambda:calls.append(1),now=next_time)
+    assert len(calls)==2
+
+
+def test_late_collection_does_not_shift_next_5am(db_session):
+    engine=db_session.get_bind();name='new listings sweep'
+    late=datetime(2026,9,28,9,tzinfo=timezone.utc) # 22:00 Auckland
+    assert run_due(engine,name,86400,lambda:None,now=late)
+    assert run_due(engine,name,86400,lambda:None,now=datetime(2026,9,28,16,tzinfo=timezone.utc))
