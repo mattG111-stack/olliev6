@@ -222,7 +222,7 @@ def test_readiness_blocks_unsafe_release_and_explains_it(db_session,monkeypatch,
     if defect=='missing_floor': r.floor_area_m2=p.floor_area_m2=None
     elif defect=='missing_baths': r.baths=p.baths=None
     elif defect=='missing_photo': r.image_url=p.image_url=None
-    elif defect=='weak_comps': p.comps_used=4
+    elif defect=='weak_comps': p.comps_used=1
     elif defect=='low_confidence': p.confidence='low'
     elif defect=='outlier': p.fair_value=2000000
     elif defect=='nan_value': p.fair_value=float('nan')
@@ -385,3 +385,10 @@ def test_incomplete_drafts_excluded_from_job_and_review(db_session):
 def test_all_incomplete_cannot_start_pricing(db_session):
     db=db_session;b=batch(db,flow.DRAFT,False);r,_=draft(db,b);r.floor_area_m2=None;db.commit()
     with pytest.raises(ValueError,match='excluded'):flow.start(db,[r.id],None)
+
+
+@pytest.mark.parametrize('count,confidence,blocked', [(0,'high',True),(1,'high',True),(2,'high',False),(2,'medium',False),(4,'medium',False),(2,'low',True)])
+def test_publication_minimum_two_comparables(db_session,count,confidence,blocked):
+    db=db_session;b=batch(db,flow.DRAFT,False);r,p=draft(db,b)
+    p.comps_used=count;p.confidence=confidence
+    assert ('Insufficient comparable support for publication' in flow.readiness(r,p)) is blocked
