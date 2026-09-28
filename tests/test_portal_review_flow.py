@@ -307,6 +307,7 @@ def test_legacy_interrupted_job_releases_stuck_state_without_guessing_checkpoint
 
 
 def test_fill_missing_reaches_private_priced_rows_and_requires_repricing(db_session, monkeypatch):
+    monkeypatch.setenv("PORTAL_PROPERTYVALUE_FALLBACK_ENABLED", "true")
     from portals import complete
     db=db_session
     live=batch(db); private=batch(db,flow.DRAFT,False)
