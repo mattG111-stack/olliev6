@@ -98,6 +98,9 @@ def apply(row, item):
                 equal = float(current) == float(value)
             except (ValueError, TypeError):
                 equal = str(current).strip().casefold() == str(value).strip().casefold()
+            if field == 'building_age':
+                from portals.age_evidence import compatible
+                equal = equal or compatible([current, value])
             if not equal:
                 conflicts[field] = [current, value]
     conflicts.update(new_conflicts)
