@@ -28,7 +28,7 @@ def test_second_worker_does_not_enter_running_job(db_session):
 
 def test_dedicated_scraper_worker_excludes_legacy_live_maintenance():
     from scraper_worker import jobs
-    assert {job.name for job in jobs()}=={'new listings sweep','sold sweep','daily validated pricing','listing availability','resume private pricing'}
+    assert {job.name for job in jobs()}=={'new listings sweep','sold sweep','daily validated pricing','listing availability','resume private pricing','requested listing backfill'}
 
 
 def test_unfinished_saved_pass_resumes_without_waiting_a_day(db_session):
@@ -140,3 +140,4 @@ def test_failed_sources_do_not_mark_the_daily_job_successful(db_session):
     key='scraper.schedule.'+hashlib.sha256(name.encode()).hexdigest()[:32]
     assert run_due(db_session.get_bind(),name,86400,lambda:{'merged':{'new':1,'failed_sources':1}})
     assert db_session.get(AppSetting,key) is None
+

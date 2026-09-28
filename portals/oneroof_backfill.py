@@ -136,8 +136,20 @@ def fill(db, row):
     except direct.CollectorUnavailable:
         # Share a durable pause across separate fill calls/processes. Never
         # rotate to another proxy after a restriction or retry every next row.
-        if cooldown is None:
-            cooldown = AppSetting(key='scraper.backfill.oneroof.retry_after')
-            db.add(cooldown)
-        cooldown.value = (now + timedelta(hours=1)).isoformat()
+        # Autoflush is disabled in production. Persist the cooldown immediately
+        # so the next row sees it, and concurrent runs cannot insert it twice.
+        dialect = db.get_bind().dialect.name
+        if dialect == 'postgresql':
+            from sqlalchemy.dialects.postgresql import insert
+        elif dialect == 'sqlite':
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            raise RuntimeError('Unsupported backfill database')
+        until = (now + timedelta(hours=1)).isoformat()
+        statement = insert(AppSetting).values(
+            key='scraper.backfill.oneroof.retry_after', value=until)
+        db.execute(statement.on_conflict_do_update(
+            index_elements=['key'], set_={'value': until}))
+        if cooldown is not None:
+            db.expire(cooldown)
         return 0, 'unreachable' 

@@ -77,3 +77,19 @@ def test_oneroof_building_decade_is_preserved():
     result=B.direct.canonical('oneroof','for_sale',URL,raw)
     assert result['building_age']=='1950s'
     assert B.to_listing('oneroof',result)['building_age']=='1950s'
+
+
+def test_source_failure_pauses_same_uncommitted_chunk(db_session, monkeypatch):
+    row = _pending(db_session, url=URL)
+    db_session.autoflush = False
+    calls = []
+    def fail(url):
+        calls.append(url)
+        raise B.direct.CollectorUnavailable('Source unavailable')
+    monkeypatch.setattr(B, 'fetch', fail)
+    for _ in range(25):
+        assert B.fill(db_session, row) == (0, 'unreachable')
+    db_session.commit()
+    assert len(calls) == 1
+    assert db_session.query(B.AppSetting).filter_by(
+        key='scraper.backfill.oneroof.retry_after').count() == 1
