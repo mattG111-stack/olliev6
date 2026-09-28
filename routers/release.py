@@ -1357,6 +1357,7 @@ def _run_fill_job(job_id: int, *, kind: str) -> None:
     except Exception as e:                        # noqa: BLE001
         log.exception("filling pending listings failed")
         try:
+            db.rollback()  # A failed flush must be cleared before saving failure.
             _update(db, job_id, status="failed", stage="done",
                     completed_at=datetime.now(timezone.utc),
                     error_message=f"{type(e).__name__}: {e}"[:480])

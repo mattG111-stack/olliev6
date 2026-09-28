@@ -370,3 +370,24 @@ def test_a_second_worker_never_erases_a_finished_run(db_session, pending,
     _run_fill_job(jid, kind="for_sale")          # a straggler arrives
     db_session.expire_all()
     assert db_session.query(IngestJob).get(jid).status == "completed"
+
+
+def test_database_failure_is_reported_not_left_running(db_session, monkeypatch):
+    from models import AppSetting, IngestJob
+    from routers.release import _run_fill_job
+    from staged_stages import create_stage_job
+    db_session.add(AppSetting(key='fill.failure.fixture', value='original'))
+    db_session.commit()
+    job = create_stage_job(db_session, stage='filling', batch_id=None,
+                           region='Auckland', uploaded_by_id=None)
+    jid = job.id
+    def fail(db, **kwargs):
+        db.add(AppSetting(key='fill.failure.fixture', value='duplicate'))
+        db.flush()
+    monkeypatch.setattr(complete, 'fill_pending', fail)
+    _run_fill_job(jid, kind='for_sale')
+    db_session.expire_all()
+    saved = db_session.get(IngestJob, jid)
+    assert saved.status == 'failed'
+    assert 'IntegrityError' in saved.error_message
+    assert saved.completed_at is not None
