@@ -32,6 +32,7 @@ Three rules, and they are the whole design:
 from __future__ import annotations
 
 import logging
+import os
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -86,6 +87,10 @@ def fill_one(db: Session, row: PortalListing) -> tuple[int, str]:
     result = fill(db, row)
     if result is not None:
         return result
+    # The legacy PropertyValue endpoint is unavailable. Do not spend repeated
+    # requests on it; an unknown source remains retryable, not a missing fact.
+    if os.getenv('PORTAL_PROPERTYVALUE_FALLBACK_ENABLED', 'false').lower() != 'true':
+        return 0, 'unreachable'
     q = ", ".join(x for x in (row.address, (row.suburb or "").strip(), "Auckland")
                   if x and x.lower() != "nan")
     rec, status = pv_lookup_status(q)
