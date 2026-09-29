@@ -500,7 +500,13 @@ def _enrich_pass(db: Session, job_id: int, batch_id: int, region: str,
                         f"fill ({_already:,} answered on an earlier run)"))
         del scan
         need = len(todo)
-        _update(db, job_id, rows_total=need, rows_inserted=0)
+        # Persist the exact cohort before any source lookup. Downstream enrichment
+        # must reuse this list, never independently expand to the whole batch.
+        scope_job = db.get(IngestJob, job_id)
+        scope = json.loads(scope_job.result_json or '{}')
+        scope['ids'] = list(dict.fromkeys(scope.get('ids', []) + [r[0] for r in todo[:cap]]))
+        _update(db, job_id, rows_total=need, rows_inserted=0,
+                result_json=json.dumps(scope))
 
         looked = filled = misses = consec_fail = corrected = 0
         blocked = consec_block = errors = 0

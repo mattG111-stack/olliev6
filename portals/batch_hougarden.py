@@ -66,14 +66,24 @@ def run_pending():
                 job = db.query(IngestJob).filter(IngestJob.filename.like(STAGE+' (batch %'), IngestJob.status.in_(('pending','running','paused'))).order_by(IngestJob.id).first()
                 if job is None:
                     return
+                state = json.loads(job.result_json or '{}')
                 core = db.query(IngestJob).filter(IngestJob.batch_id == job.batch_id,
                     IngestJob.filename == f'enrich (batch {job.batch_id})').order_by(IngestJob.id.desc()).first()
-                if core is None or core.status != 'completed':
+                if state.get('corelogic_job_id'):
+                    core = db.get(IngestJob, state['corelogic_job_id'])
+                if core is None or core.batch_id != job.batch_id or core.status != 'completed':
                     _update(db, job.id, status='paused', stage='Waiting for CoreLogic')
                     return
-                state = json.loads(job.result_json or '{}')
-                if 'ids' not in state:
-                    return
+                if 'corelogic_job_id' not in state or 'ids' not in state:
+                    scope = json.loads(core.result_json or '{}')
+                    if 'ids' not in scope:
+                        _update(db, job.id, status='failed',
+                                stage='CoreLogic scope unavailable; saved facts retained',
+                                error_message='Historical CoreLogic job did not retain listing IDs; broader enrichment is not allowed')
+                        return
+                    state = {'corelogic_job_id': core.id, 'ids': scope['ids'],
+                             'index': 0, 'filled': state.get('filled', 0), 'misses': 0}
+                    _update(db, job.id, result_json=json.dumps(state), rows_total=len(state['ids']))
                 ids = state['ids']
                 index = state.get('index', 0)
                 filled = state.get('filled', 0)
