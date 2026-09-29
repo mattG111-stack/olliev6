@@ -38,7 +38,7 @@ def test_paused_job_keeps_cursor_then_resumes(db_session, monkeypatch):
     def session():yield db_session
     monkeypatch.setattr(B,'SessionLocal',session)
     monkeypatch.setattr(B,'engine',db_session.get_bind())
-    db_session.add(IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',stage='enrich'))
+    db_session.add(IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',stage='enrich',result_json=json.dumps({'ids':[p.id]})))
     db_session.commit()
     monkeypatch.setattr(B.source,'fill',lambda *a:(0,'paused'))
     B.run_pending()
@@ -95,7 +95,7 @@ def test_repeated_failure_preserves_cursor_and_saved_facts(db_session, monkeypat
     p=PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate',floor_area_m2=155)
     db_session.add(p);db_session.flush()
     j=IngestJob(batch_type='for_sale',filename=f'{B.STAGE} (batch {b.id})',batch_id=b.id,status='pending',result_json=json.dumps({'ids':[p.id], 'filled':65}))
-    db_session.add_all([j,IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed')]);db_session.commit()
+    db_session.add_all([j,IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',result_json=json.dumps({'ids':[p.id]}))]);db_session.commit()
     @contextmanager
     def session():yield db_session
     monkeypatch.setattr(B,'SessionLocal',session)
@@ -111,3 +111,48 @@ def test_repeated_failure_preserves_cursor_and_saved_facts(db_session, monkeypat
     state=json.loads(j.result_json)
     assert state.get('index',0)==0 and state['filled']==65
     db_session.refresh(p); assert p.floor_area_m2==155
+
+
+def test_hougarden_uses_only_corelogic_ids(db_session, monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from models import IngestJob
+    from routers import release as R
+    from portals import batch_hougarden as B
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='scope.csv')
+    db_session.add(b);db_session.flush()
+    selected=PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate')
+    extra=PropertyForSale(import_batch_id=b.id,address='25 Lomandra Street',suburb='Westgate')
+    db_session.add_all([selected,extra]);db_session.flush()
+    core=IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',result_json=json.dumps({'ids':[selected.id]}))
+    db_session.add(core);db_session.commit()
+    monkeypatch.setattr(R,'enrichable_forsale_batch',lambda *a:b)
+    started=R.start_hougarden_enrich(region='Auckland',admin=SimpleNamespace(id=None),db=db_session)
+    @contextmanager
+    def session():yield db_session
+    monkeypatch.setattr(B,'SessionLocal',session);monkeypatch.setattr(B,'engine',db_session.get_bind())
+    seen=[]
+    def fill(db,row):
+        seen.append(row.address)
+        return (0,'not_found')
+    monkeypatch.setattr(B.source,'fill',fill)
+    B.run_pending()
+    job=db_session.get(IngestJob,started.job_id);db_session.refresh(job)
+    assert seen==[selected.address] and job.rows_total==1
+    assert json.loads(job.result_json)['corelogic_job_id']==core.id
+
+
+def test_historical_corelogic_count_is_not_a_scope(db_session, monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    from models import IngestJob
+    from routers import release as R
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='old.csv')
+    db_session.add(b);db_session.flush()
+    db_session.add(IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',rows_total=2494))
+    db_session.commit();monkeypatch.setattr(R,'enrichable_forsale_batch',lambda *a:b)
+    with pytest.raises(HTTPException) as exc:
+        R.start_hougarden_enrich(region='Auckland',admin=SimpleNamespace(id=None),db=db_session)
+    assert exc.value.status_code==409
+    assert db_session.query(IngestJob).count()==1

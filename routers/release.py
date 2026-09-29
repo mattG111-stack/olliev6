@@ -1844,21 +1844,19 @@ def start_hougarden_enrich(region: str = 'Auckland', cap: int = 50000,
         IngestJob.status.in_(('pending', 'running', 'paused'))).first()
     if current:
         return StageStarted(job_id=current.id, batch_id=batch.id, stage=STAGE)
-    previous = db.query(IngestJob.result_json).filter(IngestJob.batch_id == batch.id,
-        IngestJob.filename == f'{STAGE} (batch {batch.id})', IngestJob.status == 'completed').all()
-    seen = {pid for (payload,) in previous for pid in json.loads(payload or '{}').get('ids', [])}
-    rows = db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == batch.id).order_by(PropertyForSale.id).yield_per(100)
-    ids = []
-    for prop in rows:
-        if prop.id not in seen and any(_blank(getattr(prop, f)) for f in MAPPING.values()):
-            ids.append(prop.id)
-        if len(ids) >= max(1,min(cap,50000)):
-            break
+    core = db.query(IngestJob).filter(
+        IngestJob.batch_id == batch.id,
+        IngestJob.filename == f'enrich (batch {batch.id})').order_by(IngestJob.id.desc()).first()
+    if core is None:
+        raise HTTPException(status_code=409, detail='Start CoreLogic first so both sources use the same listings')
+    scope = json.loads(core.result_json or '{}')
+    if core.status == 'completed' and 'ids' not in scope:
+        raise HTTPException(status_code=409, detail='This older CoreLogic run did not save its listing IDs; its exact scope cannot be reused')
     job = IngestJob(batch_type='for_sale', filename=f'{STAGE} (batch {batch.id})',
                     batch_id=batch.id, stage=STAGE, status='pending', uploaded_by_id=admin.id)
     db.add(job)
-    job.result_json = json.dumps({'ids': ids, 'index': 0, 'filled': 0, 'misses': 0})
-    job.rows_total = len(ids)
+    job.result_json = json.dumps({'corelogic_job_id': core.id, 'index': 0, 'filled': 0, 'misses': 0})
+    job.rows_total = core.rows_total or 0
     db.commit()
     return StageStarted(job_id=job.id, batch_id=batch.id, stage=STAGE)
 
