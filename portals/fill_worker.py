@@ -47,6 +47,8 @@ def poll_pending(*, sleep=time.sleep):
     while not worker._stop:
         if settings.scraper_enabled:
             try:
+                from portals.batch_oneroof import run_pending as run_oneroof
+                run_oneroof()
                 run_pending()
             except Exception:
                 logging.getLogger(__name__).exception('Requested fill polling failed; will retry')

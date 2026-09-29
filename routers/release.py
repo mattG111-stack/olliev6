@@ -1826,3 +1826,50 @@ def publish_portal_review(body: PortalSelection, admin: User = Depends(require_a
     except ValueError as exc:
         db.rollback(); raise HTTPException(status_code=409,detail=str(exc))
     return {"published":count}
+
+
+@router.post('/release/oneroof-enrich', response_model=StageStarted)
+def start_oneroof_enrich(region: str = 'Auckland', cap: int = 200,
+                         admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.batch_oneroof import STAGE, MAPPING
+    from portals.complete import _blank
+    from sqlalchemy import text
+    batch = enrichable_forsale_batch(db, region)
+    if batch is None:
+        raise HTTPException(status_code=409, detail='No for-sale batch to enrich')
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(text('SELECT pg_advisory_xact_lock(792634906,:bid)'), {'bid': batch.id})
+    current = db.query(IngestJob).filter(IngestJob.batch_id == batch.id,
+        IngestJob.filename == f'{STAGE} (batch {batch.id})',
+        IngestJob.status.in_(('pending', 'running'))).first()
+    if current:
+        return StageStarted(job_id=current.id, batch_id=batch.id, stage=STAGE)
+    previous = db.query(IngestJob.result_json).filter(IngestJob.batch_id == batch.id,
+        IngestJob.filename == f'{STAGE} (batch {batch.id})', IngestJob.status == 'completed').all()
+    seen = {pid for (payload,) in previous for pid in json.loads(payload or '{}').get('ids', [])}
+    rows = db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == batch.id).order_by(PropertyForSale.id).yield_per(100)
+    ids = []
+    for prop in rows:
+        if prop.id not in seen and any(_blank(getattr(prop, f)) for f in MAPPING.values()):
+            ids.append(prop.id)
+        if len(ids) >= max(1,min(cap,200)):
+            break
+    job = IngestJob(batch_type='for_sale', filename=f'{STAGE} (batch {batch.id})',
+                    batch_id=batch.id, stage=STAGE, status='pending', uploaded_by_id=admin.id)
+    db.add(job)
+    job.result_json = json.dumps({'ids': ids, 'index': 0, 'filled': 0, 'misses': 0})
+    job.rows_total = len(ids)
+    db.commit()
+    return StageStarted(job_id=job.id, batch_id=batch.id, stage=STAGE)
+
+
+@router.get('/release/enrichment-jobs')
+def enrichment_jobs(region: str = 'Auckland', admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    batch = enrichable_forsale_batch(db, region)
+    if batch is None:
+        return {'corelogic': None, 'oneroof': None}
+    result = {}
+    for name, stage in [('corelogic','enrich'), ('oneroof','oneroof_enrich')]:
+        job = db.query(IngestJob).filter(IngestJob.batch_id == batch.id, IngestJob.filename == f'{stage} (batch {batch.id})').order_by(IngestJob.id.desc()).first()
+        result[name] = job.id if job else None
+    return result

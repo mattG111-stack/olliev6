@@ -588,7 +588,7 @@ def _enrich_pass(db: Session, job_id: int, batch_id: int, region: str,
             else:
                 consec_block = 0
 
-            p = db.get(PropertyForSale, pid)
+            p = db.query(PropertyForSale).filter_by(id=pid).populate_existing().with_for_update().one_or_none()
             if p is not None:
                 # Stamp every row we got a real answer for (hit OR miss) so the
                 # review grid can tell a row CoreLogic never reached ("Not
