@@ -135,7 +135,9 @@ def fill(db, row):
     try:
         item = fetch(url)
         return apply(row, item) if item else (0, 'not_found')
-    except direct.CollectorUnavailable:
+    except direct.CollectorUnavailable as exc:
+        if direct.failure_code(exc) in ("http_404", "http_410"):
+            return 0, "not_found"
         # Share a durable pause across separate fill calls/processes. Never
         # rotate to another proxy after a restriction or retry every next row.
         # Autoflush is disabled in production. Persist the cooldown immediately

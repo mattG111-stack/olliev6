@@ -14,3 +14,27 @@ def test_other_property_schema_rejected():
     assert parse(page(URL+'other'),URL) is None
 def test_ambiguous_residences_rejected():
     assert parse(page()+page(),URL) is None
+
+
+def test_missing_page_does_not_pause_entire_source(db_session, monkeypatch):
+    from portals import hougarden_backfill as source, direct
+    from models import PortalListing, AppSetting
+    row = PortalListing(source='hougarden', kind='for_sale', address='224 Logan Road', suburb='Pukekawa', url=URL)
+    monkeypatch.setattr(source, 'known_url', lambda *args: URL)
+    def missing(url):
+        raise direct.CollectorUnavailable('Source returned HTTP 404')
+    monkeypatch.setattr(source, 'fetch', missing)
+    assert source.fill(db_session, row) == (0, 'not_found')
+    assert db_session.get(AppSetting, 'scraper.backfill.hougarden.retry_after') is None
+
+
+def test_access_restriction_still_pauses(db_session, monkeypatch):
+    from portals import hougarden_backfill as source, direct
+    from models import PortalListing, AppSetting
+    row = PortalListing(source='hougarden', kind='for_sale', address='224 Logan Road', suburb='Pukekawa', url=URL)
+    monkeypatch.setattr(source, 'known_url', lambda *args: URL)
+    def blocked(url):
+        raise direct.CollectorUnavailable('Source paused: HTTP 403; no proxy retry')
+    monkeypatch.setattr(source, 'fetch', blocked)
+    assert source.fill(db_session, row) == (0, 'paused')
+    assert db_session.get(AppSetting, 'scraper.backfill.hougarden.retry_after') is not None
