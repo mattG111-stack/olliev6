@@ -43,7 +43,7 @@ def test_paused_job_keeps_cursor_then_resumes(db_session, monkeypatch):
     monkeypatch.setattr(B.source,'fill',lambda *a:(0,'paused'))
     B.run_pending()
     db_session.refresh(j)
-    assert j.status=='running' and json.loads(j.result_json).get('index',0)==0
+    assert j.status=='paused' and json.loads(j.result_json).get('index',0)==0
     def fill(db,row):return B.source.apply(row,item())
     monkeypatch.setattr(B.source,'fill',fill)
     B.run_pending();db_session.refresh(j);db_session.refresh(p)
@@ -84,3 +84,30 @@ def test_oneroof_waits_for_corelogic_without_fetching(db_session, monkeypatch):
     B.run_pending();db_session.refresh(j)
     assert j.status=='paused' and j.stage=='Waiting for CoreLogic'
     assert json.loads(j.result_json)=={'ids':[123]}
+
+
+def test_repeated_failure_preserves_cursor_and_saved_facts(db_session, monkeypatch):
+    from contextlib import contextmanager
+    from models import IngestJob
+    from portals import batch_hougarden as B
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='manual.csv')
+    db_session.add(b);db_session.flush()
+    p=PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate',floor_area_m2=155)
+    db_session.add(p);db_session.flush()
+    j=IngestJob(batch_type='for_sale',filename=f'{B.STAGE} (batch {b.id})',batch_id=b.id,status='pending',result_json=json.dumps({'ids':[p.id], 'filled':65}))
+    db_session.add_all([j,IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed')]);db_session.commit()
+    @contextmanager
+    def session():yield db_session
+    monkeypatch.setattr(B,'SessionLocal',session)
+    monkeypatch.setattr(B,'engine',db_session.get_bind())
+    monkeypatch.setattr(B.source,'fill',lambda *a:(0,'paused'))
+    detail={'code':'connection_timeout','retry_after':'first'}
+    monkeypatch.setattr(B.source,'pause_details',lambda db:dict(detail))
+    B.run_pending(); B.run_pending(); db_session.refresh(j)
+    assert json.loads(j.result_json)['pause']['attempts']==1
+    detail['retry_after']='second'; B.run_pending()
+    detail['retry_after']='third'; B.run_pending(); db_session.refresh(j)
+    assert j.status=='failed' and 'connection_timeout' in j.error_message
+    state=json.loads(j.result_json)
+    assert state.get('index',0)==0 and state['filled']==65
+    db_session.refresh(p); assert p.floor_area_m2==155

@@ -86,7 +86,20 @@ def run_pending():
                         result = source.fill(db, row)
                         if result == (0, 'paused'):
                             db.commit()  # preserve shared source cooldown
-                            _update(db, job.id, stage='HouGarden paused; will resume')
+                            detail = source.pause_details(db)
+                            # Count actual failed attempts, not worker polls during cooldown.
+                            previous = state.get('pause', {})
+                            attempts = previous.get('attempts', 0) if previous.get('index') == index else 0
+                            if detail['retry_after'] != previous.get('retry_after'):
+                                attempts += 1
+                            state['pause'] = dict(detail, index=index, attempts=attempts)
+                            stopped = attempts >= 3
+                            message = f"HouGarden {detail['code']}; " + (
+                                'stopped after 3 failed attempts; saved progress retained' if stopped else
+                                f"retry at {detail['retry_after'] or 'source cooldown expiry'}")
+                            _update(db, job.id, status='failed' if stopped else 'paused',
+                                    stage=message, error_message=message,
+                                    result_json=json.dumps(state))
                             return
                         if result and result[1] == 'ok':
                             item = json.loads(row.raw_json)['hougarden_backfill']['evidence']
@@ -94,10 +107,11 @@ def run_pending():
                         else:
                             misses += 1
                     index += 1
+                    state.pop('pause', None)
                     state.update(index=index, filled=filled, misses=misses)
                     _update(db, job.id, rows_total=len(ids), rows_inserted=index,
                             rows_filled=filled, rows_missed=misses,
-                            progress_pct=int(100*index/max(1,len(ids))), result_json=json.dumps(state))
+                            progress_pct=int(100*index/max(1,len(ids))), error_message=None, result_json=json.dumps(state))
                 if index >= len(ids):
                     _update(db, job.id, status='completed', stage='hougarden_enrich', progress_pct=100, completed_at=datetime.now(timezone.utc))
         finally:

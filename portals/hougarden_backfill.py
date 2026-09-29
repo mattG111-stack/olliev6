@@ -116,6 +116,17 @@ def apply(row, item):
     return len(fields), 'ok'
 
 
+def pause_details(db):
+    retry = db.get(AppSetting, 'scraper.backfill.hougarden.retry_after')
+    error = db.get(AppSetting, 'scraper.backfill.hougarden.last_error')
+    try:
+        detail = json.loads(error.value) if error else {}
+    except (ValueError, TypeError):
+        detail = {}
+    return {'code': detail.get('code', 'previous_request_failed'),
+            'retry_after': retry.value if retry else None}
+
+
 def fill(db, row):
     if row.kind != 'for_sale':
         return None
@@ -136,7 +147,8 @@ def fill(db, row):
         item = fetch(url)
         return apply(row, item) if item else (0, 'not_found')
     except direct.CollectorUnavailable as exc:
-        if direct.failure_code(exc) in ("http_404", "http_410"):
+        code = direct.failure_code(exc)
+        if code in ("http_404", "http_410"):
             return 0, "not_found"
         # Share a durable pause across separate fill calls/processes. Never
         # rotate to another proxy after a restriction or retry every next row.
@@ -149,7 +161,19 @@ def fill(db, row):
             from sqlalchemy.dialects.sqlite import insert
         else:
             raise RuntimeError('Unsupported backfill database')
-        until = (now + timedelta(hours=1)).isoformat()
+        # Connection errors are temporary transport failures, not access denials.
+        # Keep the full hour for restrictions and all unclassified failures.
+        transient = code in ('connection_timeout', 'connection_failed',
+                             'connect_failed', 'proxy_transport_failed')
+        until = (now + timedelta(seconds=60 if transient else 3600)).isoformat()
+        detail = json.dumps({'code': code, 'at': now.isoformat()})
+        error_statement = insert(AppSetting).values(
+            key='scraper.backfill.hougarden.last_error', value=detail)
+        db.execute(error_statement.on_conflict_do_update(
+            index_elements=['key'], set_={'value': detail}))
+        cached_error = db.get(AppSetting, 'scraper.backfill.hougarden.last_error')
+        if cached_error is not None:
+            db.expire(cached_error)
         statement = insert(AppSetting).values(
             key='scraper.backfill.hougarden.retry_after', value=until)
         db.execute(statement.on_conflict_do_update(
