@@ -38,3 +38,23 @@ def test_access_restriction_still_pauses(db_session, monkeypatch):
     monkeypatch.setattr(source, 'fetch', blocked)
     assert source.fill(db_session, row) == (0, 'paused')
     assert db_session.get(AppSetting, 'scraper.backfill.hougarden.retry_after') is not None
+
+
+def test_timeout_retry_preserves_reason_and_does_not_refetch_during_cooldown(db_session, monkeypatch):
+    from datetime import datetime, timezone
+    from portals import hougarden_backfill as source, direct
+    from models import PortalListing
+    row = PortalListing(source='hougarden', kind='for_sale', url=URL)
+    monkeypatch.setattr(source, 'known_url', lambda *a: URL)
+    calls = []
+    def timeout(url):
+        calls.append(url)
+        raise direct.CollectorUnavailable('Source or proxy request timed out')
+    monkeypatch.setattr(source, 'fetch', timeout)
+    assert source.fill(db_session, row) == (0, 'paused')
+    detail = source.pause_details(db_session)
+    assert detail['code'] == 'connection_timeout'
+    seconds = (datetime.fromisoformat(detail['retry_after']) - datetime.now(timezone.utc)).total_seconds()
+    assert 0 < seconds <= 60
+    assert source.fill(db_session, row) == (0, 'paused')
+    assert len(calls) == 1
