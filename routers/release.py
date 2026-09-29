@@ -1854,7 +1854,9 @@ def start_oneroof_enrich(region: str = 'Auckland', cap: int = 200,
             ids.append(prop.id)
         if len(ids) >= max(1,min(cap,200)):
             break
-    job = create_stage_job(db, stage=STAGE, batch_id=batch.id, region=region, uploaded_by_id=admin.id)
+    job = IngestJob(batch_type='for_sale', filename=f'{STAGE} (batch {batch.id})',
+                    batch_id=batch.id, stage=STAGE, status='pending', uploaded_by_id=admin.id)
+    db.add(job)
     job.result_json = json.dumps({'ids': ids, 'index': 0, 'filled': 0, 'misses': 0})
     job.rows_total = len(ids)
     db.commit()
