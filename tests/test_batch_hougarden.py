@@ -1,6 +1,6 @@
 import json
 from models import PropertyForSale, ImportBatch, PortalFinding
-from portals.batch_oneroof import save_result
+from portals.batch_hougarden import save_result
 from tests.test_oneroof_backfill import item
 
 def test_fills_blanks_preserves_corelogic_and_records_evidence(db_session):
@@ -27,7 +27,7 @@ def test_wrong_unit_cannot_fill(db_session):
 def test_paused_job_keeps_cursor_then_resumes(db_session, monkeypatch):
     from contextlib import contextmanager
     from models import IngestJob
-    from portals import batch_oneroof as B
+    from portals import batch_hougarden as B
     b=ImportBatch(batch_type='for_sale',region='Auckland',filename='manual.csv')
     db_session.add(b);db_session.flush()
     p=PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate',region='Auckland')
@@ -49,10 +49,28 @@ def test_paused_job_keeps_cursor_then_resumes(db_session, monkeypatch):
     B.run_pending();db_session.refresh(j);db_session.refresh(p)
     assert j.status=='completed' and j.rows_filled>0 and p.land_area_m2==405
 
+def test_start_is_independent_of_corelogic_and_reuses_pending(db_session, monkeypatch):
+    from types import SimpleNamespace
+    from models import IngestJob
+    from routers import release as R
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='manual.csv')
+    db_session.add(b);db_session.flush()
+    db_session.add(PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate',region='Auckland'))
+    core=IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='running',stage='enrich')
+    db_session.add(core);db_session.commit()
+    monkeypatch.setattr(R,'enrichable_forsale_batch',lambda *a:b)
+    args=dict(region='Auckland',cap=200,admin=SimpleNamespace(id=None),db=db_session)
+    first=R.start_hougarden_enrich(**args)
+    second=R.start_hougarden_enrich(**args)
+    assert first.job_id==second.job_id and first.job_id!=core.id
+    assert core.status=='running'
+    assert R.enrichment_jobs(region='Auckland',admin=None,db=db_session)=={'corelogic':core.id,'hougarden':first.job_id}
+
+
 def test_oneroof_waits_for_corelogic_without_fetching(db_session, monkeypatch):
     from contextlib import contextmanager
     from models import IngestJob
-    from portals import batch_oneroof as B
+    from portals import batch_hougarden as B
     b=ImportBatch(batch_type='for_sale',region='Auckland',filename='manual.csv')
     db_session.add(b);db_session.flush()
     j=IngestJob(batch_type='for_sale',filename=f'{B.STAGE} (batch {b.id})',batch_id=b.id,status='pending',result_json=json.dumps({'ids':[123]}))

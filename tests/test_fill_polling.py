@@ -7,7 +7,7 @@ from config import settings
 def test_poller_finds_later_requests_without_scheduler_tick(monkeypatch):
     monkeypatch.setattr(worker, '_stop', False)
     monkeypatch.setattr(settings, 'scraper_enabled', True)
-    monkeypatch.setattr('portals.batch_oneroof.run_pending', lambda: None)
+    monkeypatch.setattr('portals.batch_hougarden.run_pending', lambda: None)
     calls=[]
     def pending():
         calls.append('poll')
