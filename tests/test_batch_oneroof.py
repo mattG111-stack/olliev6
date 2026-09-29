@@ -38,6 +38,8 @@ def test_paused_job_keeps_cursor_then_resumes(db_session, monkeypatch):
     def session():yield db_session
     monkeypatch.setattr(B,'SessionLocal',session)
     monkeypatch.setattr(B,'engine',db_session.get_bind())
+    db_session.add(IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',stage='enrich'))
+    db_session.commit()
     monkeypatch.setattr(B.source,'fill',lambda *a:(0,'paused'))
     B.run_pending()
     db_session.refresh(j)
@@ -63,3 +65,22 @@ def test_start_is_independent_of_corelogic_and_reuses_pending(db_session, monkey
     assert first.job_id==second.job_id and first.job_id!=core.id
     assert core.status=='running'
     assert R.enrichment_jobs(region='Auckland',admin=None,db=db_session)=={'corelogic':core.id,'oneroof':first.job_id}
+
+
+def test_oneroof_waits_for_corelogic_without_fetching(db_session, monkeypatch):
+    from contextlib import contextmanager
+    from models import IngestJob
+    from portals import batch_oneroof as B
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='manual.csv')
+    db_session.add(b);db_session.flush()
+    j=IngestJob(batch_type='for_sale',filename=f'{B.STAGE} (batch {b.id})',batch_id=b.id,status='pending',result_json=json.dumps({'ids':[123]}))
+    core=IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='running',stage='enrich')
+    db_session.add_all([j,core]);db_session.commit()
+    @contextmanager
+    def session():yield db_session
+    monkeypatch.setattr(B,'SessionLocal',session)
+    monkeypatch.setattr(B,'engine',db_session.get_bind())
+    monkeypatch.setattr(B.source,'fill',lambda *a: (_ for _ in ()).throw(AssertionError('must not fetch')))
+    B.run_pending();db_session.refresh(j)
+    assert j.status=='paused' and j.stage=='Waiting for CoreLogic'
+    assert json.loads(j.result_json)=={'ids':[123]}

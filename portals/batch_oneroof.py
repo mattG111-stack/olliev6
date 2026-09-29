@@ -63,8 +63,13 @@ def run_pending():
             connection.commit()
         try:
             with SessionLocal() as db:
-                job = db.query(IngestJob).filter(IngestJob.filename.like(STAGE+' (batch %'), IngestJob.status.in_(('pending','running'))).order_by(IngestJob.id).first()
+                job = db.query(IngestJob).filter(IngestJob.filename.like(STAGE+' (batch %'), IngestJob.status.in_(('pending','running','paused'))).order_by(IngestJob.id).first()
                 if job is None:
+                    return
+                core = db.query(IngestJob).filter(IngestJob.batch_id == job.batch_id,
+                    IngestJob.filename == f'enrich (batch {job.batch_id})').order_by(IngestJob.id.desc()).first()
+                if core is None or core.status != 'completed':
+                    _update(db, job.id, status='paused', stage='Waiting for CoreLogic')
                     return
                 state = json.loads(job.result_json or '{}')
                 if 'ids' not in state:
