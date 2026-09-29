@@ -18,6 +18,7 @@ from config import settings
 from portals import page_data
 
 HOSTS = {
+    'hougarden': {'www.hougarden.com', 'hougarden.com'},
     'oneroof': {'www.oneroof.co.nz', 'oneroof.co.nz'},
     'realestate': {'www.realestate.co.nz', 'realestate.co.nz'},
     'trademe': {'www.trademe.co.nz', 'trademe.co.nz'},
