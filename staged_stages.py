@@ -362,6 +362,13 @@ HARD_BLOCK_ROWS = 3
 AUTO_RETRY_WAITS = (60, 300, 900)          # 1 min, 5 min, 15 min
 
 
+def _enrichment_query(address, suburb):
+    # Provider locality can be Waiheke Island, Rodney, etc. A forced city
+    # suffix makes valid street/suburb searches return HTTP 404.
+    return ", ".join(str(x).strip() for x in (address, suburb)
+                     if x is not None and str(x).strip() and str(x).strip().lower() != "nan")
+
+
 def _enrich_pass(db: Session, job_id: int, batch_id: int, region: str,
                  *, delay: float, cap: int, attempt: int,
                  retries_left: int) -> str:
@@ -510,8 +517,7 @@ def _enrich_pass(db: Session, job_id: int, batch_id: int, region: str,
                 if job_was_cancelled(db, job_id):
                     return "cancelled"
                 _update(db, job_id)
-            q = ", ".join(x for x in (str(address), str(suburb or "").strip(), "Auckland")
-                          if x and x.lower() != "nan")
+            q = _enrichment_query(address, suburb)
             looked += 1
             try:
                 pv, status = pv_lookup_status(q)
