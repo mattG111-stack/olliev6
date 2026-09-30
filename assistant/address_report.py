@@ -30,27 +30,35 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     say so.
     """
     q = f"{address}, {suburb}"
-    tools = []
-
-    # 1) CoreLogic — the structured record.
+    tools = ["corelogic_lookup", "homes_lookup"]
     if on_step:
         on_step("tool", "corelogic_lookup")
-    tools.append("corelogic_lookup")
-    try:
-        from propertyvalue import pv_lookup_status, PV_BLOCKED
-        rec, status = pv_lookup_status(q)
-    except Exception:
-        rec, status = None, "error"
 
-    # 2) homes.co.nz — a second independent estimate.
-    if on_step:
-        on_step("tool", "homes_lookup")
-    tools.append("homes_lookup")
-    try:
-        from external_estimates import homes_estimate
-        homes = homes_estimate(q)
-    except Exception:
-        homes = None
+    # The two external lookups are independent network round-trips, so run them at
+    # the same time rather than one-then-the-other — the answer waits for the slower
+    # of the two, not their sum. Each swallows its own errors so one failing never
+    # takes the other down.
+    from concurrent.futures import ThreadPoolExecutor
+    from propertyvalue import PV_BLOCKED
+
+    def _corelogic():
+        try:
+            from propertyvalue import pv_lookup_status
+            return pv_lookup_status(q)
+        except Exception:
+            return None, "error"
+
+    def _homes():
+        try:
+            from external_estimates import homes_estimate
+            return homes_estimate(q)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_cl, f_h = ex.submit(_corelogic), ex.submit(_homes)
+        rec, status = f_cl.result()
+        homes = f_h.result()
 
     if not rec and not homes:
         if status in ("error",) or status == PV_BLOCKED:
