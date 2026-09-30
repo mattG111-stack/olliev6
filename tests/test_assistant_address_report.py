@@ -79,6 +79,31 @@ def test_invalid_input_cannot_fall_through_to_model():
     assert address_report('Tell me about Glen Eden',None) is None
 
 
+def test_area_intelligence_backs_external_with_our_data(db_session):
+    # The "wow" layer: an off-system address is backed by OUR read — what we think
+    # it's worth and why (comp engine on real sales), plus the suburb's metrics.
+    from assistant.address_report import _area_intelligence
+    from models import ImportBatch, PropertySold, BatchType
+    b = ImportBatch(batch_type=BatchType.SOLD.value, region="Auckland", filename="s.csv",
+                    rows_total=0, is_active=True, status="published")
+    db_session.add(b); db_session.flush()
+    for i, p in enumerate([1750000, 1800000, 1825000, 1900000, 1680000,
+                           1950000, 1775000, 1860000, 1720000, 1990000]):
+        method = "auction" if i % 2 == 0 else "negotiation"
+        cv = p * 0.90 if method == "auction" else p * 0.98
+        db_session.add(PropertySold(
+            import_batch_id=b.id, address=f"{10+i} Example Road", suburb="Remuera",
+            property_type="House", beds=4, baths=2, floor_area_m2=200 + i,
+            land_area_m2=210 + i, sale_price=p, cv_numeric=cv, sale_method=method,
+            sold_date=f"2026-0{(i % 9)+1}-15", days_on_market=15 if method == "auction" else 40))
+    db_session.commit()
+    txt = "\n".join(_area_intelligence("Remuera", "House", 4, 2, 202, 210))
+    assert "worth about" in txt          # our valuation, with the "why"
+    assert "sales on file" in txt        # suburb metrics
+    assert "Recent sales" in txt
+    assert "Best way to sell here" in txt and "auction" in txt.lower()  # method from metrics
+
+
 def test_lookup_failure_is_not_no_matches(monkeypatch):
     from assistant import tools
     def fail():raise RuntimeError('private error')

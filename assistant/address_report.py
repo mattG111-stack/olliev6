@@ -119,10 +119,137 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
             lines.append(f"- [View on homes.co.nz]({homes['url']})")
         lines.append("")
 
-    lines.append("_These are the sources' own figures for a property not in your batch, "
-                 "so there's no Ollie deal-margin or comp valuation for it — load it as a "
-                 "listing if you want it priced against your sold data._")
+    # Back the external record with OUR own read on it — what we think it's worth
+    # and why, plus the area's real sales. This is the part no portal can show, and
+    # the reason the answer lands: their record, then our market intelligence.
+    area = _area_intelligence(
+        suburb,
+        (rec or {}).get("property_type"),
+        (rec or {}).get("beds"), (rec or {}).get("baths"),
+        (rec or {}).get("floor_area_m2"), (rec or {}).get("land_area_m2"))
+    if area:
+        tools.append("area_intelligence")
+        lines += ["", "---", ""] + area + [""]
+
+    lines.append("_External figures are each source's own. “What Ollie thinks it's "
+                 "worth” is our independent estimate from comparable sales, not a "
+                 "council value or an asking price. Load it as a listing to track it and "
+                 "price it against the full batch._")
     return Result(text="\n".join(lines).rstrip(), tools_used=tools)
+
+
+def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[str]:
+    """Our proprietary layer for an off-system address: what we think it's worth and
+    WHY (the comp engine on real sold prices), the suburb's medians, its recent
+    sales, and how fast it sells. All from OUR sold data — no external calls. Every
+    part is best-effort and never raises; a section that can't be built is dropped."""
+    out: list[str] = []
+
+    # What we think it's worth, and why — the same comp engine the deal page uses.
+    try:
+        if beds and baths:
+            from assistant.tools import value_property
+            v = value_property(str(suburb), beds=float(beds), baths=float(baths),
+                               floor_area_m2=float(floor) if floor else None,
+                               land_area_m2=float(land) if land else None,
+                               property_type=str(property_type or "House"))
+            if isinstance(v, str) and "is worth about" in v:
+                out += ["**What Ollie thinks it's worth**", v, ""]
+    except Exception:
+        pass
+
+    # The suburb, from our sold data: how many, the median, the $/m², recent sales.
+    try:
+        import statistics
+        from db import SessionLocal
+        from models import PropertySold
+        from ingest import sold_batch_ids
+        with SessionLocal() as s:
+            bids = sold_batch_ids(s, "Auckland")
+            rows = [] if not bids else s.query(
+                PropertySold.address, PropertySold.sale_price,
+                PropertySold.sold_date, PropertySold.floor_area_m2).filter(
+                PropertySold.import_batch_id.in_(bids),
+                PropertySold.suburb.ilike(str(suburb)),
+                PropertySold.sale_price.isnot(None),
+                PropertySold.sale_price > 0).all()
+        if rows:
+            prices = [float(r.sale_price) for r in rows]
+            block = [f"**The {suburb} market — from our own sold data**",
+                     f"- **{len(rows):,} sales on file**, median **{_money(statistics.median(prices))}**"]
+            psm = [float(r.sale_price) / float(r.floor_area_m2) for r in rows
+                   if r.floor_area_m2 and float(r.floor_area_m2) > 0]
+            if psm:
+                block.append(f"- Median **${statistics.median(psm):,.0f}/m²** of floor")
+            dated = sorted((r for r in rows if r.sold_date),
+                           key=lambda r: str(r.sold_date), reverse=True)
+            recents = [f"{r.address} — {_money(r.sale_price)} ({r.sold_date})"
+                       for r in dated[:3] if r.address]
+            if recents:
+                block.append("- Recent sales: " + "; ".join(recents))
+            out += block
+    except Exception:
+        pass
+
+    # How fast the suburb sells.
+    try:
+        import json as _json2
+        from assistant.tools import suburb_days_to_sell
+        d = suburb_days_to_sell(str(suburb))
+        info = _json2.loads(d) if isinstance(d, str) and d.strip().startswith("{") else None
+        if info and info.get("median_days_to_sell") is not None:
+            out.append(f"- Typically sells in about **{info['median_days_to_sell']} days**")
+    except Exception:
+        pass
+
+    # Best way to sell here, from what actually achieved the best price. Ranked by
+    # the median sale price relative to CV (how far over the council value each
+    # method clears), with days-on-market alongside. Only methods with enough sales
+    # to mean something are shown.
+    try:
+        import statistics
+        from collections import defaultdict
+        from db import SessionLocal
+        from models import PropertySold
+        from ingest import sold_batch_ids
+        with SessionLocal() as s:
+            bids = sold_batch_ids(s, "Auckland")
+            mrows = [] if not bids else s.query(
+                PropertySold.sale_method, PropertySold.sale_price,
+                PropertySold.cv_numeric, PropertySold.days_on_market).filter(
+                PropertySold.import_batch_id.in_(bids),
+                PropertySold.suburb.ilike(str(suburb)),
+                PropertySold.sale_method.isnot(None),
+                PropertySold.sale_price.isnot(None), PropertySold.sale_price > 0).all()
+        groups: dict[str, list] = defaultdict(list)
+        for r in mrows:
+            m = str(r.sale_method).strip().lower()
+            if m and m not in ("unknown", "other"):
+                groups[m].append(r)
+        stats = []
+        for m, rs in groups.items():
+            prem = [float(r.sale_price) / float(r.cv_numeric) for r in rs
+                    if r.cv_numeric and float(r.cv_numeric) > 0]
+            doms = [r.days_on_market for r in rs if r.days_on_market and r.days_on_market > 0]
+            if len(rs) >= 5 and prem:
+                stats.append((m, len(rs), statistics.median(prem),
+                              statistics.median(doms) if doms else None))
+        if stats:
+            stats.sort(key=lambda x: x[2], reverse=True)
+            m, n, prem, dom = stats[0]
+            best = (f"- **Best way to sell here: {m}** — clears a median "
+                    f"**{(prem - 1) * 100:+.0f}% vs CV**"
+                    + (f", ~{dom:.0f} days on market" if dom else "")
+                    + f" (from {n} sales)")
+            out += ["", best]
+            rest = [f"{mm} {(pp - 1) * 100:+.0f}% ({nn})" for mm, nn, pp, dd in stats[1:4]]
+            if rest:
+                out.append("- Versus: " + "; ".join(rest))
+
+    except Exception:
+        pass
+
+    return out
 
 
 def address_report(question, dispatch, on_step=None):
