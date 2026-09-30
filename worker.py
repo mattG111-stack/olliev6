@@ -111,6 +111,7 @@ def build_jobs() -> list[Job]:
     from portals.daily_pricing import run_once as daily_pricing_run, enabled as daily_pricing_enabled
     from job_reaper import reap_stuck_jobs
     from auto_pipeline import advance_auto_pipeline, enabled as auto_pipeline_enabled
+    from portals.fill_worker import dispatch_requested_fills
 
     return [
         # New and sold records daily, with review required before approval.
@@ -165,6 +166,12 @@ def build_jobs() -> list[Job]:
         # See auto_pipeline.py.
         Job("auto pipeline", TICK_SECONDS, advance_auto_pipeline,
             enabled=auto_pipeline_enabled),
+        # Drain admin-requested "Fill missing details" jobs here on the main worker,
+        # so the button works without a separate scraper worker or SCRAPER_ENABLED.
+        # dispatch_requested_fills starts one daemon poll thread (idempotent), and
+        # its run_pending() takes an advisory lock so it never double-drains. See
+        # portals/fill_worker.py.
+        Job("drain requested fills", TICK_SECONDS, dispatch_requested_fills),
     ]
 
 

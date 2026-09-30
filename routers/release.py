@@ -585,6 +585,36 @@ def price_staged(region: str = "Auckland", admin: User = Depends(require_admin),
     return StageStarted(job_id=jid, batch_id=bid, stage="price")
 
 
+def _live_forsale_batch(db: Session, region: str) -> ImportBatch | None:
+    return (db.query(ImportBatch)
+            .filter(ImportBatch.batch_type == BatchType.FOR_SALE.value,
+                    ImportBatch.region == region,
+                    ImportBatch.is_active.is_(True))
+            .order_by(ImportBatch.id.desc()).first())
+
+
+@router.post("/release/price-live", response_model=StageStarted)
+def price_live(region: str = "Auckland", admin: User = Depends(require_admin),
+               db: Session = Depends(get_db)) -> StageStarted:
+    """Re-price the LIVE (active) for-sale batch — the one customers see.
+
+    Pricing was staged-only, so after filling missing details on listings already
+    on the site (Fill missing details / per-listing enrich) there was no way to push
+    those numbers into the valuation without waiting for the hourly self-heal. This
+    re-runs the same pricing + hold rules over the live batch on demand. Re-runnable;
+    one at a time (a second run on the same batch is refused)."""
+    batch = _live_forsale_batch(db, region)
+    if batch is None:
+        raise HTTPException(status_code=409, detail="No live for-sale batch to re-price")
+    if stage_running(db, batch.id, "price"):
+        raise HTTPException(status_code=409, detail="Re-price is already running for the live batch")
+    job = create_stage_job(db, stage="price", batch_id=batch.id, region=region,
+                           uploaded_by_id=admin.id)
+    bid, jid = batch.id, job.id
+    threading.Thread(target=run_price_job, args=(jid, bid, region), daemon=True).start()
+    return StageStarted(job_id=jid, batch_id=bid, stage="price")
+
+
 # ---- publish the release ----------------------------------------------------
 @router.post("/release/preview")
 def send_preview(region: str = "Auckland", admin: User = Depends(require_admin),

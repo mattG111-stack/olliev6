@@ -62,3 +62,34 @@ def dispatch():
         if _thread is None or not _thread.is_alive():
             _thread = threading.Thread(target=poll_pending, daemon=True)
             _thread.start()
+
+
+# --- admin-requested fills on the MAIN worker --------------------------------
+# The "Fill missing details" button queues a job and nothing drained it unless the
+# dedicated scraper worker was deployed AND scraper_enabled was on — so the button
+# sat at "Waiting for scraper worker" and did nothing, with no feedback. A fill is
+# an explicit admin action, not scheduled collection, so it should run whenever the
+# main worker is up (which already carries the proxy), independent of the scheduled
+# scraper. This drains ONLY requested fills; hougarden collection stays with
+# poll_pending / the scraper worker. run_pending() takes a Postgres advisory lock,
+# so this never double-drains a job the scraper worker is also watching.
+_requested_thread = None
+
+
+def poll_requested_fills(*, sleep=time.sleep):
+    import worker
+    while not worker._stop:
+        try:
+            run_pending()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                'Requested fill drain failed; will retry')
+        sleep(10)
+
+
+def dispatch_requested_fills():
+    global _requested_thread
+    with _thread_lock:
+        if _requested_thread is None or not _requested_thread.is_alive():
+            _requested_thread = threading.Thread(target=poll_requested_fills, daemon=True)
+            _requested_thread.start()
