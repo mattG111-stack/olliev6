@@ -187,6 +187,21 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[
                        for r in dated[:3] if r.address]
             if recents:
                 block.append("- Recent sales: " + "; ".join(recents))
+            # A chart, not just words: recent sales as bars. The frontend renders a
+            # fenced ```apex-chart``` block as an SVG (see AssistantAnswer.parseChart).
+            pts, seen = [], set()
+            for r in dated[:8]:
+                if not r.address or r.address in seen:
+                    continue
+                seen.add(r.address)
+                pts.append({"label": str(r.address)[:60], "value": round(float(r.sale_price))})
+            if len(pts) >= 2:
+                block += ["", "```apex-chart",
+                          json.dumps({"type": "bar",
+                                      "title": f"Recent sales in {suburb}",
+                                      "source": "Ollie sold data",
+                                      "unit": "NZD", "data": pts}),
+                          "```"]
             out += block
     except Exception:
         pass

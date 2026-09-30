@@ -102,6 +102,10 @@ def test_area_intelligence_backs_external_with_our_data(db_session):
     assert "sales on file" in txt        # suburb metrics
     assert "Recent sales" in txt
     assert "Best way to sell here" in txt and "auction" in txt.lower()  # method from metrics
+    assert "```apex-chart" in txt        # a graph, not just words
+    import re as _re, json as _j
+    _m = _re.search(r"```apex-chart\n(.*?)\n```", txt, _re.S)
+    assert _m and _j.loads(_m.group(1))["type"] == "bar"  # valid chart JSON
 
 
 def test_lookup_failure_is_not_no_matches(monkeypatch):
