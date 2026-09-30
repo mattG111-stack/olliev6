@@ -39,12 +39,38 @@ def test_duplicates_require_choice(db_session):
     assert f'/property/{one.id}' in result.text and f'/property/{two.id}' in result.text
 
 
-def test_inactive_held_and_nearby_are_not_substituted(db_session):
+def test_inactive_held_and_nearby_are_not_substituted(db_session,monkeypatch):
+    # An inactive / held / nearby row must never be presented AS the answer. It no
+    # longer ends in "couldn't find", though: the exact address is looked up in the
+    # external sources instead. With those mocked to hold nothing, we still get the
+    # not-substituted guarantee — no /property/ link to a nearby or held row.
+    monkeypatch.setattr('propertyvalue.pv_lookup_status',lambda q:(None,'not_found'))
+    monkeypatch.setattr('external_estimates.homes_estimate',lambda q:None)
     old=batch(db_session,False);add_home(db_session,old)
     b=batch(db_session);add_home(db_session,b,is_held=True);add_home(db_session,b,address='42 Synthetic Road')
     result=address_report(question(),None)
-    assert "couldn't find an exact visible listing" in result.text
     assert '/property/' not in result.text
+    assert 'CoreLogic' in result.text or "hold a record" in result.text
+
+
+def test_address_not_in_system_uses_external_sources(db_session,monkeypatch):
+    # The whole point: an address that isn't a listing still returns real details
+    # from CoreLogic / homes.co.nz, clearly as THEIR figures, with no /property/
+    # link and no Ollie valuation substituted.
+    fake={'canonical_address':'2/42 Synthetic Road, Glen Eden','property_type':'House',
+          'beds':3,'baths':1,'floor_area_m2':110,'land_area_m2':400,
+          'zoning':'Residential','cv':820000,'land_value':500000,
+          'estimate_low':780000,'estimate_high':860000,'estimate_confidence':'HIGH',
+          'last_sale_price':705000,'last_sale_date':'2019-03-01',
+          'url':'https://www.propertyvalue.co.nz/x'}
+    monkeypatch.setattr('propertyvalue.pv_lookup_status',lambda q:(fake,'ok'))
+    monkeypatch.setattr('external_estimates.homes_estimate',lambda q:None)
+    b=batch(db_session)  # active batch exists, but the address isn't in it
+    result=address_report(question(),None)
+    assert '/property/' not in result.text
+    assert 'CoreLogic' in result.text
+    assert '$820,000' in result.text
+    assert 'not an Ollie valuation' in result.text
 
 
 def test_invalid_input_cannot_fall_through_to_model():
