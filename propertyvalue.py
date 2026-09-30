@@ -21,7 +21,11 @@ Used for two things:
 """
 from __future__ import annotations
 
+import itertools
+import json as _json
 import logging
+import random
+import threading
 
 import time
 
@@ -31,7 +35,58 @@ from addresses import address_key
 log = logging.getLogger("ollie.propertyvalue")
 
 _BASE = "https://www.propertyvalue.co.nz"
-_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+# Rotate the identity, don't broadcast one. A single static User-Agent hitting a
+# bot-protected API from one IP is the easiest possible thing to throttle; real
+# traffic is a mix of browsers. Paired with a rotating residential proxy below,
+# each request looks like a different ordinary visitor, which is the difference
+# between "works 3 times out of 4" and "works".
+_UA_POOL = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 Edg/120.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+]
+_UA = _UA_POOL[0]                                   # kept for anything importing it
+
+# THE fix for datacenter-IP throttling: send CoreLogic through the same rotating
+# residential proxies the portal collector already uses (settings.scraper_proxy_urls,
+# a JSON array). CoreLogic used to go DIRECT from the server's own IP, which is
+# exactly the IP a bot-protected source drops first — 653 of 2,494 "unreachable"
+# on the last run. With proxies configured each lookup (and each retry) leaves via
+# a different residential IP; with none configured it falls back to direct, so this
+# is safe to ship before the proxy is set.
+_proxy_rotation = itertools.count()
+_proxy_lock = threading.Lock()
+
+
+def _proxy_urls() -> list[str]:
+    try:
+        from config import settings
+        raw = getattr(settings, "scraper_proxy_urls", "") or ""
+        if not raw.strip():
+            return []
+        urls = _json.loads(raw)
+        return [u for u in urls if isinstance(u, str) and u.strip().startswith(("http://", "https://"))]
+    except Exception:
+        return []
+
+
+def _next_proxy() -> str | None:
+    urls = _proxy_urls()
+    if not urls:
+        return None
+    with _proxy_lock:
+        return urls[next(_proxy_rotation) % len(urls)]
+
+
+def _headers() -> dict:
+    return {"User-Agent": random.choice(_UA_POOL), "Accept": "application/json",
+            "Referer": f"{_BASE}/",
+            "Accept-Language": "en-NZ,en;q=0.9"}
+
+
 _HEADERS = {"User-Agent": _UA, "Accept": "application/json", "Referer": f"{_BASE}/"}
 
 
@@ -262,10 +317,20 @@ _RETRY_WAIT = 1.5
 
 
 def _client() -> "httpx.Client":
+    """A pooled client, bound to one rotating residential proxy and one browser
+    identity for its life. close_client() drops it so the next call rotates to a
+    fresh IP + User-Agent — which is what the retry loop does on any failure, so a
+    bad exit IP is swapped rather than retried into the ground."""
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = httpx.Client(headers=_HEADERS, timeout=_TIMEOUT,
-                               limits=_LIMITS, follow_redirects=True)
+        proxy = _next_proxy()
+        kwargs = dict(headers=_headers(), timeout=_TIMEOUT, limits=_LIMITS,
+                      follow_redirects=True)
+        if proxy:
+            # trust_env=False so only THIS proxy is used, never an ambient
+            # HTTP(S)_PROXY that would send every worker out one IP.
+            kwargs.update(proxy=proxy, trust_env=False)
+        _CLIENT = httpx.Client(**kwargs)
     return _CLIENT
 
 
@@ -338,25 +403,43 @@ def pv_lookup_status(address: str, timeout: float = 12.0) -> tuple[dict | None, 
     if not address or not address.strip():
         return None, PV_NOT_FOUND
 
+    # With residential proxies configured every retry is a fresh exit IP, so more
+    # attempts genuinely help; without them, retrying the same server IP into a
+    # block does not, so keep it short and let the caller's time-backoff take over.
+    has_proxy = bool(_proxy_urls())
+    max_attempts = 5 if has_proxy else (_RETRIES + 1)
     last = "unknown"
-    for attempt in range(_RETRIES + 1):
+    for attempt in range(max_attempts):
+        rotate = False
         try:
             rec, status = _lookup_once(address)
-            if status != PV_ERROR:
+            if status in (PV_OK, PV_NOT_FOUND):
                 return rec, status
-            last = f"HTTP status not usable (attempt {attempt + 1})"
-        except Exception as e:                    # network / proxy / TLS / parse
+            if status == PV_BLOCKED:
+                if not has_proxy:
+                    # No IP to swap to — hand the block up so the enrich stage's
+                    # time-backoff ladder handles it instead of hammering one IP.
+                    return None, PV_BLOCKED
+                last = f"blocked, rotating IP (attempt {attempt + 1})"
+                rotate = True                 # a fresh residential IP usually clears a block
+            else:                             # PV_ERROR
+                last = f"HTTP not usable (attempt {attempt + 1})"
+                rotate = True
+        except Exception as e:                # network / proxy / TLS / parse
             last = f"{type(e).__name__}: {e}"
-            # A pool that has gone bad stays bad for every later address, so the
-            # last attempt drops it and the next lookup reconnects clean.
-            if attempt == _RETRIES:
-                close_client()
-        if attempt < _RETRIES:
-            time.sleep(_RETRY_WAIT * (attempt + 1))
+            rotate = True
+        # Swap the exit IP + identity before trying again: an IP that failed once
+        # fails the same way if reused. close_client() drops the pooled client so
+        # the next _client() picks the next proxy and a fresh User-Agent.
+        if rotate:
+            close_client()
+        if attempt < max_attempts - 1:
+            time.sleep(_RETRY_WAIT * (attempt + 1) + random.uniform(0, 0.75))
 
     log.info("pv_lookup gave up on %r after %d attempts: %s",
-             address, _RETRIES + 1, last)
-    return None, PV_ERROR
+             address, max_attempts, last)
+    # All exit IPs blocked is a real block (back off); anything else is transport.
+    return None, PV_BLOCKED if last.startswith("blocked") else PV_ERROR
 
 
 def pv_lookup(address: str, timeout: float = 12.0) -> dict | None:

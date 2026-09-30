@@ -697,6 +697,48 @@ def reset_all(confirm: str = "", _: User = Depends(require_admin),
                        batches_deleted=ba, jobs_deleted=jo)
 
 
+# ---- dedupe: drop double-ups among the new listings -------------------------
+class DedupeOut(BaseModel):
+    batch_id: int | None
+    dry_run: bool
+    groups: int          # addresses that had more than one listing
+    duplicates: int      # duplicate rows found
+    removed: int         # rows actually deleted (0 on a dry run)
+    examples: list[str]
+    note: str
+
+
+@router.post("/release/dedupe", response_model=DedupeOut)
+def dedupe_new_listings(region: str = "Auckland", dry_run: bool = True,
+                        batch_id: int | None = None,
+                        _: User = Depends(require_admin),
+                        db: Session = Depends(get_db)) -> DedupeOut:
+    """Remove double-ups among the NEW listings — the staged batch, or the live one
+    if nothing is staged.
+
+    The ingest already drops duplicates within one upload, but only by the
+    portal's slug. This catches the ones that slips past: the same house
+    re-posted under a new slug, or carried forward from last week and re-supplied
+    spelled differently. It keys on the address (the same key the portal listings
+    are deduped on) and keeps the most complete copy of each.
+
+    Only ever touches the new batch — the established live book is never
+    re-scrubbed. Because the staged batch already contains the still-advertised
+    listings carried forward from the live book, this also clears a new-file row
+    that duplicates one already on the platform, without deleting the platform's
+    own row.
+
+    dry_run=true (the default) reports exactly what it would remove and writes
+    nothing; call again with dry_run=false to delete.
+    """
+    from dedupe_forsale import dedupe_forsale_batch
+
+    res = dedupe_forsale_batch(db, region=region, batch_id=batch_id, dry_run=dry_run)
+    return DedupeOut(batch_id=res.batch_id, dry_run=res.dry_run, groups=res.groups,
+                     duplicates=res.duplicates, removed=res.removed,
+                     examples=res.examples, note=res.note)
+
+
 # ---- fix + publish individual held rows -------------------------------------
 class ListingPatch(BaseModel):
     beds: int | None = None

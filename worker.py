@@ -109,6 +109,8 @@ def build_jobs() -> list[Job]:
     from sold_sweep import run_once as sold_sweep_run
     from staged_stages import auto_reprice_stale_batches
     from portals.daily_pricing import run_once as daily_pricing_run, enabled as daily_pricing_enabled
+    from job_reaper import reap_stuck_jobs
+    from auto_pipeline import advance_auto_pipeline, enabled as auto_pipeline_enabled
 
     return [
         # New and sold records daily, with review required before approval.
@@ -151,6 +153,18 @@ def build_jobs() -> list[Job]:
         # stale, and when one is, waiting a day to fix stored numbers is too
         # long.
         Job("re-price stale batches", 60 * 60, auto_reprice_stale_batches),
+        # Clear upload / stage jobs that stopped making a sound — a daemon thread
+        # in the API process dies without warning on a restart or an OOM, leaving
+        # a job stuck at "running" that the upload screen polls for ever. Runs in
+        # THIS process, which stays up when the API is the thing that died. Cheap:
+        # one indexed query over unfinished jobs. See job_reaper.py.
+        Job("reap stuck jobs", 2 * 60, reap_stuck_jobs),
+        # Drive a staged batch through the whole pipeline in order — enrich,
+        # portals, re-price, dedupe — and stop at preview for review. Off unless
+        # AUTO_PIPELINE is set; advances one step per tick and never publishes.
+        # See auto_pipeline.py.
+        Job("auto pipeline", TICK_SECONDS, advance_auto_pipeline,
+            enabled=auto_pipeline_enabled),
     ]
 
 
