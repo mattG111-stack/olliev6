@@ -37,6 +37,8 @@ import logging
 import json
 import re
 import time
+import threading
+from functools import lru_cache
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -65,6 +67,7 @@ router = APIRouter(prefix="/api/img", tags=["media"])
 # own server reach whatever the container can reach — cloud metadata included —
 # so an empty answer refuses everything rather than allowing everything.
 _HOST_CACHE: tuple[float, frozenset[str]] | None = None
+_HOST_LOCK = threading.Lock()
 _HOST_TTL = 600.0            # seconds; a supplier does not change in an hour
 
 
@@ -118,9 +121,14 @@ def allowed_hosts() -> frozenset[str]:
     now = time.monotonic()
     if _HOST_CACHE and now - _HOST_CACHE[0] < _HOST_TTL:
         return _HOST_CACHE[1]
-    hosts = _hosts_from_our_own_listings()
-    _HOST_CACHE = (now, hosts)
-    return hosts
+    # A page requests many images at once. Rebuild once, not once per request.
+    with _HOST_LOCK:
+        now = time.monotonic()
+        if _HOST_CACHE and now - _HOST_CACHE[0] < _HOST_TTL:
+            return _HOST_CACHE[1]
+        hosts = _hosts_from_our_own_listings()
+        _HOST_CACHE = (time.monotonic(), hosts)
+        return hosts
 
 MAX_W = 1600
 FETCH_TIMEOUT = 12.0
@@ -138,6 +146,14 @@ def _fernet() -> Fernet:
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
+@lru_cache(maxsize=8192)
+def _image_token(url: str, secret: str) -> str:
+    # Bounded per-process reuse preserves opaque URLs and browser cache hits.
+    # Key by secret too so key rotation cannot reuse an old token.
+    digest = hashlib.sha256(secret.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest)).encrypt(url.encode()).decode()
+
+
 def tokenise(url: str | None) -> str | None:
     """A source URL as an opaque path on our own domain.
 
@@ -147,7 +163,7 @@ def tokenise(url: str | None) -> str | None:
     if not url or not str(url).strip():
         return None
     try:
-        tok = _fernet().encrypt(str(url).strip().encode()).decode()
+        tok = _image_token(str(url).strip(), settings.jwt_secret)
     except Exception:                                   # noqa: BLE001
         return None
     return f"/api/img/{tok}"
