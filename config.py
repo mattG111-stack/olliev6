@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # deliberately, not started because a deploy went out.
     portals_daily: bool = False
     scraper_daily_pricing: bool = False  # Enable only after migration and production validation.
+    # Run a staged for-sale batch through the whole pipeline on its own, in order —
+    # CoreLogic enrich -> portals (HouGarden) -> re-price -> dedupe -> preview — so
+    # both a manual upload and a scraped batch land ready for review without anyone
+    # clicking four buttons. Stops at PREVIEW, never auto-publishes: a human still
+    # presses Publish. OFF by default; turn on only after a supervised test run, and
+    # only once the scraper proxy is confirmed working (enrich/portals need it).
+    auto_pipeline: bool = False
     stripe_secret_key: str = ""      # optional — Stripe billing metrics on the admin dashboard
     # Toitū Te Whenua LINZ Data Service key — legal parcel boundaries for the
     # Sun & shade panel. Free to obtain. Without it the panel falls back to a box
