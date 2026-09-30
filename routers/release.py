@@ -1871,3 +1871,37 @@ def enrichment_jobs(region: str = 'Auckland', admin: User = Depends(require_admi
         job = db.query(IngestJob).filter(IngestJob.batch_id == batch.id, IngestJob.filename == f'{stage} (batch {batch.id})').order_by(IngestJob.id.desc()).first()
         result[name] = job.id if job else None
     return result
+
+
+class QueueCleanupIn(BaseModel):
+    kind: str
+    ids: list[int] = Field(min_length=1, max_length=100000)
+
+
+class QueueUndoIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=100000)
+    decided_at: datetime
+
+
+@router.get('/release/listings/selection')
+def queue_selection(kind: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.queue_cleanup import selection
+    try:
+        return {'ids': selection(db, kind)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/release/listings/delete-selected')
+def queue_delete(body: QueueCleanupIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.queue_cleanup import delete_selected
+    try:
+        return delete_selected(db, body.kind, body.ids, admin.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/release/listings/undo-delete')
+def queue_undo(body: QueueUndoIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from portals.queue_cleanup import undo
+    return {'restored': undo(db, body.ids, body.decided_at, admin.id)}
