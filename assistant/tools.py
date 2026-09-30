@@ -802,6 +802,54 @@ def _starved(of_type, beds, baths, floor, land, suburb: str, ctype: str) -> str:
     return "the match ran out: " + " -> ".join(steps)
 
 
+# --- comp engine cache -------------------------------------------------------
+# Building the CompEngine loads the whole sold dataset into pandas and derives its
+# comp tiers — a real cost (seconds on a big history) that value_property and the
+# off-system area report used to pay on EVERY question. Sold data is immutable
+# within a batch set and only changes when a new sold file loads, so cache the
+# engine keyed by the exact set of sold batch ids: a new load changes the key and
+# rebuilds, a run of valuation/area questions in a session reuses it. Short TTL as a
+# backstop. Per-process (API and worker cache separately). This does not raise peak
+# memory — a cache hit skips a build that would otherwise run — it just avoids
+# rebuilding the same immutable dataset over and over.
+import time as _time
+_ENGINE_CACHE: dict = {}
+_ENGINE_TTL = 300.0
+
+
+def _sold_engine(db, region: str):
+    """(sold_df, CompEngine) for a region, cached by the sold-batch signature.
+    Returns (None, None) when there is no sold data."""
+    from sqlalchemy import func
+    from models import BatchType, ImportBatch, PropertySold
+    from pricing.buyprice import CompEngine
+    from reprice import _sold_df
+    ids = tuple(sorted(b.id for b in db.query(ImportBatch.id).filter(
+        ImportBatch.batch_type == BatchType.SOLD.value,
+        ImportBatch.region == region,
+        ImportBatch.status.in_(("staged", "preview", "published"))).all()))
+    # Fingerprint the CONTENT, not just the batch ids — count + max row id. Batch
+    # ids alone are not enough: a fresh database (the tests) or a reset reuses id 1
+    # for different data, and keying on ids would then serve a stale engine. Count
+    # and max id change whenever the sold set does, so the cache is always correct.
+    if ids:
+        cnt, mx = (db.query(func.count(PropertySold.id), func.max(PropertySold.id))
+                   .filter(PropertySold.import_batch_id.in_(ids)).one())
+    else:
+        cnt, mx = 0, None
+    sig = (ids, cnt, mx)
+    now = _time.time()
+    hit = _ENGINE_CACHE.get(region)
+    if hit and hit[0] == sig and (now - hit[1]) < _ENGINE_TTL:
+        return hit[2], hit[3]
+    sold = _sold_df(db, region)
+    if sold is None or getattr(sold, "empty", True):
+        return None, None
+    engine = CompEngine(sold)
+    _ENGINE_CACHE[region] = (sig, now, sold, engine)
+    return sold, engine
+
+
 def value_property(suburb: str, beds: float | None = None,
                    baths: float | None = None, floor_area_m2: float | None = None,
                    land_area_m2: float | None = None,
@@ -829,7 +877,7 @@ def value_property(suburb: str, beds: float | None = None,
     from reprice import _sold_df
 
     with SessionLocal() as s:
-        sold = _sold_df(s, "Auckland")
+        sold, _eng = _sold_engine(s, "Auckland")   # cached: skip rebuilding per question
         if sold is None or sold.empty:
             return _no_batch("sold")
 
@@ -878,7 +926,7 @@ def value_property(suburb: str, beds: float | None = None,
                 ask=(f"How many {' and '.join(absent)}? "
                      "That's all I need to price it off comparable sales."))
 
-        engine = CompEngine(sold)
+        engine = _eng                              # cached CompEngine for this sold set
         price, tier, n = engine.matched_sold_price(
             suburb=named, district=None, property_type=property_type,
             beds=beds, baths=baths, land=land_area_m2, floor=floor_area_m2)
