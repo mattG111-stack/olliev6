@@ -245,6 +245,8 @@ def search_listings(
     fixed_price_only: bool = False,
     max_price_exclusive: bool = False,
     min_land_m2: float | None = None,
+    vendor: str | None = None,
+    exclude_leaky: bool = False,
 ) -> str:
     """Search the live for-sale listings and return matching properties.
 
@@ -277,6 +279,13 @@ def search_listings(
             positive asking price. Excludes auction, negotiation and unknown methods.
         max_price_exclusive: Exclude the upper boundary for strictly below a price.
         min_land_m2: Minimum recorded land area; missing areas do not qualify.
+        vendor: Filter by a vendor/negotiation signal read from the listing:
+            "motivated" (any sign the vendor will deal), "mortgagee", "urgent",
+            "present_all_offers", "estate", "price_cut", "stale" (long on market),
+            or "negotiation". Use this for "which vendors are motivated / mortgagee
+            sales / homes where they'll take offers".
+        exclude_leaky: Drop listings whose wording flags a leaky-home risk
+            (reclad / monolithic / plaster clad / weathertightness).
     """
     with SessionLocal() as s:
         batch = _active(s, "for_sale")
@@ -334,6 +343,14 @@ def search_listings(
             where.append((f"buy score at least {min_buy_score:g}",
                           and_(P.opportunity_score_pct.isnot(None),
                                P.opportunity_score_pct >= min_buy_score)))
+        if vendor:
+            import vendor_signals as _vs
+            pred = _vs.sql_filter(P, vendor)
+            if pred is not None:
+                where.append((f"{vendor} vendor signal", pred))
+        if exclude_leaky:
+            import vendor_signals as _vs
+            where.append(("excluding likely leaky/reclad homes", _vs.sql_not_leaky(P)))
 
         from routers.properties import _hide_bad_data
         q = _hide_bad_data(s.query(P)).filter(P.import_batch_id == batch,
@@ -351,6 +368,14 @@ def search_listings(
         rows = q.order_by(order.nullslast(), P.id.asc()).limit(max(1, min(limit, MAX_ROWS))).all()
         if not rows:
             return _which_filter_emptied(s, batch, where)
+        import vendor_signals as _vs
+
+        def _vendor_label(r):
+            return _vs.flags_string(_vs.compute(
+                description=r.description, prior_asking=r.prior_asking_price,
+                asking=r.asking_price, first_seen_at=r.first_seen_at,
+                link_dead_at=r.link_dead_at, sale_method=r.sale_method,
+                asking_basis=r.asking_basis)) or None
         return json.dumps({
             "count": len(rows),
             "returned_count": len(rows),
@@ -374,6 +399,7 @@ def search_listings(
                 "subdividable": r.is_subdividable,
                 "extra_lots": r.max_addl_lots,
                 "subdivision_profit": _money(r.best_net_gain),
+                "vendor_signal": _vendor_label(r),
             } for r in rows],
         }, default=str)
 
@@ -1307,6 +1333,9 @@ TOOL_SPECS = [
         "cashflow_positive_only": _BOOL,
         "min_margin_pct": {**_NUM, "description": "e.g. 15 for 15%"},
         "min_buy_score": {**_NUM, "description": "opportunity/buy score 0-100"},
+        "vendor": {**_STR, "enum": ["motivated", "mortgagee", "urgent", "present_all_offers", "estate", "price_cut", "stale", "negotiation"],
+                   "description": "Filter by a vendor/negotiation signal read from the listing text and figures — use for 'motivated vendors', 'mortgagee sales', 'where they'll present all offers', price cuts, or listings sitting a long time."},
+        "exclude_leaky": {**_BOOL, "description": "Drop listings whose wording flags a leaky-home risk (reclad / monolithic / plaster clad / weathertightness)."},
         "sort_by": {**_STR, "enum": ["margin", "price", "lots", "days_on_market", "score", "yield"]},
         "limit": _INT}),
     _t("get_property", "Full detail on one listing.",
