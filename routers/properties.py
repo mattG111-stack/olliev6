@@ -1686,6 +1686,7 @@ def _filtered_query(
     cashflow_positive=None, subdividable=None, min_margin=None, min_comps=None,
     max_breakeven_deposit=None, min_score=None, min_price=None, max_price=None,
     min_beds=None, district=None, search=None, zoning=None,
+    vendor=None, exclude_leaky=None,
 ):
     """The shared filter chain for the listing list and its summary tiles.
 
@@ -1755,6 +1756,14 @@ def _filtered_query(
     if search:
         like = f"%{search}%"
         q = q.filter(or_(PropertyForSale.address.ilike(like), PropertyForSale.suburb.ilike(like)))
+    if vendor:
+        import vendor_signals as _vs
+        pred = _vs.sql_filter(PropertyForSale, vendor)
+        if pred is not None:
+            q = q.filter(pred)
+    if exclude_leaky:
+        import vendor_signals as _vs
+        q = q.filter(_vs.sql_not_leaky(PropertyForSale))
 
     return q
 
@@ -1913,6 +1922,12 @@ def list_for_sale(
         None,
         description="One or more exact zone names, comma separated — "
                     "e.g. 'Residential - Mixed Housing Urban Zone'"),
+    vendor: str | None = Query(
+        None,
+        description="Vendor/negotiation signal: motivated, mortgagee, urgent, "
+                    "present_all_offers, estate, price_cut, stale, negotiation"),
+    exclude_leaky: bool | None = Query(
+        None, description="Drop listings whose wording flags a leaky-home risk"),
     order_by: str = Query("opportunity_score_pct", pattern=_SORT_PATTERN),
     order_dir: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1, le=MAX_PAGE),
@@ -1931,6 +1946,7 @@ def list_for_sale(
         max_breakeven_deposit=max_breakeven_deposit, min_score=min_score,
         min_price=min_price, max_price=max_price,
         min_beds=min_beds, district=district, search=search, zoning=zoning,
+        vendor=vendor, exclude_leaky=exclude_leaky,
     )
     total = q.count()
     sort_col = _sort_expression(order_by)
