@@ -30,3 +30,22 @@ def test_gallery_only_hosts_are_included_for_both_saved_formats(db_session):
     assert "json-gallery.test" in hosts and "line-gallery.test" in hosts
     assert "example.test" in hosts
     assert "not a URL" not in hosts
+
+
+def test_repeated_saved_photos_are_parsed_once(db_session, monkeypatch):
+    bid = batch(db_session).id
+    cover = "https://cover.example.test/repeated.jpg"
+    gallery = "https://gallery.other.test/repeated.jpg"
+    db_session.add_all([PropertyForSale(import_batch_id=bid, address=f"{i} Repeat Road",
+        image_url=cover, image_urls=json.dumps([cover, gallery])) for i in range(100)])
+    db_session.commit()
+    original = media.httpx.URL
+    calls = []
+    def parse(url):
+        calls.append(url)
+        return original(url)
+    monkeypatch.setattr(media.httpx, "URL", parse)
+    hosts = media._hosts_from_our_own_listings()
+    assert "example.test" in hosts and "other.test" in hosts
+    assert calls.count(cover) == 1
+    assert calls.count(gallery) == 1
