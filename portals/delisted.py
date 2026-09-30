@@ -86,6 +86,43 @@ def _host(url: str) -> str:
         return "unknown"
 
 
+# A handful of ordinary browser identities to rotate through — a single fixed UA
+# hitting a portal from one IP is the easiest thing to block.
+_UA_POOL = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+]
+
+
+def _link_client() -> httpx.Client:
+    """The client the availability check uses.
+
+    Through a rotating residential proxy when one is configured — because a portal
+    blocks a datacenter IP, and a blocked check reads as "we couldn't look" for
+    everything, so a direct check can almost never see a real 404. With no proxy set
+    it falls back to a direct connection, so this is safe before the proxy exists.
+    """
+    import json
+    import random
+    from config import settings
+
+    kwargs = dict(timeout=HTTP_TIMEOUT, follow_redirects=True,
+                  headers={"User-Agent": random.choice(_UA_POOL)})
+    raw = getattr(settings, "scraper_proxy_urls", "") or ""
+    if raw.strip():
+        try:
+            urls = [u for u in json.loads(raw)
+                    if isinstance(u, str) and u.strip().startswith(("http://", "https://"))]
+            if urls:
+                # trust_env=False so only THIS proxy is used, never an ambient one.
+                kwargs.update(proxy=random.choice(urls), trust_env=False)
+        except Exception:
+            pass
+    return httpx.Client(**kwargs)
+
+
 def check_one(client: httpx.Client, url: str) -> tuple[bool, str]:
     """(is_gone, what_happened).
 
@@ -170,9 +207,7 @@ def sweep(db: Session, *, limit: int = MAX_PER_RUN, now: datetime | None = None,
 
     owns_client = client is None
     if owns_client:
-        client = httpx.Client(
-            timeout=HTTP_TIMEOUT, follow_redirects=True,
-            headers={"User-Agent": "ApexPropertyBot/1.0 (listing availability check)"})
+        client = _link_client()
 
     # Findings are held rather than written as we go: rule 3 cannot be applied
     # until the whole pass is in, and a run that is going to be disbelieved must

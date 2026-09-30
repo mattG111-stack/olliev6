@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # presses Publish. OFF by default; turn on only after a supervised test run, and
     # only once the scraper proxy is confirmed working (enrich/portals need it).
     auto_pipeline: bool = False
+    # How often the listing availability ("is it still advertised?") check runs, in
+    # days. It now goes through the residential proxy, so set this to 7 to run it
+    # weekly and keep proxy bandwidth to a minimum; 1 (daily) catches withdrawals
+    # faster. The weekly sold-file sweep retires sold houses independently either way.
+    link_check_days: int = 1
     stripe_secret_key: str = ""      # optional — Stripe billing metrics on the admin dashboard
     # Toitū Te Whenua LINZ Data Service key — legal parcel boundaries for the
     # Sun & shade panel. Free to obtain. Without it the panel falls back to a box

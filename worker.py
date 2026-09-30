@@ -132,7 +132,9 @@ def build_jobs() -> list[Job]:
         # Needs no Apify token or paid API: it is an HTTP HEAD against a page
         # that is already public, so it runs whether or not the portal sweeps
         # are switched on.
-        Job("listing link check", 24 * 60 * 60, delisted_run),
+        Job("listing link check",
+            max(1, getattr(__import__("config").settings, "link_check_days", 1)) * 24 * 60 * 60,
+            delisted_run),
         # Has it turned up in the sold file? The link check above cannot answer
         # this: a portal leaves a sold listing up with a banner on it, so the
         # 404 it watches for never comes. The sale itself arrives weekly with an
