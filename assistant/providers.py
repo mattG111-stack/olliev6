@@ -133,7 +133,13 @@ def _timed(client, seconds: float):
     except Exception:                             # noqa: BLE001
         return client
 
-ANTHROPIC_MODEL = "claude-opus-4-8"
+# Keep the BEST model as the default — the experience is the product. The saving
+# comes from prompt caching below (same model, same answers, ~50-70% less cost),
+# not from downgrading. The model is a one-env-var dial if you ever want to trade
+# quality for cost: ASSISTANT_MODEL=claude-sonnet-5 (still excellent, ~half price)
+# or claude-haiku-4-5 (cheapest). No code change, no redeploy.
+import os as _os
+ANTHROPIC_MODEL = _os.environ.get("ASSISTANT_MODEL", "claude-opus-4-8")
 OPENAI_MODEL = "gpt-5"
 
 
@@ -192,6 +198,15 @@ def _run_anthropic(
         "name": t["name"], "description": t["description"],
         "input_schema": t["parameters"],
     } for t in specs]
+    # Prompt caching — the cost cut that changes nothing about the answer. The big,
+    # unchanging prefix (the system prompt + the whole tool list) is re-sent on
+    # every step of the tool loop and every question; marking it cached means the
+    # API re-uses it at ~10% of the input price instead of re-charging it each time.
+    # Same model, same output. GA feature — no beta header needed on these models.
+    if tools:
+        tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+    system_blocks = [{"type": "text", "text": system,
+                      "cache_control": {"type": "ephemeral"}}]
 
     # The lookup of last resort, declared alongside our own tools. It runs on
     # the provider's side, so nothing here dispatches it — the answer comes back
@@ -220,7 +235,7 @@ def _run_anthropic(
         def _call(with_web: bool):
             send = tools + ([websearch.tool_block()] if with_web else [])
             return _timed(client, min(per_call, budget)).messages.create(
-                model=ANTHROPIC_MODEL, max_tokens=MAX_TOKENS, system=system,
+                model=ANTHROPIC_MODEL, max_tokens=MAX_TOKENS, system=system_blocks,
                 thinking={"type": "adaptive"},
                 output_config={"effort": effort},
                 tools=send, messages=convo,

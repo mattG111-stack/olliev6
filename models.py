@@ -1089,7 +1089,7 @@ LLM_WORKSPACE_ID = "llm.workspace_id"
 # How many questions one user may ask a day on the shared key, unless an admin
 # changes it. A user who has added their own key is not counted or capped — they
 # are paying for it.
-DEFAULT_DAILY_LIMIT = 20
+DEFAULT_DAILY_LIMIT = 10
 
 # Aerial imagery. These were NEXT_PUBLIC_ build-time variables on the frontend,
 # which meant changing or rotating a maps key required a rebuild and a redeploy
