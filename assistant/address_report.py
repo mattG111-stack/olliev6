@@ -122,11 +122,35 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     # Back the external record with OUR own read on it — what we think it's worth
     # and why, plus the area's real sales. This is the part no portal can show, and
     # the reason the answer lands: their record, then our market intelligence.
-    area = _area_intelligence(
+    area, nums = _area_intelligence(
         suburb,
         (rec or {}).get("property_type"),
         (rec or {}).get("beds"), (rec or {}).get("baths"),
         (rec or {}).get("floor_area_m2"), (rec or {}).get("land_area_m2"))
+
+    # THE wow chart: every estimate of what it's worth, side by side — council CV,
+    # CoreLogic, homes.co.nz, our comp value and the suburb median — so the answer
+    # SHOWS what it's worth and how much the sources agree.
+    tri, seen_tri = [], set()
+    for label, val in (("Council CV", (rec or {}).get("cv")),
+                       ("CoreLogic", (rec or {}).get("estimate_mid")),
+                       ("homes.co.nz", (homes or {}).get("value")),
+                       ("Ollie (comps)", nums.get("ollie_value")),
+                       ("Suburb median", nums.get("suburb_median"))):
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and label not in seen_tri:
+            seen_tri.add(label)
+            tri.append({"label": label, "value": round(v)})
+    if len(tri) >= 2:
+        lines += ["", "```apex-chart",
+                  json.dumps({"type": "bar", "title": f"What's it worth? — {canon}",
+                              "source": "CoreLogic, homes.co.nz, Ollie comps",
+                              "unit": "NZD", "data": tri}),
+                  "```"]
+
     if area:
         tools.append("area_intelligence")
         lines += ["", "---", ""] + area + [""]
@@ -138,23 +162,39 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     return Result(text="\n".join(lines).rstrip(), tools_used=tools)
 
 
-def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[str]:
+def _area_intelligence(suburb, property_type, beds, baths, floor, land):
     """Our proprietary layer for an off-system address: what we think it's worth and
-    WHY (the comp engine on real sold prices), the suburb's medians, its recent
-    sales, and how fast it sells. All from OUR sold data — no external calls. Every
-    part is best-effort and never raises; a section that can't be built is dropped."""
+    WHY (the comp engine on real sold prices), the suburb's medians, a price trend,
+    recent sales, how fast it sells, and the best way to sell. All from OUR sold data
+    — no external calls. Returns (lines, nums); nums carries the numeric ollie_value
+    and suburb_median for the value-comparison chart. Best-effort and never raises."""
     out: list[str] = []
+    nums: dict = {"ollie_value": None, "suburb_median": None}
 
     # What we think it's worth, and why — the same comp engine the deal page uses.
     try:
         if beds and baths:
-            from assistant.tools import value_property
+            from assistant.tools import value_property, _sold_engine
             v = value_property(str(suburb), beds=float(beds), baths=float(baths),
                                floor_area_m2=float(floor) if floor else None,
                                land_area_m2=float(land) if land else None,
                                property_type=str(property_type or "House"))
             if isinstance(v, str) and "is worth about" in v:
                 out += ["**What Ollie thinks it's worth**", v, ""]
+            # The number itself, for the value-comparison chart — from the same
+            # (cached) comp engine, so it agrees with the prose above.
+            from db import SessionLocal
+            with SessionLocal() as s:
+                _sold, eng = _sold_engine(s, "Auckland")
+                if eng is not None:
+                    price, _t, _n = eng.matched_sold_price(
+                        suburb=str(suburb), district=None,
+                        property_type=str(property_type or "House"),
+                        beds=float(beds), baths=float(baths),
+                        land=float(land) if land else None,
+                        floor=float(floor) if floor else None)
+                    if price:
+                        nums["ollie_value"] = float(price)
     except Exception:
         pass
 
@@ -175,8 +215,9 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[
                 PropertySold.sale_price > 0).all()
         if rows:
             prices = [float(r.sale_price) for r in rows]
+            nums["suburb_median"] = statistics.median(prices)
             block = [f"**The {suburb} market — from our own sold data**",
-                     f"- **{len(rows):,} sales on file**, median **{_money(statistics.median(prices))}**"]
+                     f"- **{len(rows):,} sales on file**, median **{_money(nums['suburb_median'])}**"]
             psm = [float(r.sale_price) / float(r.floor_area_m2) for r in rows
                    if r.floor_area_m2 and float(r.floor_area_m2) > 0]
             if psm:
@@ -187,20 +228,25 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[
                        for r in dated[:3] if r.address]
             if recents:
                 block.append("- Recent sales: " + "; ".join(recents))
-            # A chart, not just words: recent sales as bars. The frontend renders a
-            # fenced ```apex-chart``` block as an SVG (see AssistantAnswer.parseChart).
-            pts, seen = [], set()
-            for r in dated[:8]:
-                if not r.address or r.address in seen:
-                    continue
-                seen.add(r.address)
-                pts.append({"label": str(r.address)[:60], "value": round(float(r.sale_price))})
-            if len(pts) >= 2:
+            # A chart, not just words: median sale price by month — the market's
+            # direction. Rendered as an SVG from the fenced ```apex-chart``` block
+            # (see AssistantAnswer.parseChart). Line charts need increasing YYYY-MM
+            # labels, which sorted months give.
+            from collections import defaultdict as _dd
+            by_month = _dd(list)
+            for r in rows:
+                mth = str(r.sold_date or "")[:7]
+                if len(mth) == 7 and mth[4] == "-":
+                    by_month[mth].append(float(r.sale_price))
+            months = sorted(m for m, v in by_month.items() if len(v) >= 3)[-24:]
+            if len(months) >= 3:
                 block += ["", "```apex-chart",
-                          json.dumps({"type": "bar",
-                                      "title": f"Recent sales in {suburb}",
-                                      "source": "Ollie sold data",
-                                      "unit": "NZD", "data": pts}),
+                          json.dumps({"type": "line",
+                                      "title": f"{suburb} median sale price by month",
+                                      "source": "Ollie sold data", "unit": "NZD",
+                                      "data": [{"label": m,
+                                                "value": round(statistics.median(by_month[m]))}
+                                               for m in months]}),
                           "```"]
             out += block
     except Exception:
@@ -264,7 +310,7 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land) -> list[
     except Exception:
         pass
 
-    return out
+    return out, nums
 
 
 def address_report(question, dispatch, on_step=None):

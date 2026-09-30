@@ -95,17 +95,20 @@ def test_area_intelligence_backs_external_with_our_data(db_session):
             import_batch_id=b.id, address=f"{10+i} Example Road", suburb="Remuera",
             property_type="House", beds=4, baths=2, floor_area_m2=200 + i,
             land_area_m2=210 + i, sale_price=p, cv_numeric=cv, sale_method=method,
-            sold_date=f"2026-0{(i % 9)+1}-15", days_on_market=15 if method == "auction" else 40))
+            # Concentrate in 3 months so the monthly trend chart has >=3 per month.
+            sold_date=f"2026-0{(i % 3)+1}-15", days_on_market=15 if method == "auction" else 40))
     db_session.commit()
-    txt = "\n".join(_area_intelligence("Remuera", "House", 4, 2, 202, 210))
+    lines, meta = _area_intelligence("Remuera", "House", 4, 2, 202, 210)
+    txt = "\n".join(lines)
     assert "worth about" in txt          # our valuation, with the "why"
     assert "sales on file" in txt        # suburb metrics
     assert "Recent sales" in txt
     assert "Best way to sell here" in txt and "auction" in txt.lower()  # method from metrics
+    assert meta["ollie_value"] and meta["suburb_median"]  # numbers for the value chart
     assert "```apex-chart" in txt        # a graph, not just words
     import re as _re, json as _j
     _m = _re.search(r"```apex-chart\n(.*?)\n```", txt, _re.S)
-    assert _m and _j.loads(_m.group(1))["type"] == "bar"  # valid chart JSON
+    assert _m and _j.loads(_m.group(1))["type"] == "line"  # the monthly price trend
 
 
 def test_lookup_failure_is_not_no_matches(monkeypatch):
