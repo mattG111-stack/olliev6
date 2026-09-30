@@ -338,12 +338,29 @@ def test_the_wrong_suburb_offers_the_ones_that_do_have_it(db_session):
     assert "which one?" in out.lower()
 
 
-def test_an_address_we_hold_nowhere_offers_to_value_one_like_it(db_session):
-    from assistant.tools import find_address
+def test_an_address_we_hold_nowhere_offers_to_value_one_like_it(db_session, monkeypatch):
+    import assistant.tools as T
+    # No external record either (and no live network in the test): fall back to the
+    # offer to value a like-for-like.
+    monkeypatch.setattr(T, "_external_address_lookup", lambda a, s: None)
     _at(db_session, "12 Elliot Street", "Riverhead")
-    out = find_address("999 Nowhere Terrace")
+    out = T.find_address("999 Nowhere Terrace")
     assert GAP in out
     assert "bedrooms and bathrooms" in out
+
+
+def test_an_unheld_address_is_looked_up_externally(db_session, monkeypatch):
+    # The fix for "it should have looked it up": an address in none of our data is
+    # sent to the external sources, and their record is returned — not a dead end.
+    import json
+    import assistant.tools as T
+    monkeypatch.setattr(T, "_external_address_lookup",
+                        lambda a, s: {"not_in_our_data": True, "looked_for": a,
+                                      "corelogic": {"cv": 1675000}})
+    _at(db_session, "12 Elliot Street", "Riverhead")
+    out = T.find_address("8 Pohutukawa Parade", suburb="Riverhead")
+    d = json.loads(out)
+    assert d["not_in_our_data"] and d["corelogic"]["cv"] == 1675000
 
 
 def test_the_address_tool_is_declared_with_an_optional_suburb():

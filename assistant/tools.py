@@ -997,6 +997,67 @@ def value_property(suburb: str, beds: float | None = None,
             f"valuation and no asking price involved.")
 
 
+def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
+    """When an address is in none of our data, ask the outside sources — CoreLogic
+    (propertyvalue.co.nz) and homes.co.nz — and add our own comparable-sales read.
+    Returns a dict for the model to present, or None if even the external sources
+    hold nothing. Never raises. This is why a typed "what is 8 X Road worth" for a
+    house we don't list still gets a real answer instead of "I can't find it"."""
+    q = ", ".join(x for x in (str(address or "").strip(), str(suburb or "").strip()) if x)
+    rec = homes = None
+    try:
+        from propertyvalue import pv_lookup_status
+        rec, _status = pv_lookup_status(q)
+    except Exception:
+        rec = None
+    try:
+        from external_estimates import homes_estimate
+        homes = homes_estimate(q)
+    except Exception:
+        homes = None
+    if not rec and not homes:
+        return None
+
+    out: dict[str, Any] = {
+        "not_in_our_data": True,
+        "looked_for": address,
+        "note": ("Not in our listings, sold records or portal feed — these are the "
+                 "EXTERNAL sources plus our own comparable-sales read. Present them "
+                 "as such (say whose figure each is). Do NOT ask for beds/baths: "
+                 "use what CoreLogic returned."),
+    }
+    if rec:
+        out["corelogic"] = {k: rec.get(k) for k in (
+            "canonical_address", "property_type", "beds", "baths", "floor_area_m2",
+            "land_area_m2", "zoning", "cv", "land_value", "estimate_low",
+            "estimate_high", "estimate_mid", "estimate_confidence",
+            "last_sale_price", "last_sale_date", "url") if rec.get(k) is not None}
+    if homes:
+        out["homes_co_nz"] = {k: homes.get(k) for k in
+                              ("value", "low", "high", "cv", "url") if homes.get(k) is not None}
+
+    # Our own read: value it from comparable sales using CoreLogic's beds/baths.
+    beds, baths = (rec or {}).get("beds"), (rec or {}).get("baths")
+    sub = (rec or {}).get("suburb") or suburb
+    if beds and baths and sub:
+        try:
+            with SessionLocal() as s:
+                _sold, eng = _sold_engine(s, "Auckland")
+                if eng is not None:
+                    price, _tier, n = eng.matched_sold_price(
+                        suburb=str(sub), district=None,
+                        property_type=str((rec or {}).get("property_type") or "House"),
+                        beds=float(beds), baths=float(baths),
+                        land=(rec or {}).get("land_area_m2"),
+                        floor=(rec or {}).get("floor_area_m2"))
+                    if price:
+                        out["ollie_comparable_value"] = round(price)
+                        out["ollie_comps_used"] = n
+        except Exception:
+            pass
+    return out
+
+
 def find_address(address: str, suburb: str | None = None) -> str:
     """Everything we hold about one address, wherever it lives.
 
@@ -1067,14 +1128,21 @@ def find_address(address: str, suburb: str | None = None) -> str:
                         why=f"{want!r} exists, but not in {narrowed}",
                         ask=(f"I don't have {want} in {narrowed}. I do have it "
                              f"in {_list(elsewhere)} — which one?"))
+            # Not in our data anywhere — GO AND FIND IT. Ask CoreLogic and
+            # homes.co.nz before giving up, and add our own comparable-sales read.
+            ext = _external_address_lookup(want, narrowed)
+            if ext:
+                return json.dumps(ext, default=str)
+            # Even the external sources hold nothing (a mis-spelling, or an address
+            # that does not exist). Offer the next best thing: value one like it.
             return _gap(
                 need="a different address, or a suburb",
-                why=(f"nothing on the market, in the sold records or on a "
-                     f"portal matches {want!r}"),
-                ask=(f"I can't find {want}. Is it spelled differently, or "
-                     f"shall I tell you what a house like it is worth in that "
-                     f"suburb — which suburb, and how many bedrooms and "
-                     f"bathrooms?"))
+                why=(f"nothing in our data, and neither CoreLogic nor homes.co.nz "
+                     f"holds a record for {want!r}"),
+                ask=(f"I can't find {want} anywhere, including the external property "
+                     f"sources — check the spelling and unit number. Or I can tell "
+                     f"you what a house like it is worth in that suburb: which "
+                     f"suburb, and how many bedrooms and bathrooms?"))
 
         # More than one suburb answers to this name. Asking is the only honest
         # move: the rows are for different houses, and merging them would
