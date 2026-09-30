@@ -82,11 +82,12 @@ def _hosts_from_our_own_listings() -> frozenset[str]:
     from models import PropertyForSale
 
     out: set[str] = set()
+    seen_urls: set[str] = set()
     db = SessionLocal()
     try:
         # New portal/CDN hosts may appear after thousands of legacy rows.
         # Stream all saved covers and galleries rather than sampling a prefix.
-        rows = db.query(PropertyForSale.image_url, PropertyForSale.image_urls).yield_per(500)
+        rows = db.query(PropertyForSale.image_url, PropertyForSale.image_urls).distinct().yield_per(500)
         for cover, gallery in rows:
             urls = [cover] if cover else []
             if gallery:
@@ -97,6 +98,9 @@ def _hosts_from_our_own_listings() -> frozenset[str]:
                 if isinstance(parsed, list):
                     urls.extend(u for u in parsed if isinstance(u, str))
             for u in urls:
+                if u in seen_urls:
+                    continue
+                seen_urls.add(u)
                 try:
                     h = (httpx.URL(u).host or "").lower()
                 except Exception:                          # noqa: BLE001
