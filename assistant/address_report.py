@@ -216,7 +216,8 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
             bids = sold_batch_ids(s, "Auckland")
             rows = [] if not bids else s.query(
                 PropertySold.address, PropertySold.sale_price,
-                PropertySold.sold_date, PropertySold.floor_area_m2).filter(
+                PropertySold.sold_date, PropertySold.floor_area_m2,
+                PropertySold.has_swimming_pool).filter(
                 PropertySold.import_batch_id.in_(bids),
                 PropertySold.suburb.ilike(str(suburb)),
                 PropertySold.sale_price.isnot(None),
@@ -236,6 +237,18 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
                        for r in dated[:3] if r.address]
             if recents:
                 block.append("- Recent sales: " + "; ".join(recents))
+            # A pool moves price, and by how much depends on the area — so surface
+            # the local gap and ASK whether this one has one, because we can't tell
+            # from the council record.
+            wp = [float(r.sale_price) for r in rows if r.has_swimming_pool]
+            npool = [float(r.sale_price) for r in rows if r.has_swimming_pool is False]
+            if len(wp) >= 5 and len(npool) >= 5:
+                gap = statistics.median(wp) / statistics.median(npool) - 1
+                block.append(
+                    f"- **Pool effect in {suburb}:** homes with a pool sell about "
+                    f"**{gap * 100:+.0f}%** vs those without ({len(wp)} with / "
+                    f"{len(npool)} without). **Does this one have a pool?** Tell me and "
+                    f"I'll factor it in.")
             # A chart, not just words: median sale price by month — the market's
             # direction. Rendered as an SVG from the fenced ```apex-chart``` block
             # (see AssistantAnswer.parseChart). Line charts need increasing YYYY-MM

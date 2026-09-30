@@ -1024,7 +1024,10 @@ def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
         "note": ("Not in our listings, sold records or portal feed — these are the "
                  "EXTERNAL sources plus our own comparable-sales read. Present them "
                  "as such (say whose figure each is). Do NOT ask for beds/baths: "
-                 "use what CoreLogic returned."),
+                 "use what CoreLogic returned. A pool materially affects price and "
+                 "how much varies by area, and the council record does not say — so "
+                 "ASK whether it has a pool (renovation_value_by_district gives the "
+                 "local pool value)."),
     }
     if rec:
         out["corelogic"] = {k: rec.get(k) for k in (

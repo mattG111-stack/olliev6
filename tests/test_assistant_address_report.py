@@ -95,6 +95,7 @@ def test_area_intelligence_backs_external_with_our_data(db_session):
             import_batch_id=b.id, address=f"{10+i} Example Road", suburb="Remuera",
             property_type="House", beds=4, baths=2, floor_area_m2=200 + i,
             land_area_m2=210 + i, sale_price=p, cv_numeric=cv, sale_method=method,
+            has_swimming_pool=(i < 5),   # 5 with a pool, 5 without -> pool effect line
             # Concentrate in 3 months so the monthly trend chart has >=3 per month.
             sold_date=f"2026-0{(i % 3)+1}-15", days_on_market=15 if method == "auction" else 40))
     db_session.commit()
@@ -104,6 +105,7 @@ def test_area_intelligence_backs_external_with_our_data(db_session):
     assert "sales on file" in txt        # suburb metrics
     assert "Recent sales" in txt
     assert "Best way to sell here" in txt and "auction" in txt.lower()  # method from metrics
+    assert "Pool effect" in txt and "have a pool" in txt  # asks about a pool + area gap
     assert meta["ollie_value"] and meta["suburb_median"]  # numbers for the value chart
     assert "```apex-chart" in txt        # a graph, not just words
     import re as _re, json as _j
