@@ -94,6 +94,12 @@ class HistoryRow(BaseModel):
 
 # ---------- background worker ----------
 def _update(db: Session, job_id: int, **kwargs) -> None:
+    # Every write is a heartbeat. The LOAD job runs on a daemon thread in the API
+    # process, and the reaper (job_reaper.py, in the worker) tells a live long
+    # load from a dead one by how recently it last made a sound. Stamping
+    # last_progress_at on each update means a running load keeps proving it is
+    # alive, so the reaper only ever clears one that has genuinely stopped.
+    kwargs.setdefault("last_progress_at", datetime.now(timezone.utc))
     db.query(IngestJob).filter(IngestJob.id == job_id).update(kwargs)
     db.commit()
 
