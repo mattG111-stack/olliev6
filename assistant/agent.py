@@ -347,6 +347,16 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     if rental_request(question):
         return providers.Result(text=RENTAL_REPLY)
 
+    from assistant.suburb_brief import direct_comparison
+    comparison = direct_comparison(question, history)
+    if comparison is not None:
+        return comparison
+
+    from assistant.fast_valuation import direct_valuation
+    valuation = direct_valuation(question, dispatch, history)
+    if valuation is not None:
+        return valuation
+
     from assistant.address_report import address_report
     checked_address = address_report(question, dispatch, on_step)
     if checked_address is not None:

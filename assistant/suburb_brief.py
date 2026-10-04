@@ -123,3 +123,39 @@ class SuburbBrief:
         if len(self.suburbs) > 1 and re.search(r'\bcompar(?:e|ison)\b', self.question, re.I):
             return '## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n' + block
         return text.rstrip() + '\n\n' + block
+
+
+def direct_comparison(question, history=None):
+    """Fast path only for explicit, unfiltered suburb-statistics comparisons."""
+    if history:
+        return None
+    match = re.fullmatch(r"\s*compare\s+([A-Za-z][A-Za-z '\-]{1,70}?)\s+(?:and|versus|vs\.?)\s+([A-Za-z][A-Za-z '\-]{1,70}?)(?:(\s+for buying a home|\s*[.:])([\s\S]*))?\s*[?]?\s*", question, re.I)
+    if not match:
+        return None
+    names = [match[1].strip(), match[2].strip()]
+    tail = ((match[3] or "") + " " + (match[4] or "")).lower()
+    # Anything outside the simple metric request remains on the reasoning path.
+    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare".split())
+    if any(word not in allowed for word in re.findall(r"\w+", tail)):
+        return None
+    if names[0].casefold() == names[1].casefold():
+        return None
+    from db import SessionLocal
+    from models import PropertySold as S
+    from ingest import sold_batch_ids
+    from sqlalchemy import func
+    with SessionLocal() as db:
+        bids = sold_batch_ids(db, "Auckland")
+        for name in names:
+            if not db.query(S.id).filter(S.import_batch_id.in_(bids),
+                    func.lower(func.trim(S.suburb)) == name.casefold()).first():
+                return None
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            blocks = list(executor.map(load_brief, names))
+    except Exception:
+        return None
+    from assistant.providers import Result
+    return Result(text="## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n" + "\n\n".join(blocks),
+                  tools_used=["suburb_snapshot"])
