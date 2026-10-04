@@ -1,0 +1,28 @@
+from datetime import date
+from types import SimpleNamespace as R
+from assistant.suburb_brief import summarise, render, SuburbBrief
+
+def row(address,day,price,days=10):
+ return R(address=address,sold_date=day,sale_price=price,days_on_market=days)
+
+def test_dedup_conflict_future_and_period():
+ rows=[row('1 Road','2026-09-01',100),row('1 Road','2026-09-01',100),row('2 Road','2026-09-01',200),row('2 Road','2026-09-01',300),row('3 Road','2027-01-01',100),row('4 Road','bad',100)]
+ d=summarise(rows,date(2026,10,4))
+ assert d['count']==1 and d['median']==100
+ assert d['change'] is None
+
+def test_equal_windows_and_average():
+ rows=[row(str(i),'2026-09-01',200,67 if i<2 else 68) for i in range(5)] + [row(str(i),'2026-03-01',100) for i in range(5)]
+ d=summarise(rows,date(2026,10,4))
+ assert d['change']==100 and d['average']==68 and d['count']==5
+ text=render('Riverhead',d,27)
+ assert '68 days (5 sales)' in text and 'apex-map' in text and '27' in text
+
+def test_empty_explicit():
+ text=render('Riverhead',summarise([],date(2026,10,4)),None)
+ assert 'Unavailable' in text and 'No dated sales' in text
+
+def test_wrapper_preserves_result():
+ b=SuburbBrief()
+ assert b.wrap(lambda n,a:'{}')('suburb_days_to_sell',{'suburb':'Riverhead'})=='{}'
+ assert b.suburb=='Riverhead'
