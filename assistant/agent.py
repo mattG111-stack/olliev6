@@ -369,9 +369,9 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     evidence = []
     investigation = InvestigationEvidence(question)
     from assistant.suburb_brief import SuburbBrief
-    suburb_brief = SuburbBrief()
+    suburb_brief = SuburbBrief(question)
     source_dispatch = suburb_brief.wrap(investigation.wrap(dispatch))
-    tool_dispatch = bounded_dispatch(source_dispatch, limit, evidence) if limit else source_dispatch
+    tool_dispatch = bounded_dispatch(source_dispatch, limit or 20, evidence)
     preference_context, previous_ids = shortlist_context(question, history)
     if limit and previous_ids:
         # A follow-up can otherwise reuse old links without calling any tools,
@@ -404,8 +404,8 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
         effort="high" if limit else "xhigh",
     )
 
-    if limit:
-        result.text = render_shortlist(result.text, evidence, limit, question, previous_ids,
+    if evidence:
+        result.text = render_shortlist(result.text, evidence, limit or 20, question, previous_ids,
                                        preference_context=preference_context)
     else:
         result.text = investigation.link_answer(result.text)
