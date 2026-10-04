@@ -207,10 +207,18 @@ def render_shortlist(answer, evidence, limit, question='', previous_ids=None, pr
                     if all(_price(r) is not None and _price(r) < cap for r in groups[identity])]
         if not selected:
             return 'No selected listings have a confirmed asking price within your budget. Unpriced listings have been excluded.'
+    development = bool(re.search(r'\b(developer|development|subdiv\w*)\b', preference_context or question, re.I))
+    if development:
+        def estimate_order(item):
+            values = {_price(row, True) for row in groups[item[0]]} - {None}
+            return next(iter(values)) if len(values) == 1 else -1
+        selected.sort(key=estimate_order, reverse=True)
     selected = selected[:limit]
     lines = [f'Here {"is" if len(selected) == 1 else "are"} {len(selected)} option{"" if len(selected) == 1 else "s"} from the checked listing records.', '',
              '| Property | Asking price | Apex estimate | Estimated gap vs ask | Beds / baths | Land | Floor |',
              '| --- | ---: | ---: | ---: | --- | ---: | ---: |']
+    if development:
+        lines.insert(1, 'Ordered by Apex estimate, highest first; missing or conflicting estimates last.')
     chart = []
     decision_rows = []
     evidence_notes = []
