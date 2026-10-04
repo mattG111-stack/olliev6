@@ -46,3 +46,32 @@ def test_filtered_comparison_falls_back():
         with patch("assistant.suburb_brief.load_brief") as loader:
             assert direct_comparison(q) is None
             loader.assert_not_called()
+
+def test_pool_followup_uses_fresh_unrounded_base():
+    from assistant.agent import Turn
+    from assistant.tools import pool_policy_adjustment
+    history=[Turn(role="user",content=Q),Turn(role="assistant",content="**Does this property have a swimming pool?**")]
+    calls=[]
+    def dispatch(name,args):
+        calls.append(name)
+        if name=="find_address":
+            data=evidence();data["apex_estimate"]["unrounded_value"]=1676125
+            return json.dumps(data)
+        if name=="pool_policy_adjustment":
+            return pool_policy_adjustment(**args)
+        raise AssertionError(name)
+    for area, expected in [(-8.1,"$1,730,000"),(10,"$1,850,000")]:
+        with patch("assistant.agent.dispatch",side_effect=dispatch),patch("assistant.fast_valuation._pool_area_percent",return_value=area):
+            result=ask(None,"Yes, it has a pool. What is the updated Apex estimate?",history)
+        assert expected in result.text
+        assert "unverified" in result.text
+        assert "apex-map" not in result.text
+    assert calls==["find_address","pool_policy_adjustment"]*2
+
+def test_pool_followup_rejects_unrelated_history():
+    from assistant.agent import Turn
+    from assistant.fast_valuation import direct_pool_followup
+    dispatch=MagicMock()
+    history=[Turn(role="user",content="Compare Riverhead and Kumeu"),Turn(role="assistant",content="**Does this property have a swimming pool?**")]
+    assert direct_pool_followup("Yes",dispatch,history) is None
+    dispatch.assert_not_called()
