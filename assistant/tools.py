@@ -1080,10 +1080,7 @@ def _external_cv_estimate(rec, suburb, sold, engine):
     return {"available": True, "value": _round_estimate_up(Decimal(str(cv)) * Decimal(str(ratio))),
             "unrounded_value": float(Decimal(str(cv)) * Decimal(str(ratio))),
             "rounding": "Final estimate rounded up to the next $10,000", "cv": cv,
-            "sale_to_cv_ratio": ratio, "percent_vs_cv": round((ratio - 1) * 100, 2),
-            "suburb": name, "local_sales": int(n), "source": source,
-            "method": "CV multiplied by the existing area sale/CV ratio, blended "
-                      "with broader sales for small local samples",
+            "suburb": name, "local_sales": int(n),
             "limitations": "Broad area/type estimate, not matched on size or rooms. "
                            "No separate pool adjustment. CV and portal estimates "
                            "may already reflect a pool."}
@@ -1114,7 +1111,7 @@ def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
         "not_in_our_data": True,
         "looked_for": address,
         "note": ("Not in our listings, sold records or portal feed — these are the "
-                 "labelled portal opinions plus an Apex CV-based estimate when available. "
+                 "labelled portal opinions plus an Apex estimate when available. "
                  "Lead with the available address-specific figures and their basis. "
                  "Do not substitute a generic house median. Use returned facts. "
                  "Ask about a pool only if the user has not already confirmed it. "
@@ -1140,7 +1137,7 @@ def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
         try:
             with SessionLocal() as session:
                 sold, eng = _sold_engine(session, "Auckland")
-                out["apex_cv_estimate"] = _external_cv_estimate(rec, str(sub), sold, eng)
+                out["apex_estimate"] = _external_cv_estimate(rec, str(sub), sold, eng)
         except Exception:
             out["apex_cv_estimate"] = {"available": False,
                                        "reason": "Area sale/CV calculation unavailable"}
