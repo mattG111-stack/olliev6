@@ -26,3 +26,20 @@ def test_wrapper_preserves_result():
  b=SuburbBrief()
  assert b.wrap(lambda n,a:'{}')('suburb_days_to_sell',{'suburb':'Riverhead'})=='{}'
  assert b.suburb=='Riverhead'
+
+def test_only_one_map(monkeypatch):
+ import assistant.suburb_brief as m
+ monkeypatch.setattr(m,'load_brief',lambda s:'Snapshot\n```apex-map\n{}\n```')
+ b=SuburbBrief(); b.suburb='Riverhead'
+ text='Facts\n```apex-map\n{}\n```\n```apex-chart\n{}\n```\n```apex-map\n{}\n```'
+ result=b.append(text)
+ assert result.count('```apex-map')==1
+ assert 'Facts' in result and '```apex-chart' in result
+
+def test_failed_snapshot_keeps_map(monkeypatch):
+ import assistant.suburb_brief as m
+ def fail(s): raise RuntimeError()
+ monkeypatch.setattr(m,'load_brief',fail)
+ b=SuburbBrief(); b.suburb='Riverhead'
+ text='```apex-map\n{}\n```'
+ assert text in b.append(text)
