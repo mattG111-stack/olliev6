@@ -1,4 +1,4 @@
-from pydantic import ValidationError, Field
+from pydantic import ValidationError, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     # presses Publish. OFF by default; turn on only after a supervised test run, and
     # only once the scraper proxy is confirmed working (enrich/portals need it).
     auto_pipeline: bool = False
+
+    # --- SCRAPING DISABLED --------------------------------------------------
+    # The portal scraping (HouGarden / OneRoof / TradeMe / homes collection,
+    # Chromium rendering, the daily portal pass, the link-availability check and
+    # the auto-pipeline's portal step) is turned OFF here, unconditionally, so it
+    # stays off even if an environment variable is set to enable it. CoreLogic
+    # enrichment (propertyvalue.py) and the manual weekly upload are NOT affected.
+    # To re-enable scraping, delete this validator and set the flags via env.
+    @model_validator(mode="after")
+    def _disable_scraping(self):
+        self.scraper_enabled = False
+        self.scraper_check_listings = False
+        self.scraper_render_trademe = False
+        self.scraper_render_homes = False
+        self.portals_daily = False
+        self.auto_pipeline = False
+        return self
     # How often the listing availability ("is it still advertised?") check runs, in
     # days. It now goes through the residential proxy, so set this to 7 to run it
     # weekly and keep proxy bandwidth to a minimum; 1 (daily) catches withdrawals
