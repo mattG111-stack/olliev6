@@ -81,7 +81,8 @@ def load_brief(suburb):
 
 
 class SuburbBrief:
-    def __init__(self):
+    def __init__(self, question=''):
+        self.question = question
         self.suburb = None
         self.suburbs = []
 
@@ -119,4 +120,6 @@ class SuburbBrief:
         block = '\n\n'.join(blocks)
         if '```apex-map' in block:
             text = re.sub(r'(?m)^[ \t]*```apex-map\b[^\n]*\n.*?^[ \t]*```[ \t]*(?:\n|$)', '', text, flags=re.DOTALL)
+        if len(self.suburbs) > 1 and re.search(r'\bcompar(?:e|ison)\b', self.question, re.I):
+            return '## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n' + block
         return text.rstrip() + '\n\n' + block

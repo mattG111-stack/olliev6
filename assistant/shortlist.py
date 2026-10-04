@@ -200,6 +200,13 @@ def render_shortlist(answer, evidence, limit, question='', previous_ids=None, pr
             return 'I could not verify the property links for this shortlist. Please refine the area or budget so I can check again.'
         return answer
 
+    budget_match = re.search(r'(?:under|below|up to|max(?:imum)?|budget(?: of)?)\s*\$?([\d,]+(?:\.\d+)?)\s*(million|m|k)?\b', preference_context or question, re.I)
+    if budget_match:
+        cap = float(budget_match[1].replace(',', '')) * ({'million': 1000000, 'm': 1000000, 'k': 1000}.get((budget_match[2] or '').lower(), 1))
+        selected = [(identity, rid) for identity, rid in selected
+                    if all(_price(r) is not None and _price(r) < cap for r in groups[identity])]
+        if not selected:
+            return 'No selected listings have a confirmed asking price within your budget. Unpriced listings have been excluded.'
     selected = selected[:limit]
     lines = [f'Here {"is" if len(selected) == 1 else "are"} {len(selected)} option{"" if len(selected) == 1 else "s"} from the checked listing records.', '',
              '| Property | Asking price | Apex estimate | Estimated gap vs ask | Beds / baths | Land | Floor |',
@@ -216,12 +223,12 @@ def render_shortlist(answer, evidence, limit, question='', previous_ids=None, pr
         address = _text(row['address'])
         label = f'[{address}](/property/{rid})' if rid else address
         asking = _display([_price(r) for r in rows], '$')
-        value = _display([_price(r, True) for r in rows], '$')
+        value = _display([math.ceil(_price(r, True)/10000)*10000 if _price(r, True) is not None else None for r in rows], '$')
         beds = _display([_number(r.get('beds')) for r in rows])
         baths = _display([_number(r.get('baths')) for r in rows])
         land = _display([_number(_field(r, 'land_area_m2', 'land_m2')) for r in rows], ' m²')
         floor = _display([_number(_field(r, 'floor_area_m2', 'floor_m2')) for r in rows], ' m²')
-        values = {_price(r, True) for r in rows} - {None}
+        values = {math.ceil(_price(r, True)/10000)*10000 for r in rows if _price(r, True) is not None}
         prices = {_price(r) for r in rows} - {None}
         gap = 'Not recorded'
         if len(prices) > 1 or len(values) > 1:
