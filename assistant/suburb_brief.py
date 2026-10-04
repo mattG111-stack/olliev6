@@ -1,5 +1,6 @@
 """Deterministic suburb evidence attached to property answers."""
 import json
+import re
 import math
 from datetime import date, timedelta
 from statistics import median
@@ -98,4 +99,6 @@ class SuburbBrief:
             block = load_brief(self.suburb)
         except Exception:
             block = '### Suburb snapshot\nSuburb statistics are temporarily unavailable.'
+        if '```apex-map' in block:
+            text = re.sub(r'(?m)^[ \t]*```apex-map\b[^\n]*\n.*?^[ \t]*```[ \t]*(?:\n|$)', '', text, flags=re.DOTALL)
         return text.rstrip() + '\n\n' + block
