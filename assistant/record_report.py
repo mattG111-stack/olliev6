@@ -94,4 +94,7 @@ def record_report(property_id, dispatch, on_step=None):
         "Confirm the asking price, availability and recorded areas against the source listing, then inspect the sold examples for differences in date, size, title and condition. Building condition, legal constraints and development feasibility are unverified.",
         "", "Only this selected record was checked. Other records may disagree; earlier shortlist requirements have not been independently revalidated by this report. Your conversation remains available for follow-up questions.",
         "", f"[View the checked property record](/property/{property_id})"]
-    return Result(text="\n".join(lines), tools_used=tools)
+    from assistant.suburb_brief import SuburbBrief
+    brief = SuburbBrief()
+    brief.suburb = record.get("suburb")
+    return Result(text=brief.append("\n".join(lines)), tools_used=tools)

@@ -83,22 +83,40 @@ def load_brief(suburb):
 class SuburbBrief:
     def __init__(self):
         self.suburb = None
+        self.suburbs = []
 
     def wrap(self, dispatch):
         def call(name, arguments):
             result = dispatch(name, arguments)
-            if name in ('suburb_days_to_sell', 'value_property') and arguments.get('suburb'):
-                self.suburb = str(arguments['suburb']).strip()[:120]
+            suburb = None
+            if name in ('suburb_days_to_sell', 'value_property', 'search_listings'):
+                suburb = arguments.get('suburb')
+            if name in ('find_address', 'get_property'):
+                try:
+                    record = json.loads(result)
+                    if isinstance(record, dict):
+                        suburb = record.get('suburb')
+                        if not suburb and record.get('not_in_our_data'):
+                            suburb = arguments.get('suburb')
+                except (ValueError, TypeError):
+                    pass
+            if isinstance(suburb, str) and suburb.strip():
+                self.suburb = suburb.strip()[:120]
+                if self.suburb.casefold() not in [s.casefold() for s in self.suburbs]:
+                    self.suburbs.append(self.suburb)
             return result
         return call
 
     def append(self, text):
         if not self.suburb:
             return text
-        try:
-            block = load_brief(self.suburb)
-        except Exception:
-            block = '### Suburb snapshot\nSuburb statistics are temporarily unavailable.'
+        blocks = []
+        for suburb in (self.suburbs or [self.suburb])[:3]:
+            try:
+                blocks.append(load_brief(suburb))
+            except Exception:
+                blocks.append(f'### Around {cell(suburb)}\nSuburb statistics are temporarily unavailable.')
+        block = '\n\n'.join(blocks)
         if '```apex-map' in block:
             text = re.sub(r'(?m)^[ \t]*```apex-map\b[^\n]*\n.*?^[ \t]*```[ \t]*(?:\n|$)', '', text, flags=re.DOTALL)
         return text.rstrip() + '\n\n' + block

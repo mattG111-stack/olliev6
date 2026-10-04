@@ -43,3 +43,28 @@ def test_failed_snapshot_keeps_map(monkeypatch):
  b=SuburbBrief(); b.suburb='Riverhead'
  text='```apex-map\n{}\n```'
  assert text in b.append(text)
+
+def test_comparison_retains_both_suburbs_once(monkeypatch):
+ import assistant.suburb_brief as m
+ monkeypatch.setattr(m,'load_brief',lambda s:s+'\n```apex-map\n{}\n```')
+ b=SuburbBrief(); call=b.wrap(lambda n,a:'{}')
+ for suburb in ['Riverhead','Kumeu','riverhead']:
+  call('suburb_days_to_sell',{'suburb':suburb})
+ text=b.append('Comparison')
+ assert text.count('```apex-map')==2
+ assert 'Riverhead' in text and 'Kumeu' in text
+
+def test_address_uses_resolved_suburb():
+ b=SuburbBrief()
+ b.wrap(lambda n,a:'{"suburb":"Riverhead"}')('find_address',{'suburb':'River'})
+ assert b.suburb=='Riverhead'
+
+def test_ambiguous_address_does_not_attach_guessed_area():
+ b=SuburbBrief()
+ b.wrap(lambda n,a:'Which suburb?')('find_address',{'suburb':'River'})
+ assert b.append('Which suburb?')=='Which suburb?'
+
+def test_budget_and_competing_listing_searches_capture_area():
+ for args in [{'suburb':'Riverhead','max_price':1500000},{'suburb':'Riverhead','beds':4}]:
+  b=SuburbBrief(); b.wrap(lambda n,a:'[]')('search_listings',args)
+  assert b.suburb=='Riverhead'

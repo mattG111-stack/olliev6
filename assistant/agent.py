@@ -409,7 +409,6 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
                                        preference_context=preference_context)
     else:
         result.text = investigation.link_answer(result.text)
-    if not limit:
-        result.text = suburb_brief.append(result.text)
+    result.text = suburb_brief.append(result.text)
     return result
 
