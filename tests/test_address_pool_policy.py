@@ -8,7 +8,7 @@ from assistant import tools
 def test_pool_floor_and_area(area,expected):
     r=json.loads(tools.pool_policy_adjustment(1750000,'Homes',True,area_pool_percent=area))
     assert r['policy_percent']==expected
-    assert r['value']==round(1750000*(1+expected/100))
+    assert r['value']==(1810000 if expected == 3 else 1890000)
     assert r['scenario_only'] is True
 
 def test_no_double_count():
@@ -26,7 +26,8 @@ def test_cv_uses_ratio_not_loose_median():
     eng=SimpleNamespace(_n_sub_win={},_n_sub={('Riverhead','House'):3},
         shrunk_cv_ratio=lambda **kw:(1.02,'suburb_shrunk_n3'))
     r=tools._external_cv_estimate({'cv':1675000,'property_type':'House'},'riverhead',frame,eng)
-    assert r['value']==1708500
+    assert r['value']==1710000
+    assert r['unrounded_value']==1708500
     assert r['local_sales']==3
     assert 'not matched' in r['limitations']
     eng._n_sub={}
@@ -46,4 +47,17 @@ def test_loose_three_sale_answer_is_not_property_value(monkeypatch):
 
 def test_policy_dispatch_registered():
     r=json.loads(tools.dispatch('pool_policy_adjustment',{'base_value':1750000,'base_source':'Homes','has_pool':True}))
-    assert r['value']==1802500
+    assert r['value']==1810000
+
+@pytest.mark.parametrize('base,expected', [(1726409,1730000),(1730000,1730000),(1730000.01,1740000)])
+def test_rounding_is_ceiling(base,expected):
+    assert tools._round_estimate_up(base)==expected
+
+def test_pool_rounds_only_final_total():
+    r=json.loads(tools.pool_policy_adjustment(1676125,'Apex CV',True))
+    assert r['value']==1730000
+    assert r['unrounded_value']==1726408.75
+
+def test_exact_multiple_after_uplift_not_rounded_twice():
+    r=json.loads(tools.pool_policy_adjustment(1750000,'Homes',True,area_pool_percent=8))
+    assert r['value']==1890000

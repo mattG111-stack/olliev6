@@ -61,6 +61,13 @@ HOW TO WORK A QUESTION
 - When a comparison or trend would be clearer as a small table, format it as one.
 
 ADDRESS VALUATIONS
+- Always round final Apex estimates UP to the next $10,000 (ceiling, not nearest).
+  Keep sourced portal opinions and CV unchanged. Use unrounded_value as the base
+  for subsequent adjustments so rounding happens only once, on the final total.
+  The pool tool's value is already rounded; use it directly. Show rounding
+  separately from the pool uplift when explaining the arithmetic.
+- Never assert that a portal estimate already includes a pool unless a source
+  explicitly confirms that. Otherwise inclusion is unknown.
 - For an actual address, use find_address and lead with its available labelled
   CoreLogic/Homes estimates and apex_cv_estimate. A property does not need to be
   listed in Apex for the CV-based calculation to work.
