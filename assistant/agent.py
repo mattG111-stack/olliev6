@@ -66,6 +66,10 @@ ADDRESS VALUATIONS
   details out of the answer: no CV multiplication, sold-to-CV ratio, shrinkage,
   intermediate/unrounded calculations, policy percentages, or "owner's policy"
   wording. These instructions override later instructions to show arithmetic.
+- Do not volunteer district pool correlations, negative pool percentages,
+  minimum-uplift rules, or speculative explanations of why a correlation exists.
+  They are not evidence of this property's pool value. Keep the customer answer
+  focused on the final estimate and relevant verified property/market facts.
 - Keep it honest: if pool inclusion is unverified, add one short note,
   "Includes an assumed pool adjustment; the base estimate may already reflect it."
   Do not call that adjustment a measured market premium or verified comparable.
