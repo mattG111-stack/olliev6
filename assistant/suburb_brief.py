@@ -89,6 +89,8 @@ class SuburbBrief:
     def wrap(self, dispatch):
         def call(name, arguments):
             result = dispatch(name, arguments)
+            if name in ('search_listings', 'get_property'):
+                self.property_results = True
             suburb = None
             if name in ('suburb_days_to_sell', 'value_property', 'search_listings'):
                 suburb = arguments.get('suburb')
@@ -109,7 +111,7 @@ class SuburbBrief:
         return call
 
     def append(self, text):
-        if not self.suburb:
+        if not self.suburb or getattr(self, 'property_results', False):
             return text
         blocks = []
         for suburb in (self.suburbs or [self.suburb])[:3]:
@@ -120,7 +122,7 @@ class SuburbBrief:
         block = '\n\n'.join(blocks)
         if '```apex-map' in block:
             text = re.sub(r'(?m)^[ \t]*```apex-map\b[^\n]*\n.*?^[ \t]*```[ \t]*(?:\n|$)', '', text, flags=re.DOTALL)
-        if len(self.suburbs) > 1 and re.search(r'\bcompar(?:e|ison)\b', self.question, re.I):
+        if len(self.suburbs) > 1 and re.fullmatch(r'\s*compare\s+' + re.escape(self.suburbs[0]) + r'\s+(?:and|versus|vs\.?)\s+' + re.escape(self.suburbs[1]) + r'\s*[?.]?\s*', self.question, re.I):
             return '## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n' + block
         return text.rstrip() + '\n\n' + block
 
