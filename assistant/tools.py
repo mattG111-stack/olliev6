@@ -978,6 +978,14 @@ def value_property(suburb: str, beds: float | None = None,
     }.get(shape, shape.replace("_", " ") or "a loose match")
     how = f"{how}, {where}"
 
+    if n < 2 or (floor_area_m2 and shape not in {"land_floor", "floor"}) or (
+            land_area_m2 and shape != "land_floor"):
+        return _gap(
+            need="an address-specific CV or portal estimate",
+            why=f"Only {n} sales matched on {how}; this does not support the requested property valuation",
+            ask="Use find_address for the actual address and its CV-based estimate. "
+                "Do not present this loose median as the property's value.")
+
     caution = ("" if n >= 8 else
                f"  Only {n} sales — treat this as a rough guide, not a valuation."
                if n >= 3 else
@@ -995,6 +1003,78 @@ def value_property(suburb: str, beds: float | None = None,
             f"{caution}\n"
             f"This is what comparable homes ACTUALLY SOLD FOR — no council "
             f"valuation and no asking price involved.")
+
+
+
+
+def pool_policy_adjustment(base_value: float, base_source: str,
+                           has_pool: bool, base_includes_pool: str = "unknown",
+                           area_pool_percent: float | None = None) -> str:
+    """Owner's 3% policy scenario; never an empirically estimated pool premium."""
+    if not isinstance(has_pool, bool) or base_includes_pool not in {"yes", "no", "unknown"}:
+        return "Invalid pool confirmation or inclusion status."
+    try:
+        base = float(base_value)
+    except (TypeError, ValueError):
+        return "A verified numeric base estimate is required."
+    if not math.isfinite(base) or base <= 0 or not str(base_source).strip():
+        return "A verified positive base estimate and its source are required."
+    area = 0.0 if area_pool_percent is None else float(area_pool_percent)
+    if not math.isfinite(area):
+        return "Area pool percentage must be finite and sourced from a tool."
+    rate = max(3.0, area)
+    apply = has_pool and base_includes_pool != "yes"
+    return json.dumps({
+        "base_value": base, "base_source": base_source, "has_pool": has_pool,
+        "policy_percent": rate if apply else 0,
+        "uplift": round(base * rate / 100) if apply else 0,
+        "value": round(base * (1 + rate / 100)) if apply else round(base),
+        "basis": "Apex owner policy: max(3%, sourced area pool percentage); not a causal market premium",
+        "scenario_only": apply and base_includes_pool == "unknown",
+        "assumption": ("Assumes the base excludes the pool; inclusion is unverified"
+                       if apply and base_includes_pool == "unknown" else
+                       "Pool already included: no double counting"
+                       if base_includes_pool == "yes" else "Base excludes pool"),
+    })
+
+
+def _external_cv_estimate(rec, suburb, sold, engine):
+    """Read-only address estimate using the existing shrunk area sale/CV ratio."""
+    unavailable = {"available": False, "reason": "No supported local sale/CV estimate"}
+    if engine is None or sold is None or sold.empty:
+        return unavailable
+    try:
+        cv = float(rec.get("cv"))
+    except (TypeError, ValueError):
+        return unavailable
+    if not math.isfinite(cv) or cv <= 0:
+        return unavailable
+    # Resolve spelling against actual sold data; never silently use a global
+    # default of 1.0 when the requested suburb has no ratio evidence.
+    names = sold["suburb"].astype(str).str.strip()
+    here = sold[names.str.casefold() == suburb.strip().casefold()]
+    if here.empty:
+        return unavailable
+    name = str(here.iloc[0]["suburb"])
+    ctype = canonical_type(rec.get("property_type") or "House")
+    key = (name, ctype)
+    n = engine._n_sub_win.get(key, engine._n_sub.get(key, 0))
+    if n < 2:
+        return unavailable
+    districts = here["district"].dropna().unique() if "district" in here else []
+    district = districts[0] if len(districts) == 1 else None
+    ratio, source = engine.shrunk_cv_ratio(
+        suburb=name, district=district, property_type=ctype)
+    if not math.isfinite(ratio) or ratio <= 0:
+        return unavailable
+    return {"available": True, "value": round(cv * ratio), "cv": cv,
+            "sale_to_cv_ratio": ratio, "percent_vs_cv": round((ratio - 1) * 100, 2),
+            "suburb": name, "local_sales": int(n), "source": source,
+            "method": "CV multiplied by the existing area sale/CV ratio, blended "
+                      "with broader sales for small local samples",
+            "limitations": "Broad area/type estimate, not matched on size or rooms. "
+                           "No separate pool adjustment. CV and portal estimates "
+                           "may already reflect a pool."}
 
 
 def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
@@ -1022,12 +1102,14 @@ def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
         "not_in_our_data": True,
         "looked_for": address,
         "note": ("Not in our listings, sold records or portal feed — these are the "
-                 "EXTERNAL sources plus our own comparable-sales read. Present them "
-                 "as such (say whose figure each is). Do NOT ask for beds/baths: "
-                 "use what CoreLogic returned. A pool materially affects price and "
-                 "how much varies by area, and the council record does not say — so "
-                 "ASK whether it has a pool (renovation_value_by_district gives the "
-                 "local pool value)."),
+                 "labelled portal opinions plus an Apex CV-based estimate when available. "
+                 "Lead with the available address-specific figures and their basis. "
+                 "Do not substitute a generic house median. Use returned facts. "
+                 "Ask about a pool only if the user has not already confirmed it. "
+                 "Retain that confirmation, but no separate pool adjustment is "
+                 "automatically supported: use pool_policy_adjustment for the labelled "
+                 "owner-configured 3% scenario; estimates and CV may already reflect it. "
+                 "A district pool association is not a property adjustment."),
     }
     if rec:
         out["corelogic"] = {k: rec.get(k) for k in (
@@ -1039,25 +1121,17 @@ def _external_address_lookup(address: str, suburb: str | None) -> dict | None:
         out["homes_co_nz"] = {k: homes.get(k) for k in
                               ("value", "low", "high", "cv", "url") if homes.get(k) is not None}
 
-    # Our own read: value it from comparable sales using CoreLogic's beds/baths.
-    beds, baths = (rec or {}).get("beds"), (rec or {}).get("baths")
+    # Use the address's CV with the existing area's sale/CV engine, not a
+    # loose bed/bath median masquerading as a valuation of this address.
     sub = (rec or {}).get("suburb") or suburb
-    if beds and baths and sub:
+    if rec and sub and rec.get("cv"):
         try:
-            with SessionLocal() as s:
-                _sold, eng = _sold_engine(s, "Auckland")
-                if eng is not None:
-                    price, _tier, n = eng.matched_sold_price(
-                        suburb=str(sub), district=None,
-                        property_type=str((rec or {}).get("property_type") or "House"),
-                        beds=float(beds), baths=float(baths),
-                        land=(rec or {}).get("land_area_m2"),
-                        floor=(rec or {}).get("floor_area_m2"))
-                    if price:
-                        out["ollie_comparable_value"] = round(price)
-                        out["ollie_comps_used"] = n
+            with SessionLocal() as session:
+                sold, eng = _sold_engine(session, "Auckland")
+                out["apex_cv_estimate"] = _external_cv_estimate(rec, str(sub), sold, eng)
         except Exception:
-            pass
+            out["apex_cv_estimate"] = {"available": False,
+                                       "reason": "Area sale/CV calculation unavailable"}
     return out
 
 
@@ -1340,6 +1414,16 @@ TOOL_SPECS = [
         "property_type": {**_STR, "description": "House, Townhouse, Apartment, "
                                                  "Unit, Section. Defaults to House."}},
        ["suburb"]),
+    _t("pool_policy_adjustment",
+       "Calculate the owner\'s minimum 3% pool policy from a sourced base estimate. "
+       "Pass area_pool_percent only from the area pool tool, in percentage points "
+       "(e.g. 8 for 8%). The larger of 3% and that number is used. "
+       "Use after the user confirms a pool. This is a labelled policy scenario, "
+       "not a measured market premium. Never invent the base or pool inclusion.",
+       {"base_value": _NUM, "base_source": _STR, "has_pool": {"type": "boolean"},
+        "base_includes_pool": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "area_pool_percent": _NUM},
+       ["base_value", "base_source", "has_pool"]),
     _t("find_address",
        "Everything we hold about ONE ADDRESS — whether it is on the market now, "
        "in the sold records, or being advertised by a portal and not yet "
@@ -1487,6 +1571,7 @@ _HANDLERS = {
     "value_property": value_property,
     "rent_estimate": rent_estimate,
     "find_address": find_address,
+    "pool_policy_adjustment": pool_policy_adjustment,
 }
 
 
