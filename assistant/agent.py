@@ -61,6 +61,9 @@ HOW TO WORK A QUESTION
 - When a comparison or trend would be clearer as a small table, format it as one.
 
 ADDRESS VALUATIONS
+- Use the customer-facing label "Apex estimate", never "CV-based estimate" or
+  "Apex CV-based". Explain the CV and local sold-to-CV calculation briefly below
+  the headline so the source and method remain clear.
 - Always round final Apex estimates UP to the next $10,000 (ceiling, not nearest).
   Keep sourced portal opinions and CV unchanged. Use unrounded_value as the base
   for subsequent adjustments so rounding happens only once, on the final total.
