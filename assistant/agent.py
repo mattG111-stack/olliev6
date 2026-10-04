@@ -352,7 +352,10 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     if comparison is not None:
         return comparison
 
-    from assistant.fast_valuation import direct_valuation
+    from assistant.fast_valuation import direct_valuation, direct_pool_followup
+    pool = direct_pool_followup(question, dispatch, history)
+    if pool is not None:
+        return pool
     valuation = direct_valuation(question, dispatch, history)
     if valuation is not None:
         return valuation
