@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 import pandas as pd
@@ -1007,6 +1008,12 @@ def value_property(suburb: str, beds: float | None = None,
 
 
 
+def _round_estimate_up(value):
+    """Final Apex estimates use a $10,000 ceiling; exact multiples stay put."""
+    return int((Decimal(str(value)) / Decimal("10000")).to_integral_value(
+        rounding=ROUND_CEILING) * Decimal("10000"))
+
+
 def pool_policy_adjustment(base_value: float, base_source: str,
                            has_pool: bool, base_includes_pool: str = "unknown",
                            area_pool_percent: float | None = None) -> str:
@@ -1024,11 +1031,14 @@ def pool_policy_adjustment(base_value: float, base_source: str,
         return "Area pool percentage must be finite and sourced from a tool."
     rate = max(3.0, area)
     apply = has_pool and base_includes_pool != "yes"
+    total = Decimal(str(base)) * (Decimal("1") + Decimal(str(rate)) / 100) if apply else Decimal(str(base))
     return json.dumps({
         "base_value": base, "base_source": base_source, "has_pool": has_pool,
         "policy_percent": rate if apply else 0,
         "uplift": round(base * rate / 100) if apply else 0,
-        "value": round(base * (1 + rate / 100)) if apply else round(base),
+        "value": _round_estimate_up(total),
+        "unrounded_value": float(total),
+        "rounding": "Final estimate rounded up to the next $10,000",
         "basis": "Apex owner policy: max(3%, sourced area pool percentage); not a causal market premium",
         "scenario_only": apply and base_includes_pool == "unknown",
         "assumption": ("Assumes the base excludes the pool; inclusion is unverified"
@@ -1067,7 +1077,9 @@ def _external_cv_estimate(rec, suburb, sold, engine):
         suburb=name, district=district, property_type=ctype)
     if not math.isfinite(ratio) or ratio <= 0:
         return unavailable
-    return {"available": True, "value": round(cv * ratio), "cv": cv,
+    return {"available": True, "value": _round_estimate_up(Decimal(str(cv)) * Decimal(str(ratio))),
+            "unrounded_value": float(Decimal(str(cv)) * Decimal(str(ratio))),
+            "rounding": "Final estimate rounded up to the next $10,000", "cv": cv,
             "sale_to_cv_ratio": ratio, "percent_vs_cv": round((ratio - 1) * 100, 2),
             "suburb": name, "local_sales": int(n), "source": source,
             "method": "CV multiplied by the existing area sale/CV ratio, blended "
