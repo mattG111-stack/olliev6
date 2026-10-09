@@ -5,6 +5,7 @@ nothing else — not other promoters, and not who their customers are. An admin
 sees everyone, creates promoters, sets rates, and records payouts.
 """
 from __future__ import annotations
+from password_policy import validate_new_password
 
 import csv
 import io
@@ -359,7 +360,7 @@ class CreateIn(BaseModel):
     email: EmailStr
     full_name: str | None = Field(default=None, max_length=160)
     # Optional: an existing account can be turned into a promoter instead.
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: str | None = Field(default=None, min_length=7, max_length=128)
     code: str | None = Field(default=None, max_length=32)
     rate: float | None = Field(default=None, ge=0, le=10_000)
     payout_email: EmailStr | None = None
@@ -391,7 +392,8 @@ def create_promoter(body: CreateIn, me: User = Depends(require_admin),
     else:
         if not body.password:
             raise HTTPException(status_code=422,
-                                detail="Set a password for the new promoter login (at least 8 characters).")
+                                detail="Set a password for the new promoter login (six letters including one uppercase, and one number).")
+        validate_new_password(body.password)
         try:
             pw = hash_password(body.password)
         except PasswordHashingUnavailable as exc:

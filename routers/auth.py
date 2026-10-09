@@ -1,5 +1,6 @@
 """Auth + self-serve onboarding + admin user-management endpoints."""
 from __future__ import annotations
+from password_policy import validate_new_password
 
 import logging
 from datetime import datetime, timezone
@@ -124,6 +125,7 @@ class SignUpOut(BaseModel):
 def sign_up(body: SignUpIn, db: Session = Depends(get_db)) -> SignUpOut:
     if find_user_by_email(db, str(body.email)):
         raise HTTPException(status_code=409, detail="Email already registered")
+    validate_new_password(body.password)
     try:
         pw_hash = hash_password(body.password)
     except PasswordHashingUnavailable as exc:
@@ -282,8 +284,7 @@ def admin_create_user(body: AdminCreateUserIn, _: User = Depends(require_admin),
         raise HTTPException(status_code=400, detail="Invalid role")
     if body.status not in {s.value for s in UserStatus}:
         raise HTTPException(status_code=400, detail="Invalid status")
-    if len(body.password) < 8:
-        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    validate_new_password(body.password)
     try:
         pw_hash = hash_password(body.password)
     except PasswordHashingUnavailable as exc:
@@ -330,8 +331,7 @@ def admin_set_password(
     u = db.get(User, user_id)
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    if len(body.password) < 8:
-        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    validate_new_password(body.password)
     try:
         u.password_hash = hash_password(body.password)
     except PasswordHashingUnavailable as exc:
