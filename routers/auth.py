@@ -547,3 +547,8 @@ def delete_user(
         ) from exc
     log.warning("account DELETED by admin %s: %s id=%s", me.email, email, user_id)
     return Response(status_code=204)
+
+
+# Public recovery endpoints share the /api/auth prefix.
+from password_recovery import router as recovery_router
+router.include_router(recovery_router)
