@@ -181,7 +181,7 @@ def sign_in(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(g
                         "(account id=%s, status=%s, stored hash %s)",
                         form.username, u.id, u.status,
                         "looks fine" if looks_hashed
-                        else f"is NOT a bcrypt hash: {len(h)} chars, starts {h[:4]!r}")
+                        else "has an unsupported format")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     # Rejected/deactivated can't sign in. PENDING self-serve users CAN — they need
     # to finish onboarding (verify + add card); the product itself is gated by
@@ -334,6 +334,7 @@ def admin_set_password(
     validate_new_password(body.password)
     try:
         u.password_hash = hash_password(body.password)
+        u.password_changed_at = datetime.now(timezone.utc)
     except PasswordHashingUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:

@@ -131,13 +131,13 @@ def direct_comparison(question, history=None):
     """Fast path only for explicit, unfiltered suburb-statistics comparisons."""
     if history:
         return None
-    match = re.fullmatch(r"\s*compare\s+([A-Za-z][A-Za-z '\-]{1,70}?)\s+(?:and|versus|vs\.?)\s+([A-Za-z][A-Za-z '\-]{1,70}?)(?:(\s+for buying a home|\s*[.:])([\s\S]*))?\s*[?]?\s*", question, re.I)
+    match = re.fullmatch(r"\s*compare\s+([A-Za-z][A-Za-z '\-]{1,70}?)\s+(?:and|versus|vs\.?)\s+([A-Za-z][A-Za-z '\-]{1,70}?)(?:(\s+side by side|\s+using|\s+with|\s+for buying a home|\s*[.:])([\s\S]*))?\s*[?]?\s*", question, re.I)
     if not match:
         return None
     names = [match[1].strip(), match[2].strip()]
     tail = ((match[3] or "") + " " + (match[4] or "")).lower()
     # Anything outside the simple metric request remains on the reasoning path.
-    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare".split())
+    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare side by using recorded sale include the sample counts count period suburb map once".split())
     if any(word not in allowed for word in re.findall(r"\w+", tail)):
         return None
     if names[0].casefold() == names[1].casefold():
@@ -158,6 +158,8 @@ def direct_comparison(question, history=None):
             blocks = list(executor.map(load_brief, names))
     except Exception:
         return None
+    if re.search(r"\b(?:map once|one map|single map)\b", question, re.I):
+        blocks[1] = re.sub(r"```apex-map\n.*?\n```", "", blocks[1], flags=re.S)
     from assistant.providers import Result
     return Result(text="## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n" + "\n\n".join(blocks),
                   tools_used=["suburb_snapshot"])

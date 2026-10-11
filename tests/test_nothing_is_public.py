@@ -50,6 +50,8 @@ ALLOWED_OPEN = {
     # You cannot require a login on the page where you get one.
     "/api/auth/sign-in": "the front door",
     "/api/auth/sign-up": "the front door",
+    "/api/auth/forgot-password": "rate-limited recovery request for signed-out users",
+    "/api/auth/reset-password": "requires a short-lived, single-use recovery code",
     # Called by the payment provider's server, which has no account here. It is
     # protected by a signature, not by a session.
     "/api/billing/webhook": "signed callback from the payment provider",

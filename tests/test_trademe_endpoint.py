@@ -18,17 +18,27 @@ import time
 
 import pytest
 
-from test_endpoints_smoke import _client
-
-
 @pytest.fixture()
 def client(db_session):
-    """The real app with the real routes, pointed at the test database.
-
-    Reuses the smoke suite's harness deliberately: same seeded world, same auth
-    overrides, so this file tests the endpoint rather than a second fixture.
-    """
-    yield from _client(db_session)
+    from fastapi.testclient import TestClient
+    from main import app
+    from db import get_db
+    from security import require_admin
+    from models import User, PropertySold, ImportBatch
+    admin = User(email="admin@example.test", password_hash="synthetic", role="admin", status="approved")
+    batch = ImportBatch(batch_type="sold", filename="synthetic", status="published", is_active=True)
+    db_session.add(batch)
+    db_session.flush()
+    db_session.add_all([admin, PropertySold(import_batch_id=batch.id, address="0 Smoke St", suburb="Remuera", district="Auckland City")])
+    db_session.commit()
+    saved = app.dependency_overrides.copy()
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_admin] = lambda: admin
+    try:
+        yield TestClient(app), admin
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(saved)
 
 REAL_EXPORT = ("/root/.claude/uploads/79b70b38-d017-5982-b698-8174439cded8/"
                "59c22150-trademe_export_a_sales_auckland_since20240815_1.csv")
