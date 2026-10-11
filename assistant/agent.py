@@ -424,7 +424,9 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
         effort="high" if limit else "xhigh",
     )
 
-    if evidence:
+    # Looking up a subject is not a request for a shortlist. Preserve answers
+    # about its sales, timing or risks unless an actual listing search ran.
+    if evidence and (limit is not None or "search_listings" in result.tools_used):
         result.text = render_shortlist(result.text, evidence, limit or 20, question, previous_ids,
                                        preference_context=preference_context)
     else:

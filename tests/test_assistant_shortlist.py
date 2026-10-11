@@ -211,3 +211,19 @@ def test_developer_evidence_does_not_invent_consent_or_keep_model_claims():
     assert 'not consent or confirmed feasibility' in out
     assert 'Approved for 9' not in out and 'Only one qualifies' not in out
     assert 'site-specific costs' in out
+
+
+def test_subject_lookup_does_not_replace_nearby_sales_answer(monkeypatch):
+    from types import SimpleNamespace
+    from assistant import agent, providers
+    monkeypatch.setattr(agent.keys, 'decrypt', lambda _: None)
+    monkeypatch.setattr(agent, 'dispatch', lambda *_: json.dumps(candidates()[0]))
+    expected = 'Recent recorded sales: 2 Example Road, sold 2026-09-01 for $650,000.'
+    def run(**kwargs):
+        kwargs['dispatch']('get_property', {'property_id': 1})
+        return providers.Result(text=expected, tools_used=['get_property'])
+    monkeypatch.setattr(agent.providers, 'run', run)
+    user = SimpleNamespace(llm_provider=None, llm_api_key_encrypted=None)
+    result = agent.ask(user, 'What sold nearby? Use property ID 1 as the subject.', shared=('anthropic','synthetic'))
+    assert expected in result.text
+    assert 'Here is 1 option' not in result.text
