@@ -75,3 +75,12 @@ def test_pool_followup_rejects_unrelated_history():
     history=[Turn(role="user",content="Compare Riverhead and Kumeu"),Turn(role="assistant",content="**Does this property have a swimming pool?**")]
     assert direct_pool_followup("Yes",dispatch,history) is None
     dispatch.assert_not_called()
+
+
+def test_detailed_unfiltered_comparison_uses_fast_path():
+    question = "Compare Riverhead and Kumeu side by side using recent recorded sales, median sale prices and average selling time. Include the sample counts and period, and show the suburb map once."
+    with patch("db.SessionLocal", return_value=MagicMock()), patch("ingest.sold_batch_ids", return_value=[1]), patch("assistant.suburb_brief.load_brief", side_effect=lambda name: "### Around " + name + '\n```apex-map\n' + json.dumps({"suburb":name}) + '\n```'):
+        result = ask(None, question)
+    assert result.tools_used == ["suburb_snapshot"]
+    assert result.text.count("```apex-map") == 1
+    assert "### Around Kumeu" in result.text

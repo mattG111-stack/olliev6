@@ -88,6 +88,7 @@ def confirm_reset(body: ResetConfirm, db: Session = Depends(get_db)):
         db.commit()
         raise invalid
     user.password_hash = hash_password(body.password)
+    user.password_changed_at = now
     row.consumed_at = now
     db.commit()
     return {"detail": "Password changed. Sign in with your new password."}

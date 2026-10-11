@@ -3183,10 +3183,11 @@ def property_history(property_id: int, db: Session = Depends(get_db)) -> History
     we fall back to (address, suburb) match.
     """
     p = db.get(PropertyForSale, property_id)
-    if not p:
+    subject_batch = db.get(ImportBatch, p.import_batch_id) if p else None
+    if not p or p.is_held or not subject_batch or subject_batch.status not in ("published", "archived"):
         raise HTTPException(status_code=404, detail="Not found")
 
-    q = db.query(PropertyForSale).join(ImportBatch, ImportBatch.id == PropertyForSale.import_batch_id).filter(ImportBatch.status != "portal_review")
+    q = db.query(PropertyForSale).join(ImportBatch, ImportBatch.id == PropertyForSale.import_batch_id).filter(ImportBatch.status.in_(("published", "archived")), PropertyForSale.is_held.is_(False))
     if p.slug_id:
         q = q.filter(PropertyForSale.slug_id == p.slug_id)
     elif p.address and p.suburb:

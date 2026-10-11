@@ -151,7 +151,7 @@ def find_user_by_email(db: Session, email: str | None) -> User | None:
 
 def create_access_token(user_id: int) -> tuple[str, datetime]:
     expires = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expiry_minutes)
-    payload = {"sub": str(user_id), "exp": expires}
+    payload = {"sub": str(user_id), "exp": expires, "iat": datetime.now(timezone.utc).timestamp()}
     token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return token, expires
 
@@ -184,6 +184,13 @@ def current_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) ->
     if user is None:
         log.warning("Session rejected: user_missing")
         raise _credentials_error()
+    changed = getattr(user, "password_changed_at", None)
+    if changed is not None:
+        changed = changed.replace(tzinfo=timezone.utc) if changed.tzinfo is None else changed
+        issued = payload.get("iat")
+        if not isinstance(issued, (int, float)) or issued < changed.timestamp():
+            log.warning("Session rejected: password_changed")
+            raise _credentials_error()
     if user.status in (UserStatus.REJECTED.value, UserStatus.DEACTIVATED.value):
         raise HTTPException(status_code=403, detail=f"Account is {user.status}")
     return user
@@ -203,10 +210,8 @@ def admin_from_header(authorization: str | None, db: Session) -> User | None:
     if len(parts) != 2 or parts[0].lower() != "bearer":
         return None
     try:
-        payload = jwt.decode(parts[1], settings.jwt_secret,
-                             algorithms=[settings.jwt_algorithm])
-        user = db.get(User, int(payload["sub"]))
-    except (JWTError, KeyError, ValueError):
+        user = current_user(parts[1], db)
+    except HTTPException:
         return None
     if user is None or user.role != UserRole.ADMIN.value:
         return None

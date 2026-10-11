@@ -28,7 +28,13 @@ import pathlib
 import re
 import sys
 
-from source_tree import ROOT, app_files
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+def app_files():
+    excluded = {"tests", "scripts", "alembic", ".git", ".venv", "venv", "__pycache__"}
+    return [str(p.relative_to(ROOT)) for p in ROOT.rglob("*.py")
+            if not excluded.intersection(p.relative_to(ROOT).parts)]
+
 REQUIREMENTS = pathlib.Path(__file__).resolve().parent.parent / "requirements.txt"
 
 # Module name → the requirement that ships it, where the two differ.

@@ -79,6 +79,7 @@ class User(Base):
     status: Mapped[str] = mapped_column(String(16), default=UserStatus.PENDING.value, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Links this user to their Stripe customer so the admin dashboard can read
     # their subscription/revenue. Set when a subscription is created.

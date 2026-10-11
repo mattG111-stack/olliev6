@@ -1,0 +1,22 @@
+name: Full backend regression suite
+on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: sqlite:////tmp/apex-ci.db
+      JWT_SECRET: synthetic-ci-only
+      SCRAPER_ENABLED: 'false'
+      PORTALS_DAILY: 'false'
+      SCRAPER_DAILY_PRICING: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-scraper.txt pytest
+      - run: python -m playwright install --with-deps chromium --only-shell
+      - run: python -m pytest -q --tb=short

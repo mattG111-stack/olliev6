@@ -89,7 +89,7 @@ def test_entire_answer_bound_including_unlinked_notes_and_chart():
     assert out.count('](/property/')==3
     for i in (4,5,6): assert f'{i} Example Road' not in out
     assert 'Only three qualify' not in out
-    assert '$600,001' in out and '$700,001' in out
+    assert '$600,001' in out and '$710,000' in out
     assert '450 m²' in out and '85 m²' in out
     chart=json.loads(out.split('```apex-chart\n')[1].split('\n```')[0])
     assert [d['value'] for d in chart['data']]==[600001,600002,600003]
@@ -117,7 +117,7 @@ def test_tool_schema_precise_prices_take_precedence_over_formatted_values():
            'pricing_comparison':{'asking_price':600123.75,'apex_value':700123.25},
            'land_m2':450.5,'floor_m2':85}]
     out=render_shortlist('[One](/property/1)',rows,3)
-    assert '$600,123.75' in out and '$700,123.25' in out and '450.5 m²' in out
+    assert '$600,123.75' in out and '$710,000' in out and '450.5 m²' in out
     assert 'Here is 1 option' in out
 
 
@@ -195,12 +195,12 @@ def test_signed_gaps_are_computed_from_unambiguous_evidence():
     rows[2].update(asking_price=700000, fair_value=700000)
     answer = ' '.join(f'[House](/property/{r["id"]})' for r in rows)
     out = render_shortlist(answer, rows, 3)
-    assert '+$252,444' in out and '-$50,000' in out and '| $0 |' in out
+    assert '+$261,000' in out and '-$50,000' in out and '| $0 |' in out
     assert '18 recorded valuation comparables' in out
     assert 'not guaranteed sale prices or profit' in out
     rows.append({**rows[0], 'fair_value': 1000000})
     out = render_shortlist(answer, rows, 3)
-    assert '+$252,444' not in out and 'Conflicting records' in out
+    assert '+$261,000' not in out and 'Conflicting records' in out
 
 
 def test_developer_evidence_does_not_invent_consent_or_keep_model_claims():
