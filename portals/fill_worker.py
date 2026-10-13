@@ -45,13 +45,15 @@ def poll_pending(*, sleep=time.sleep):
     import worker
     from config import settings
     while not worker._stop:
-        if settings.scraper_enabled:
-            try:
-                from portals.batch_hougarden import run_pending as run_hougarden
-                run_hougarden()
+        try:
+            # These jobs were explicitly requested by an admin. Turning off
+            # scheduled collection must not strand their batch enrichment.
+            from portals.batch_hougarden import run_pending as run_hougarden
+            run_hougarden()
+            if settings.scraper_enabled:
                 run_pending()
-            except Exception:
-                logging.getLogger(__name__).exception('Requested fill polling failed; will retry')
+        except Exception:
+            logging.getLogger(__name__).exception('Requested fill polling failed; will retry')
         sleep(10)
 
 

@@ -16,14 +16,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build dedicated scraper image
         run: docker build -f Dockerfile.scraper -t apex-scraper-check .
-      - name: Verify disabled startup without database or collection
+      - name: Verify requested enrichment remains enabled without scheduled collection
         run: >-
           docker run --rm --network none
           -e DATABASE_URL=postgresql+psycopg://synthetic:unused@127.0.0.1:5432/no_database
           -e JWT_SECRET=synthetic-image-test-only
           -e SCRAPER_ENABLED=false -e PORTALS_DAILY=false
           -e SCRAPER_DAILY_PRICING=false apex-scraper-check
-          python -c "import scraper_worker,worker; jobs=scraper_worker.jobs(); assert len(jobs)==6; assert not any(j.enabled() for j in jobs); assert worker.run(jobs=jobs,max_ticks=1)==0"
+          python -c "import scraper_worker,worker; jobs=scraper_worker.jobs(); assert len(jobs)==6; assert [j.name for j in jobs if j.enabled()]==['requested listing backfill']; assert worker.run(jobs=jobs,max_ticks=1)==0"
   postgres:
     runs-on: ubuntu-latest
     services:
