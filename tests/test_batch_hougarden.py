@@ -1,4 +1,5 @@
 import json
+import pytest
 from models import PropertyForSale, ImportBatch, PortalFinding
 from portals.batch_hougarden import save_result
 from tests.test_oneroof_backfill import item
@@ -113,7 +114,8 @@ def test_repeated_failure_preserves_cursor_and_saved_facts(db_session, monkeypat
     db_session.refresh(p); assert p.floor_area_m2==155
 
 
-def test_hougarden_uses_only_corelogic_ids(db_session, monkeypatch):
+@pytest.mark.parametrize('core_status', ['completed', 'failed'])
+def test_hougarden_uses_only_corelogic_ids(db_session, monkeypatch, core_status):
     from contextlib import contextmanager
     from types import SimpleNamespace
     from models import IngestJob
@@ -124,7 +126,7 @@ def test_hougarden_uses_only_corelogic_ids(db_session, monkeypatch):
     selected=PropertyForSale(import_batch_id=b.id,address='24 Lomandra Street',suburb='Westgate')
     extra=PropertyForSale(import_batch_id=b.id,address='25 Lomandra Street',suburb='Westgate')
     db_session.add_all([selected,extra]);db_session.flush()
-    core=IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status='completed',result_json=json.dumps({'ids':[selected.id]}))
+    core=IngestJob(batch_type='for_sale',filename=f'enrich (batch {b.id})',batch_id=b.id,status=core_status,result_json=json.dumps({'ids':[selected.id]}))
     db_session.add(core);db_session.commit()
     monkeypatch.setattr(R,'enrichable_forsale_batch',lambda *a:b)
     started=R.start_hougarden_enrich(region='Auckland',admin=SimpleNamespace(id=None),db=db_session)
@@ -140,6 +142,8 @@ def test_hougarden_uses_only_corelogic_ids(db_session, monkeypatch):
     job=db_session.get(IngestJob,started.job_id);db_session.refresh(job)
     assert seen==[selected.address] and job.rows_total==1
     assert json.loads(job.result_json)['corelogic_job_id']==core.id
+    db_session.refresh(core)
+    assert core.status == core_status
 
 
 def test_historical_corelogic_count_is_not_a_scope(db_session, monkeypatch):

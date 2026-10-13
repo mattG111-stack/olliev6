@@ -71,7 +71,11 @@ def run_pending():
                     IngestJob.filename == f'enrich (batch {job.batch_id})').order_by(IngestJob.id.desc()).first()
                 if state.get('corelogic_job_id'):
                     core = db.get(IngestJob, state['corelogic_job_id'])
-                if core is None or core.batch_id != job.batch_id or core.status != 'completed':
+                # A finished CoreLogic attempt can fail on transport while its
+                # saved scope and filled facts remain valid. Let the independent
+                # source continue over that exact scope; never wait forever on
+                # a terminal failed job or treat it as a successful lookup.
+                if core is None or core.batch_id != job.batch_id or core.status not in ('completed', 'failed'):
                     _update(db, job.id, status='paused', stage='Waiting for CoreLogic')
                     return
                 if 'corelogic_job_id' not in state or 'ids' not in state:
