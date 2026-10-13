@@ -2842,18 +2842,19 @@ def _method_mix_for_suburb(db: Session, sold_batch: int | None, suburb: str | No
     # now, so keying this to a single batch showed a slice of the suburb's
     # sales and called it the suburb.
     region = db.query(ImportBatch.region).filter(ImportBatch.id == sold_batch).scalar()
-    batch_ids = [b.id for b in db.query(ImportBatch.id).filter(
-        ImportBatch.batch_type == BatchType.SOLD.value,
-        ImportBatch.region == region,
-        ImportBatch.status.in_(("staged", "preview", "published")),
-    ).all()] or [sold_batch]
+    batch_ids = live_sold_batch_ids(db, region)
 
     rows = db.query(PropertySold.sale_method, PropertySold.sale_price,
-                    PropertySold.cv_numeric).filter(
+                    PropertySold.cv_numeric, PropertySold.sold_date).filter(
         PropertySold.import_batch_id.in_(batch_ids),
         PropertySold.suburb.in_(_area_values(db, PropertySold, sold_batch, "suburb", suburb)),
         PropertySold.sale_price.isnot(None),
     ).all()
+
+    from periods import sale_day
+    today = datetime.now(NZ_TZ).date()
+    rows = [(method, price, cv) for method, price, cv, day in rows
+            if sale_day(day) is not None and sale_day(day) <= today]
 
     # Three filters used to drop rows in silence, so the table's counts never
     # added up to the suburb's sale count and nothing said why. A reader seeing
@@ -2934,6 +2935,17 @@ def property_comparables(property_id: int, db: Session = Depends(get_db)) -> Com
         )))
     )
 
+    from periods import sale_day
+    today = datetime.now(NZ_TZ).date()
+    # Validate BEFORE selecting a tier/limit, so invalid rows cannot crowd out
+    # eligible evidence or affect summary statistics. Keep original source rows.
+    dated = [(row, sale_day(row.sold_date)) for row in base_all.all()]
+    valid_ids = [row.id for row, day in dated if day is not None and day <= today]
+    base_all = base_all.filter(PropertySold.id.in_(valid_ids))
+
+    def recent(query):
+        return sorted(query.all(), key=lambda row: sale_day(row.sold_date), reverse=True)[:12]
+
     def _tiers(base):
         # Tier 1 — a true like-for-like: SAME beds, SAME baths, and within 25% on
         # both floor and land. Beds/baths are exact because a 3-bed and a 4-bed
@@ -2952,7 +2964,7 @@ def property_comparables(property_id: int, db: Session = Depends(get_db)) -> Com
         if p.land_area_m2 and p.land_area_m2 > 0:
             q = q.filter(PropertySold.land_area_m2.between(
                 p.land_area_m2 * 0.75, p.land_area_m2 * 1.25))
-        rows = q.order_by(desc(PropertySold.sold_date)).limit(12).all()
+        rows = recent(q)
 
         # Tier 2 — keep beds/baths exact, widen size to 50%. Size is the softer
         # constraint; room count is not.
@@ -2970,7 +2982,7 @@ def property_comparables(property_id: int, db: Session = Depends(get_db)) -> Com
             if p.land_area_m2 and p.land_area_m2 > 0:
                 q = q.filter(PropertySold.land_area_m2.between(
                     p.land_area_m2 * 0.5, p.land_area_m2 * 1.5))
-            rows = q.order_by(desc(PropertySold.sold_date)).limit(12).all()
+            rows = recent(q)
 
         # Tier 3 — same beds only. Anything looser stops being a comparable.
         if len(rows) < 3:
@@ -2978,12 +2990,12 @@ def property_comparables(property_id: int, db: Session = Depends(get_db)) -> Com
             q = base
             if p.beds is not None:
                 q = q.filter(PropertySold.beds == p.beds)
-            rows = q.order_by(desc(PropertySold.sold_date)).limit(12).all()
+            rows = recent(q)
 
         # Tier 4 — suburb only, clearly flagged as not like-for-like.
         if len(rows) < 3:
             mu = {"suburb": p.suburb, "fallback": "suburb_wide"}
-            rows = base.order_by(desc(PropertySold.sold_date)).limit(12).all()
+            rows = recent(base)
         return rows, mu
 
     # Prefer comps of the SAME title type as the subject (freehold vs cross-lease etc.) —

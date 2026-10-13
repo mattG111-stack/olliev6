@@ -542,6 +542,8 @@ def get_sold_comparables(property_id: int) -> str:
         except Exception as exc:  # noqa: BLE001 - surfaced to the model as text
             return f"Could not load comparables: {exc}"
         return json.dumps({
+            "matched_using": r.matched_using,
+            "timing_sample": r.comps_with_dom,
             "suburb": r.suburb,
             "median_sale": _money(r.median_sale_price),
             "average_sale": _money(r.mean_sale_price),

@@ -347,6 +347,11 @@ def ask(user: User, question: str, history: list[Turn] | None = None,
     if rental_request(question):
         return providers.Result(text=RENTAL_REPLY)
 
+    from assistant.nearby_report import direct_nearby
+    nearby = direct_nearby(question, dispatch, history)
+    if nearby is not None:
+        return nearby
+
     from assistant.suburb_brief import direct_comparison
     comparison = direct_comparison(question, history)
     if comparison is not None:

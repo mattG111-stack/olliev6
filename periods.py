@@ -10,6 +10,17 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 
+def sale_day(value):
+    """Parse a recorded sale day; unknown/invalid dates are not dated evidence."""
+    if value is None:
+        return None
+    raw = str(value).strip().split("T")[0].split(" ")[0]
+    try:
+        return date.fromisoformat(raw) if "-" in raw[:5] else datetime.strptime(raw, "%m/%d/%Y").date()
+    except (ValueError, TypeError):
+        return None
+
+
 def future_sale(sold_date, *, today: date | None = None) -> bool:
     """Flag a known future date without guessing a correction to the source.
 
