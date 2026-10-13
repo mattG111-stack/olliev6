@@ -35,8 +35,14 @@ def test_dispatch_singleton_and_polling_independent_of_main_loop(monkeypatch):
         release.set();fill_worker._thread.join(2)
 
 
-def test_disabled_poller_does_not_consume_jobs(monkeypatch):
+def test_disabled_collection_still_consumes_requested_hougarden(monkeypatch):
     monkeypatch.setattr(worker, '_stop', False)
     monkeypatch.setattr(settings, 'scraper_enabled', False)
+    calls=[]
+    monkeypatch.setattr('portals.batch_hougarden.run_pending', lambda: calls.append('hougarden'))
     monkeypatch.setattr(fill_worker, 'run_pending', lambda: (_ for _ in ()).throw(AssertionError()))
     fill_worker.poll_pending(sleep=lambda _: setattr(worker, '_stop', True))
+    assert calls == ['hougarden']
+    from scraper_worker import jobs
+    assert next(j for j in jobs() if j.name == 'requested listing backfill').enabled()
+    assert not next(j for j in jobs() if j.name == 'new listings sweep').enabled()
