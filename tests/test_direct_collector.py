@@ -3,6 +3,23 @@ import httpx
 import pytest
 from config import settings
 from portals.direct import Transport, CollectorUnavailable, collect, merge_records, canonical, status
+
+def test_requested_exact_lookup_keeps_proxy_validation_when_schedule_disabled(monkeypatch):
+    from portals import direct
+    monkeypatch.setattr(direct.settings, 'scraper_enabled', False)
+    monkeypatch.setattr(direct.settings, 'scraper_seeds', '{}')
+    monkeypatch.setattr(direct.settings, 'scraper_proxy_urls', '["http://proxy.example:8000"]')
+    created=[]
+    monkeypatch.setattr(direct.httpx, 'Client', lambda **kw: created.append(kw) or object())
+    with pytest.raises(CollectorUnavailable, match='Configure the scraper'):
+        Transport('hougarden')
+    transport=Transport('hougarden', requested=True)
+    assert transport.proxy_url == 'http://proxy.example:8000'
+    assert created[0]['trust_env'] is False
+    assert not created[0]['follow_redirects']
+    monkeypatch.setattr(direct.settings, 'scraper_proxy_urls', '[]')
+    with pytest.raises(CollectorUnavailable, match='Invalid proxy configuration'):
+        Transport('hougarden', requested=True)
 from portals import page_data
 
 @pytest.fixture(autouse=True)
