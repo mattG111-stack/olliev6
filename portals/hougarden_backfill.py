@@ -51,7 +51,7 @@ def known_url(db, row):
 
 def fetch(url):
     from portals.hougarden_page import parse
-    transport = direct.Transport('hougarden')
+    transport = direct.Transport('hougarden', requested=True)
     try:
         html = transport.get(url)
         final = transport.resolved_urls.get(url, url)

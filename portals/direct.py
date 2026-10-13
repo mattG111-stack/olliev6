@@ -114,7 +114,7 @@ def validate_url(url, source):
 
 
 class Transport:
-    def __init__(self, source, *, client=None, delay=3.0):
+    def __init__(self, source, *, client=None, delay=3.0, requested=False):
         if source not in HOSTS:
             raise CollectorUnavailable('Unknown source')
         self.source, self.delay, self.robots = source, max(1.0, delay), {}
@@ -124,7 +124,11 @@ class Transport:
         if client is not None:
             self.client = client
             return
-        if not configured():
+        # An explicitly requested exact-property lookup needs a valid proxy,
+        # but does not need scheduled discovery enabled or search seed URLs.
+        # Proxy validation below, robots rules, pacing and access stops apply
+        # equally to both paths.
+        if not requested and not configured():
             raise CollectorUnavailable('Configure the scraper before collecting')
         try:
             urls = json.loads(settings.scraper_proxy_urls)
