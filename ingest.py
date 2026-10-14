@@ -394,6 +394,7 @@ def _row_to_scrape(p) -> dict:
         "address": p.address, "name": p.name, "suburb": p.suburb,
         "district": p.district, "region": p.region, "postcode": p.postcode,
         "latitude": p.latitude, "longitude": p.longitude,
+        "_quality_origin_id": p.id,
         "url": p.url, "slug_id": p.slug_id,
         # --- the listing itself ---
         "property_type": p.property_type, "type_of_title": p.type_of_title,
@@ -864,6 +865,10 @@ def _clamp_text(payload: dict) -> dict:
 
 
 def _common_property_payload(row: dict, *, region: str = "Auckland") -> dict:
+    from data_quality import nz_coordinates
+    lat, lng = _to_float(row.get("latitude")), _to_float(row.get("longitude"))
+    if not nz_coordinates(lat, lng):
+        lat, lng = None, None
     return _clamp_text({
         "address": _to_str(row.get("address")),
         "name": _to_str(row.get("name")),
@@ -871,8 +876,8 @@ def _common_property_payload(row: dict, *, region: str = "Auckland") -> dict:
         "district": _to_str(row.get("district")),
         "region": _to_str(row.get("region")) or region,
         "postcode": _to_str(row.get("postcode")),
-        "latitude": _to_float(row.get("latitude")),
-        "longitude": _to_float(row.get("longitude")),
+        "latitude": lat,
+        "longitude": lng,
         "property_type": _to_str(row.get("property_type")),
         "type_of_title": _to_str(row.get("type_of_title")),
         # Repair known-mislabelled scrape zonings (e.g. large Waiuku lifestyle
@@ -1698,6 +1703,10 @@ def ingest_for_sale(
     fill_missing: bool = False,
 ) -> IngestResult:
     for_sale_df = normalise_columns(for_sale_df)
+    from data_quality import snapshot, save_snapshots
+    # Preserve the feed's offered values before enrichment or pricing changes
+    # them. Carried rows have no new upload observation and stay unlabelled.
+    for_sale_df['_upload_evidence'] = [snapshot(r.to_dict(), filename) for _, r in for_sale_df.iterrows()]
     sold_df = normalise_columns(sold_df)
     for_sale_df, dropped = _dedupe_by_slug(for_sale_df)
     # Fill blank sizes from CoreLogic BEFORE pricing so the valuation uses them.
@@ -1781,6 +1790,7 @@ def ingest_for_sale(
     enriched = run_pipeline(for_sale_df, sold, rent_rates, model=_model)
 
     print(f"  [ingest] writing {len(enriched)} rows to DB ...")
+    _evidence_pending = []
     inserted = 0; rejected = 0
     rejected_reasons: dict[str, int] = {}
     _seen_regions: dict[str, int] = {}
@@ -1962,9 +1972,15 @@ def ingest_for_sale(
             first_seen_at=_to_dt(row.get("first_seen_at")) or _now,
         )
         db.add(rec); inserted += 1
+        rec._quality_origin_id = _to_int(row.get('_quality_origin_id'))
+        raw_evidence = _to_str(row.get('_upload_evidence'))
+        if raw_evidence or rec._quality_origin_id:
+            _evidence_pending.append((rec, raw_evidence))
         if inserted % 500 == 0:
             db.flush()
+            save_snapshots(db, _evidence_pending, batch.id)
 
+    save_snapshots(db, _evidence_pending, batch.id)
     batch.rows_inserted = inserted; batch.rows_rejected = rejected
     # And the RECORD of the lookup, onto the rows just written. The attributes
     # travelled through the frame above; pv_checked_at is our own note that this

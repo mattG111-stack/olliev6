@@ -184,6 +184,11 @@ def _hold_reason(p: PropertyForSale) -> str | None:
     the live batch so "this check is not running" shows up at /health/ready
     instead of being discovered by a bad row reaching a customer.
     """
+    from data_quality import multiple_properties, identity_mismatch
+    if identity_mismatch(p):
+        return "CoreLogic record belongs to a different exact address/unit"
+    if multiple_properties(p.address):
+        return "Multiple properties/lots — verify exact title and areas"
     if p.land_area_flag:
         return f"Land area flagged ({p.land_area_flag})"
     if p.cv_flag == "suspect":

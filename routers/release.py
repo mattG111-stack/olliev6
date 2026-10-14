@@ -11,7 +11,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,69 @@ from staged_stages import (
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@router.get('/release/data-quality')
+def data_quality_report(region: str = 'Auckland', limit: int = Query(50, ge=1, le=20000),
+                        _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Read-only quality check of the staged load, or current live load."""
+    from collections import Counter, defaultdict
+    from data_quality import checks, provenance, subdivision_checks
+    from models import PortalFinding
+    batch = enrichable_forsale_batch(db, region)
+    if batch is None:
+        return {'batch_id': None, 'status': None, 'total': 0, 'issues': {}, 'rows': []}
+    props = db.query(PropertyForSale).filter_by(import_batch_id=batch.id).order_by(PropertyForSale.id).all()
+    findings = defaultdict(list)
+    for finding in db.query(PortalFinding).filter_by(batch_id=batch.id).order_by(PortalFinding.id):
+        findings[finding.property_id].append(finding)
+    counts = Counter()
+    rows = []
+    for p in props:
+        issues = checks(p)
+        counts.update(issues)
+        rows.append({'id': p.id, 'address': p.address, 'suburb': p.suburb,
+            'issues': ' · '.join(issues) or 'No issues detected by these checks',
+            'issue_count': len(issues), 'is_held': p.is_held,
+            'hold_reason': p.hold_reason,
+            'sale_method': p.sale_method, 'asking_basis': p.asking_basis,
+            'asking_price': p.asking_price, 'portal_estimate': p.third_party_valuation,
+            'source_url': p.url, 'source_date': p.last_updated,
+            'provenance': provenance(p, findings[p.id]),
+            'subdivision_checks': subdivision_checks(p)})
+    rows.sort(key=lambda r: (-r['issue_count'], r['id']))
+    return {'batch_id': batch.id, 'status': batch.status, 'total': len(props),
+        'issues': dict(counts), 'rows': rows[:limit]}
+
+
+@router.post('/release/data-quality/repair')
+def repair_data_quality(region: str = 'Auckland', admin: User = Depends(require_admin),
+                        db: Session = Depends(get_db)):
+    """Reversible repairs only: exclude invalid pins and hold ambiguous bundles."""
+    from data_quality import nz_coordinates, multiple_properties, identity_mismatch
+    from models import PortalFinding
+    batch = enrichable_forsale_batch(db, region)
+    if batch is None:
+        raise HTTPException(409, 'No listing batch to check')
+    cleared = held = 0
+    for p in db.query(PropertyForSale).filter_by(import_batch_id=batch.id).with_for_update():
+        if (p.latitude is not None or p.longitude is not None) and not nz_coordinates(p.latitude, p.longitude):
+            db.add(PortalFinding(property_id=p.id, batch_id=batch.id, source='quality_check',
+                field='coordinates', kind='conflict', status='rejected',
+                extra_json=json.dumps({'previous_latitude':p.latitude,'previous_longitude':p.longitude,
+                    'reason':'Outside NZ coordinate bounds or incomplete pair','url':p.url}),
+                decided_at=datetime.now(timezone.utc), decided_by_id=admin.id))
+            p.latitude = p.longitude = None
+            cleared += 1
+        if (multiple_properties(p.address) or identity_mismatch(p)) and not p.is_held:
+            p.is_held = True
+            p.hold_reason = ('CoreLogic record belongs to a different exact address/unit' if identity_mismatch(p)
+                else 'Multiple properties/lots — verify exact title and areas')
+            held += 1
+    _record(db, stage='checked', event='data_quality_repair', batch_id=batch.id,
+        count=cleared + held, detail=f'{cleared} invalid map pins excluded; {held} listings held for exact-identity review', commit=False)
+    db.commit()
+    return {'batch_id':batch.id,'invalid_pins_excluded':cleared,'ambiguous_listings_held':held}
 
 
 # ---- review the staged release ----------------------------------------------
