@@ -93,6 +93,8 @@ _FILL_PAIRS = (
     ("baths", "baths"),
     ("cv_numeric", "cv"),
     ("zoning", "zoning"),
+    ("building_age", "year_built"),
+    ("cars", "car_spaces"),
 )
 
 
@@ -622,14 +624,19 @@ def _enrich_pass(db: Session, job_id: int, batch_id: int, region: str,
                 if pv:
                     # Fill blank pricing attributes (never overwrite real values)...
                     for our_attr, pv_key in _FILL_PAIRS:
-                        if _blank(getattr(p, our_attr, None)) and pv.get(pv_key):
-                            setattr(p, our_attr, pv.get(pv_key))
+                        if _blank(getattr(p, our_attr, None)) and (pv.get(pv_key) or (our_attr == 'cars' and pv.get(pv_key) == 0)):
+                            from data_quality import record_core_fact
+                            record_core_fact(db, p, our_attr, pv.get(pv_key), pv,
+                                             getattr(p, our_attr, None))
+                            setattr(p, our_attr, str(pv.get(pv_key)) if our_attr == 'building_age' else pv.get(pv_key))
                             filled += 1
                     # ...correct a present-but-wrong CV from CoreLogic's authoritative
                     # rating value (the one exception to "never overwrite": CV *is*
                     # the council RV, and a scraped CV that disagrees is wrong)...
                     new_cv = corrected_cv(p.cv_numeric, pv.get("cv"))
                     if new_cv is not None:
+                        from data_quality import record_core_fact
+                        record_core_fact(db, p, 'cv_numeric', new_cv, pv, p.cv_numeric)
                         p.cv_numeric = new_cv
                         corrected += 1
                     # ...and capture CoreLogic's AVM / CV / last-sold on every hit.
@@ -800,20 +807,24 @@ def enrich_one(db: Session, listing_id: int) -> tuple[PropertyForSale | None, st
     p = db.get(PropertyForSale, listing_id)
     if p is None:
         return None, "not_found"
-    q = ", ".join(x for x in (str(p.address), str(p.suburb or "").strip(), "Auckland")
-                  if x and x.lower() != "nan")
+    q = _enrichment_query(p.address, p.suburb)
     try:
         pv, status = pv_lookup_status(q)
     except Exception:
         pv, status = None, "error"
-    if status != PV_BLOCKED:
+    if status not in (PV_BLOCKED, PV_ERROR):
         p.pv_checked_at = datetime.now(timezone.utc)
     if pv:
         for our_attr, pv_key in _FILL_PAIRS:
-            if _blank(getattr(p, our_attr, None)) and pv.get(pv_key):
-                setattr(p, our_attr, pv.get(pv_key))
+            if _blank(getattr(p, our_attr, None)) and (pv.get(pv_key) or (our_attr == 'cars' and pv.get(pv_key) == 0)):
+                from data_quality import record_core_fact
+                record_core_fact(db, p, our_attr, pv.get(pv_key), pv,
+                                 getattr(p, our_attr, None))
+                setattr(p, our_attr, str(pv.get(pv_key)) if our_attr == 'building_age' else pv.get(pv_key))
         new_cv = corrected_cv(p.cv_numeric, pv.get("cv"))
         if new_cv is not None:
+            from data_quality import record_core_fact
+            record_core_fact(db, p, 'cv_numeric', new_cv, pv, p.cv_numeric)
             p.cv_numeric = new_cv
         _apply_pv_record(p, pv)
     elif status not in (PV_BLOCKED, "error"):

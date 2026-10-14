@@ -32,7 +32,7 @@ import pandas as pd
 # with the real load is worse than none, because it is trusted.
 from ingest import (_EXCLUDED_LOCATIONS, _common_property_payload, _to_float,
                      canonical_type, normalise_columns, region_is_unreadable,
-                     region_matches)
+                     region_matches, _detect_listing_type)
 # assumptions, not audit. The load aliases this module `A` and calls
 # A.is_vacant_type; this file copied the call and aliased the wrong module, so
 # the last check raised AttributeError instead of answering — on any row with no
@@ -62,7 +62,8 @@ def verdict(payload: dict, row: dict, region: str) -> tuple[str | None, dict]:
     The order matters and mirrors the load exactly: a row refused for two
     reasons is reported under the first one, which is the one you would fix.
     """
-    asking = _to_float(row.get("price_numeric"))
+    method = _detect_listing_type(row.get('price_display'), row.get('price_numeric'), row.get('sale_method'))
+    asking = _to_float(row.get("price_numeric")) if method in ('fixed', 'guide') else None
     cv = payload.get("cv_numeric")
     facts = {"v": payload.get("region"), "region": region,
              "ask": asking or 0, "cv": cv or 0,
@@ -94,17 +95,23 @@ def verdict(payload: dict, row: dict, region: str) -> tuple[str | None, dict]:
 
 def check(df: pd.DataFrame, region: str = "Auckland") -> tuple[bytes, dict]:
     """(csv_bytes, counts). Reads the frame; writes nothing anywhere."""
+    from types import SimpleNamespace
+    from data_quality import checks, subdivision_checks
     df = normalise_columns(df)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Address", "Suburb", "Region", "Type", "Asking", "CV",
-                "Floor", "Land", "Verdict", "Why"])
+    w.writerow(["Address", "Suburb", "Region", "Type", "Asking", "Raw feed price", "CV",
+                "Floor", "Land", "Verdict", "Why", "All data issues", "Source URL", "Source date", "Sale method", "Portal estimate", "Subdivision evidence"])
 
     counts: dict[str, int] = {}
     loaded = 0
     for _, r in df.iterrows():
         row = r.to_dict()
         payload = _common_property_payload(row, region=region)
+        check_payload = {**payload, 'latitude': _to_float(row.get('latitude')),
+            'longitude': _to_float(row.get('longitude')),
+            'asking_price': _to_float(row.get('price_numeric'))}
+        subject = SimpleNamespace(**check_payload)
         code, facts = verdict(payload, row, region)
         if code is None:
             loaded += 1
@@ -125,10 +132,13 @@ def check(df: pd.DataFrame, region: str = "Auckland") -> tuple[bytes, dict]:
         w.writerow([
             payload.get("address"), payload.get("suburb"), payload.get("region"),
             payload.get("property_type"),
+            (_to_float(row.get("price_numeric")) or '') if _detect_listing_type(row.get('price_display'), row.get('price_numeric'), row.get('sale_method')) in ('fixed', 'guide') else '',
             _to_float(row.get("price_numeric")) or "",
             payload.get("cv_numeric") or "",
             payload.get("floor_area_m2") or "", payload.get("land_area_m2") or "",
             "loaded" if code is None else "REJECTED", why,
+            ' · '.join(checks(subject)), row.get('url'), row.get('last_updated'),
+            row.get('sale_method'), row.get('property_valuation_numeric'), subdivision_checks(subject),
         ])
 
     counts["_loaded"] = loaded
