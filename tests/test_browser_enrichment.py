@@ -1,0 +1,142 @@
+import json
+from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException, FastAPI
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from models import ImportBatch, IngestJob, PropertyForSale, PortalFinding
+from portals.browser_enrichment import Observation, SaveObservations, scope, queue, apply_observation, save
+
+
+def setup(db):
+    b=ImportBatch(batch_type='for_sale',region='Auckland',filename='new.csv',status='staged',is_active=False)
+    db.add(b);db.flush()
+    p=PropertyForSale(import_batch_id=b.id,address='2/24 Example Road',suburb='Westgate',
+                      floor_area_m2=None,land_area_m2=405,cv_numeric=1000000,
+                      property_type='House',sale_method='fixed price')
+    db.add(p);db.flush()
+    core=IngestJob(batch_type='for_sale',batch_id=b.id,filename=f'enrich (batch {b.id})',
+                   status='failed',stage='enrich',result_json=json.dumps({'ids':[p.id]}))
+    db.add(core);db.commit()
+    return b,p,core
+
+
+def observation(p,**changes):
+    value=dict(property_id=p.id,address=p.address,suburb=p.suburb,
+        source_url='https://www.trademe.co.nz/a/property/residential/sale/auckland/westgate/listing/123456?tracking=discard',
+        observed_at=datetime.now(timezone.utc),evidence=f'{p.address}, {p.suburb}\nHouse\nFloor area 155m²\nLand area 405m²\nCV $1,000,000',
+        facts={'floor_area_m2':{'value':155,'quote':'Floor area 155m²'}})
+    value.update(changes)
+    return Observation(**value)
+
+
+def price(db,pid):
+    db.get(PropertyForSale,pid).fair_value=1230000
+    db.commit()
+
+
+def test_saved_exact_scope_and_checkpoint(db_session):
+    b,p,core=setup(db_session)
+    other=PropertyForSale(import_batch_id=b.id,address='24 Example Road',suburb='Westgate')
+    db_session.add(other);db_session.commit()
+    q=queue(b.id,10,None,db_session)
+    assert q['scope_total']==1 and [r['id'] for r in q['listings']]==[p.id]
+    out=apply_observation(db_session,p,observation(p),None,price)
+    assert out['filled']==1 and p.floor_area_m2==155 and p.land_area_m2==405
+    assert p.fair_value==1230000 and queue(b.id,10,None,db_session)['remaining']==0
+    out=apply_observation(db_session,p,observation(p),None,price)
+    assert out['status']=='already_saved'
+    findings=db_session.query(PortalFinding).all()
+    assert len(findings)==2
+    raw=json.loads(next(f for f in findings if f.field=='floor_area_m2').extra_json)
+    assert raw['quote']=='Floor area 155m²' and '?' not in raw['url'] and raw['observed_at']
+
+
+@pytest.mark.parametrize('changes',[
+    {'address':'1/24 Example Road'}, {'suburb':'Henderson'},
+    {'address':'24 Example Road'}, {'address':'2&3/24 Example Road'},
+    {'evidence':'Floor area 155m² no subject address here'},
+    {'observed_at':datetime.now()},
+    {'observed_at':datetime.now(timezone.utc)-timedelta(days=2)},
+    {'observed_at':datetime.now(timezone.utc)+timedelta(hours=1)},
+    {'facts':{'floor_area_m2':{'value':999,'quote':'Floor area 155m²'}}},
+    {'facts':{'floor_area_m2':{'value':155,'quote':'invented quote'}}},
+    {'facts':{'land_area_m2':{'value':155,'quote':'Floor area 155m²'}}},
+    {'facts':{'fair_value':{'value':155,'quote':'Floor area 155m²'}}},
+    {'facts':{'floor_area_m2':{'value':float('inf'),'quote':'Floor area 155m²'}}},
+    {'property_type':'Section'},
+])
+def test_bad_observation_cannot_change_facts(db_session,changes):
+    b,p,_=setup(db_session)
+    with pytest.raises(HTTPException):apply_observation(db_session,p,observation(p,**changes),None,price)
+    assert p.floor_area_m2 is None and db_session.query(PortalFinding).count()==0
+
+
+@pytest.mark.parametrize('url',[
+    'https://www.trademe.co.nz.evil.test/a/property/residential/sale/listing/123',
+    'http://www.trademe.co.nz/a/property/residential/sale/listing/123',
+    'https://user:secret@www.trademe.co.nz/a/property/residential/sale/listing/123',
+    'https://www.trademe.co.nz/a/motors/cars/toyota/listing/123',
+    'https://127.0.0.1/a/property/residential/sale/listing/123',
+])
+def test_only_property_source_links(url):
+    with pytest.raises(ValidationError):observation(SimpleNamespace(id=1,address='24 Road',suburb='Westgate'),source_url=url)
+
+
+def test_source_conflicts_never_overwrite_and_remain_held(db_session):
+    from release import _hold_reason,hold_flagged_rows
+    b,p,_=setup(db_session)
+    item=observation(p,property_type='Section',evidence=f'{p.address}, {p.suburb}\nSection\nFloor area 155m²')
+    out=apply_observation(db_session,p,item,None,lambda *_:pytest.fail('must not price conflicting evidence'))
+    assert out['status']=='review' and p.floor_area_m2 is None and p.property_type=='House'
+    assert _hold_reason(p).startswith('Source review:')
+    hold_flagged_rows(db_session,b.id)
+    assert p.is_held and p.hold_reason.startswith('Source review:')
+
+
+def test_existing_values_are_not_replaced(db_session):
+    b,p,_=setup(db_session)
+    item=observation(p,evidence=f'{p.address}, {p.suburb}\nLand area 155m²',
+                     facts={'land_area_m2':{'value':155,'quote':'Land area 155m²'}})
+    out=apply_observation(db_session,p,item,None,price)
+    assert out['conflicts']==['land_area_m2'] and p.land_area_m2==405
+
+
+@pytest.mark.parametrize('state,active',[('published',True),('archived',False),('staged',True)])
+def test_live_and_archived_batches_rejected(db_session,state,active):
+    b,_,_=setup(db_session);b.status=state;b.is_active=active;db_session.commit()
+    with pytest.raises(HTTPException):scope(db_session,b.id)
+
+
+def test_absent_scope_never_expands_to_whole_batch(db_session):
+    b,p,core=setup(db_session);core.result_json='{}';db_session.commit()
+    with pytest.raises(HTTPException):scope(db_session,b.id)
+
+
+def test_out_of_scope_and_cross_batch_rejected(db_session):
+    b,p,core=setup(db_session)
+    core.result_json=json.dumps({'ids':[]});db_session.commit()
+    with pytest.raises(HTTPException):save(SaveObservations(batch_id=b.id,observations=[observation(p)]),SimpleNamespace(id=None),db_session)
+    assert p.floor_area_m2 is None
+
+
+def test_pricing_failure_rolls_back_fact_and_checkpoint(db_session,monkeypatch):
+    import reprice
+    b,p,_=setup(db_session)
+    def fail(*a,**k):raise ValueError('synthetic pricing failure')
+    monkeypatch.setattr(reprice,'reprice_one',fail)
+    with pytest.raises(HTTPException) as e:save(SaveObservations(batch_id=b.id,observations=[observation(p)]),SimpleNamespace(id=None),db_session)
+    assert e.value.status_code==503
+    db_session.refresh(p)
+    assert p.floor_area_m2 is None and db_session.query(PortalFinding).count()==0
+
+
+def test_routes_admin_only():
+    from routers.release import router
+    app=FastAPI();app.include_router(router)
+    with TestClient(app) as c:
+        assert c.get('/api/admin/release/browser-enrichment?batch_id=1').status_code==401
+        assert c.post('/api/admin/release/browser-enrichment',json={'batch_id':1,'observations':[]}).status_code==401
