@@ -184,6 +184,9 @@ def _hold_reason(p: PropertyForSale) -> str | None:
     the live batch so "this check is not running" shows up at /health/ready
     instead of being discovered by a bad row reaching a customer.
     """
+    # Repricing does not resolve a retained source disagreement.
+    if (p.hold_reason or '').startswith('Source review:'):
+        return p.hold_reason
     from data_quality import multiple_properties, identity_mismatch
     if identity_mismatch(p):
         return "CoreLogic record belongs to a different exact address/unit"

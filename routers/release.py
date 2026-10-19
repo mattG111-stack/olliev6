@@ -2040,3 +2040,8 @@ def queue_delete(body: QueueCleanupIn, admin: User = Depends(require_admin), db:
 def queue_undo(body: QueueUndoIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     from portals.queue_cleanup import undo
     return {'restored': undo(db, body.ids, body.decided_at, admin.id)}
+
+
+# Explicit desktop-browser observations share the existing admin boundary.
+from portals.browser_enrichment import router as browser_enrichment_router
+router.include_router(browser_enrichment_router)
