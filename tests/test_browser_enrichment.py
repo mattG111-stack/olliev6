@@ -140,3 +140,22 @@ def test_routes_admin_only():
     with TestClient(app) as c:
         assert c.get('/api/admin/release/browser-enrichment?batch_id=1').status_code==401
         assert c.post('/api/admin/release/browser-enrichment',json={'batch_id':1,'observations':[]}).status_code==401
+
+
+def test_browser_fact_runs_real_pricing_without_publishing(db_session):
+    from ingest import ingest_sold,ingest_for_sale
+    from tests.test_the_link_check_gets_round_the_book import _sold,_for_sale
+    sold=_sold()
+    ingest_sold(db_session,sold,'sold.csv')
+    result=ingest_for_sale(db_session,_for_sale(['24']),sold,'new.csv',publish=False,fill_missing=False)
+    p=db_session.query(PropertyForSale).filter_by(import_batch_id=result.batch_id).one()
+    p.floor_area_m2=None
+    db_session.add(IngestJob(batch_type='for_sale',batch_id=result.batch_id,
+        filename=f'enrich (batch {result.batch_id})',status='failed',stage='enrich',
+        result_json=json.dumps({'ids':[p.id]})))
+    db_session.commit()
+    out=save(SaveObservations(batch_id=result.batch_id,observations=[observation(p)]),SimpleNamespace(id=None),db_session)
+    db_session.refresh(p)
+    assert out['filled']==1 and p.floor_area_m2==155 and p.fair_value is not None
+    batch=db_session.get(ImportBatch,result.batch_id)
+    assert batch.status=='staged' and not batch.is_active
