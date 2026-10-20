@@ -1,5 +1,4 @@
 """Customer market data is published data; private pricing has separate selectors."""
-from sqlalchemy import select
 from models import ImportBatch, BatchType
 
 

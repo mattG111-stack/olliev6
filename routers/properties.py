@@ -2026,6 +2026,7 @@ def map_points(
     sold_months: int | None = Query(SOLD_MAP_MONTHS, ge=1, le=120),
     limit: int = Query(20000, ge=1, le=30000),
     db: Session = Depends(get_db),
+    ptype: str | None = Query(None, max_length=32),
 ) -> MapResponse:
     """Geocoded points for the map view. Honours the same area/beds/budget/deal
     filters as the list, so the map and the table describe the same population.
@@ -2036,6 +2037,7 @@ def map_points(
     picture of a market, it is a texture. Ignored for dataset=for_sale, where
     every point is live by definition. Pass a bigger number for a longer view;
     the frontend offers 3 / 6 / 12 / 24 / all.""" 
+    want = ptype.strip().lower() if isinstance(ptype, str) and ptype.strip() else None
     P = PropertyForSale
     if dataset == "sold":
         # Every live sold batch, like every other reader of sold data. Pinned to
@@ -2056,6 +2058,10 @@ def map_points(
             # otherwise scatter pins across Europe/India and force a world zoom.
             S.latitude.between(-47.5, -34.0), S.longitude.between(166.0, 179.5),
         )
+        if want:
+            values = [v for (v,) in db.query(S.property_type).filter(S.import_batch_id.in_(sold_ids)).distinct()
+                      if canonical_type(v).lower() == want]
+            q = q.filter(S.property_type.in_(values))
         if suburb:
             q = q.filter(S.suburb.in_(_area_values(db, S, sold_ids, "suburb", suburb)))
         if district:
@@ -2124,6 +2130,10 @@ def map_points(
         P.fair_value, P.market_value, P.opportunity_score_pct, P.beds,
         P.is_underpriced, P.is_subdividable,
     )
+    if want:
+        values = [v for (v,) in db.query(P.property_type).filter(P.import_batch_id == batch_id).distinct()
+                  if canonical_type(v).lower() == want]
+        q = q.filter(P.property_type.in_(values))
     rows = q.limit(limit).all()
     points = [
         MapPoint(

@@ -72,7 +72,12 @@ def validate_release(db, region):
         raise ValueError('This batch has queued or running work, or a paused source. Finish or stop it before publishing.')
     price=db.query(IngestJob).filter(IngestJob.batch_id==batch.id,
         IngestJob.filename.like('price (%')).order_by(IngestJob.id.desc()).first()
-    payload=json.loads(price.result_json or '{}') if price else {}
+    try:
+        payload=json.loads(price.result_json or '{}') if price else {}
+    except (ValueError,TypeError):
+        payload={}
+    if not isinstance(payload,dict):
+        payload={}
     if price is None or price.status!='completed' or not payload.get('review_fingerprint'):
         raise ValueError('Run pricing on this batch before publishing. Older runs need one fresh validation run.')
     if payload['review_fingerprint']!=pricing_fingerprint(db,batch.id):

@@ -229,3 +229,13 @@ def test_custom_admin_hold_survives_repricing_rules(db_session):
     hold_listing(p.id,'Do not show until vendor confirms',None,db)
     hold_flagged_rows(db,b.id)
     assert p.is_held and p.hold_reason=='Admin hold: Do not show until vendor confirms'
+
+
+def test_map_uses_same_canonical_property_type_as_summary(db_session):
+    from routers.properties import map_points
+    db=db_session;b=batch(db,status='published',active=True)
+    for kind in ['House','独立屋','Apartment']:
+        listing(db,b,property_type=kind,latitude=-36.8,longitude=174.7)
+    db.commit()
+    result=map_points(dataset='for_sale',region='Auckland',suburb='Riverhead',min_beds=None,limit=20000,db=db,ptype='House')
+    assert result.count==2
