@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from addresses import address_key
@@ -49,7 +50,7 @@ class Observation(BaseModel):
         u = urlsplit(value)
         if (u.scheme != 'https' or u.hostname not in ('trademe.co.nz', 'www.trademe.co.nz')
                 or u.username or u.password or u.port not in (None, 443)
-                or not re.fullmatch(r'/a/property/residential/.+/listing/\d+/?', u.path)):
+                or not re.fullmatch(r'/a/property/(?:residential|new-homes)/.+/listing/\d+/?', u.path)):
             raise ValueError('Use the observed public Trade Me property listing link')
         return urlunsplit(('https', 'www.trademe.co.nz', u.path.rstrip('/'), '', ''))
 
@@ -93,7 +94,11 @@ def queue(batch_id: int, limit: int = Query(10, ge=1, le=25),
                             'issues': f.value_text, 'source_url': raw.get('source_url')})
     rows = db.query(PropertyForSale).filter(
         PropertyForSale.import_batch_id == batch.id, PropertyForSale.id.in_(ids - done)
-    ).order_by(PropertyForSale.id).limit(limit).all()
+    ).order_by(case(
+        (PropertyForSale.floor_area_m2.is_(None), 0),
+        (PropertyForSale.cv_numeric.is_(None), 1),
+        (PropertyForSale.land_area_m2.is_(None), 2), else_=3),
+        PropertyForSale.id).limit(limit).all()
     return {'batch_id': batch.id, 'corelogic_job_id': core.id, 'scope_total': len(ids),
             'observed': len(ids & done), 'remaining': len(ids - done),
             'source_review_count': len(reviews), 'source_reviews': reviews[:25],

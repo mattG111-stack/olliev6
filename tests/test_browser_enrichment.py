@@ -159,3 +159,18 @@ def test_browser_fact_runs_real_pricing_without_publishing(db_session):
     assert out['filled']==1 and p.floor_area_m2==155 and p.fair_value is not None
     batch=db_session.get(ImportBatch,result.batch_id)
     assert batch.status=='staged' and not batch.is_active
+
+
+def test_real_new_homes_property_link_accepted():
+    p=SimpleNamespace(id=1,address='8 Umar Court',suburb='Warkworth')
+    item=observation(p,source_url='https://www.trademe.co.nz/a/property/new-homes/new-house/auckland/rodney/warkworth/listing/6182378066?tracking=discard')
+    assert item.source_url.endswith('/listing/6182378066')
+
+
+def test_queue_prioritizes_missing_floor_before_history_only(db_session):
+    b,p,core=setup(db_session)
+    p.floor_area_m2=155
+    gap=PropertyForSale(import_batch_id=b.id,address='25 Example Road',suburb='Westgate',floor_area_m2=None)
+    db_session.add(gap);db_session.flush()
+    core.result_json=json.dumps({'ids':[p.id,gap.id]});db_session.commit()
+    assert queue(b.id,1,None,db_session)['listings'][0]['id']==gap.id
