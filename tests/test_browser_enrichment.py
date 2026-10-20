@@ -174,3 +174,94 @@ def test_queue_prioritizes_missing_floor_before_history_only(db_session):
     db_session.add(gap);db_session.flush()
     core.result_json=json.dumps({'ids':[p.id,gap.id]});db_session.commit()
     assert queue(b.id,1,None,db_session)['listings'][0]['id']==gap.id
+
+
+def pending_correction(db):
+    b,p,core=setup(db)
+    p.property_type='Residential - Vacant';db.commit()
+    apply_observation(db,p,observation(p,property_type='House'),None,price)
+    marker=db.query(PortalFinding).filter_by(field='browser_observation').one()
+    return b,p,core,marker
+
+
+def test_review_correction_preserves_before_and_prices_once(db_session):
+    from portals.browser_enrichment import apply_reviewed_correction
+    b,p,_,marker=pending_correction(db_session)
+    calls=[]
+    def reprice(db,pid):
+        calls.append(pid)
+        prop=db.get(PropertyForSale,pid)
+        assert prop.floor_area_m2==155 and prop.property_type=='House'
+        assert prop.hold_reason is None
+        prop.fair_value=1250000
+    out=apply_reviewed_correction(db_session,p,marker,None,reprice)
+    assert out['changed']==['floor_area_m2','property_type'] and out['fair_value']==1250000
+    assert marker.status=='approved'
+    assert json.loads(marker.extra_json)['previous']['property_type']=='Residential - Vacant'
+    assert queue(b.id,10,None,db_session)['source_review_count']==0
+    assert apply_reviewed_correction(db_session,p,marker,None,reprice)['status']=='already_applied'
+    assert calls==[p.id] and not b.is_active and b.status=='staged'
+    fields=db_session.query(PortalFinding).filter(PortalFinding.field!='browser_observation').all()
+    assert {f.field for f in fields}=={'floor_area_m2','property_type'}
+    assert all(json.loads(f.extra_json)['reviewed_observation_id']==marker.id for f in fields)
+
+
+@pytest.mark.parametrize('field,value',[('property_type','Townhouse'),('floor_area_m2',190),('asking_price',900000),('hold_reason','Held by admin')])
+def test_review_rejects_concurrent_changes(db_session,field,value):
+    from portals.browser_enrichment import apply_reviewed_correction
+    b,p,_,marker=pending_correction(db_session)
+    setattr(p,field,value);db_session.commit()
+    with pytest.raises(HTTPException) as e:
+        apply_reviewed_correction(db_session,p,marker,None,lambda *_:pytest.fail('must not reprice'))
+    assert e.value.status_code==409 and marker.status=='review'
+
+
+def test_review_price_failure_rolls_back_every_change(db_session,monkeypatch):
+    from portals.browser_enrichment import review_correction,ReviewCorrection
+    import reprice
+    b,p,_,marker=pending_correction(db_session)
+    def fail(*a,**kw):raise ValueError('no sold data')
+    monkeypatch.setattr(reprice,'reprice_one',fail)
+    with pytest.raises(HTTPException) as e:
+        review_correction(ReviewCorrection(batch_id=b.id,finding_id=marker.id),SimpleNamespace(id=None),db_session)
+    assert e.value.status_code==503
+    db_session.refresh(p);db_session.refresh(marker)
+    assert p.floor_area_m2 is None and p.property_type=='Residential - Vacant' and marker.status=='review'
+    assert db_session.query(PortalFinding).count()==1
+
+
+def test_review_scope_and_live_guards(db_session):
+    from portals.browser_enrichment import review_correction,ReviewCorrection
+    b,p,core,marker=pending_correction(db_session)
+    core.result_json=json.dumps({'ids':[]});db_session.commit()
+    with pytest.raises(HTTPException) as e:
+        review_correction(ReviewCorrection(batch_id=b.id,finding_id=marker.id),SimpleNamespace(id=None),db_session)
+    assert e.value.status_code==404
+    b.is_active=True;db_session.commit()
+    with pytest.raises(HTTPException) as e:
+        review_correction(ReviewCorrection(batch_id=b.id,finding_id=marker.id),SimpleNamespace(id=None),db_session)
+    assert e.value.status_code==409
+
+
+def test_review_route_requires_admin():
+    from routers.release import router
+    app=FastAPI();app.include_router(router)
+    with TestClient(app) as c:
+        assert c.post('/api/admin/release/browser-enrichment/review',json={'batch_id':1,'finding_id':1}).status_code==401
+
+
+def test_review_correction_runs_actual_engine(db_session):
+    from ingest import ingest_sold,ingest_for_sale
+    from tests.test_the_link_check_gets_round_the_book import _sold,_for_sale
+    from portals.browser_enrichment import review_correction,ReviewCorrection
+    sold=_sold();ingest_sold(db_session,sold,'sold.csv')
+    result=ingest_for_sale(db_session,_for_sale(['24']),sold,'new.csv',publish=False,fill_missing=False)
+    p=db_session.query(PropertyForSale).filter_by(import_batch_id=result.batch_id).one()
+    p.floor_area_m2=None;p.property_type='Residential - Vacant'
+    db_session.add(IngestJob(batch_type='for_sale',batch_id=result.batch_id,filename=f'enrich (batch {result.batch_id})',
+        status='failed',stage='enrich',result_json=json.dumps({'ids':[p.id]})));db_session.commit()
+    apply_observation(db_session,p,observation(p,property_type='House'),None,lambda *_:pytest.fail('review first'))
+    marker=db_session.query(PortalFinding).filter_by(field='browser_observation').one()
+    out=review_correction(ReviewCorrection(batch_id=result.batch_id,finding_id=marker.id),SimpleNamespace(id=None),db_session)
+    assert p.property_type=='House' and p.floor_area_m2==155 and p.fair_value is not None
+    assert out['status']=='applied' and marker.status=='approved'

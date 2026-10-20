@@ -48,3 +48,5 @@ Do not save an outage, unfinished page, login page or no-search-result as a
 successful observation. An exact page with no extra facts can be recorded with
 an empty facts object; its genuine missing facts remain unknown. Failed source
 access stays unfinished in the queue.
+
+Reviewed corrections: the admin queue now exposes retained before/source values and evidence. POST /api/admin/release/browser-enrichment/review accepts only a stored finding_id and its staged batch_id. It revalidates exact identity, evidence age and fact quotes, refuses changed input/hold snapshots, retains originals and per-field provenance, and reprices in the same transaction. An engine failure rolls back facts, approval and valuation. Repeated approval is idempotent. This action never publishes a batch. Public source omissions remain missing; evidence that explicitly qualifies a measurement (e.g. total floor area including balcony) retains that qualification in its source quote.
