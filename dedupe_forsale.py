@@ -32,12 +32,14 @@ exactly what it WOULD remove and writes nothing.
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
 from addresses import address_key
-from models import BatchType, ImportBatch, PropertyForSale
+from models import BatchType, ImportBatch, PropertyForSale, PortalFinding
+from data_quality import multiple_properties
 from runlog import record as _record
 
 log = logging.getLogger("dedupe_forsale")
@@ -49,6 +51,7 @@ class DedupeResult:
     dry_run: bool
     groups: int = 0            # address keys that had more than one row
     duplicates: int = 0        # rows that are duplicates (total rows - survivors)
+    excluded: int = 0
     removed: int = 0           # rows actually deleted (0 on a dry run)
     examples: list[str] = field(default_factory=list)
     note: str = ""
@@ -89,12 +92,16 @@ def _target_batch(db: Session, region: str, batch_id: int | None) -> ImportBatch
 
 def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
                          batch_id: int | None = None,
-                         dry_run: bool = True) -> DedupeResult:
+                         dry_run: bool = True, exclude_only: bool = False) -> DedupeResult:
     """Collapse address-key duplicates within one for-sale batch. See module docs."""
     batch = _target_batch(db, region, batch_id)
     if batch is None:
         return DedupeResult(batch_id=None, dry_run=dry_run,
                             note="No new for-sale batch to clean.")
+
+    if exclude_only and (batch.status not in ('staged', 'preview') or batch.is_active
+                         or batch.batch_type != BatchType.FOR_SALE.value or batch.region != region):
+        raise ValueError('Duplicate exclusion requires a staged or preview for-sale batch.')
 
     rows = (db.query(PropertyForSale)
             .filter(PropertyForSale.import_batch_id == batch.id)
@@ -102,6 +109,8 @@ def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
 
     by_key: dict[str, list[PropertyForSale]] = {}
     for p in rows:
+        if multiple_properties(p.address):
+            continue
         key = address_key(p.address, p.suburb)
         if not key:
             continue                                # can't identify it — leave alone
@@ -109,6 +118,7 @@ def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
 
     res = DedupeResult(batch_id=batch.id, dry_run=dry_run)
     to_delete: list[PropertyForSale] = []
+    survivors = {}
     for key, group in by_key.items():
         if len(group) < 2:
             continue
@@ -117,6 +127,7 @@ def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
         losers = [p for p in group if p.id != survivor.id]
         res.duplicates += len(losers)
         to_delete.extend(losers)
+        survivors.update({p.id: survivor.id for p in losers})
         if len(res.examples) < 20:
             res.examples.append(
                 f"{survivor.address or key}: kept #{survivor.id}, "
@@ -128,8 +139,26 @@ def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
 
     if dry_run:
         res.note = (f"{res.duplicates:,} duplicate row(s) across {res.groups:,} "
-                    f"address(es) would be removed from batch {batch.id}. "
+                    f"address(es) would be {'excluded' if exclude_only else 'removed'} from batch {batch.id}. "
                     f"Nothing was deleted (dry run).")
+        return res
+
+    if exclude_only:
+        for p in to_delete:
+            previous = db.query(PortalFinding).filter_by(property_id=p.id,
+                batch_id=batch.id, source='dedupe_review', field='duplicate_listing').first()
+            if previous is None:
+                db.add(PortalFinding(property_id=p.id, batch_id=batch.id,
+                    source='dedupe_review', field='duplicate_listing', kind='conflict',
+                    status='review', value_text=str(survivors[p.id]),
+                    extra_json=json.dumps({'survivor_id': survivors[p.id],
+                        'previous_is_held': p.is_held, 'previous_hold_reason': p.hold_reason,
+                        'address_key': address_key(p.address, p.suburb)})))
+            p.is_held = True
+            p.hold_reason = f'Source review: Duplicate listing of #{survivors[p.id]}'
+            res.excluded += 1
+        db.commit()
+        res.note = f'Excluded {res.excluded} extra copies; all records retained.'
         return res
 
     # Record a summary, plus each deletion up to a cap, before the rows are gone.

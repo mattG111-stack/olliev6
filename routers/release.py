@@ -796,6 +796,7 @@ class DedupeOut(BaseModel):
     dry_run: bool
     groups: int          # addresses that had more than one listing
     duplicates: int      # duplicate rows found
+    excluded: int = 0
     removed: int         # rows actually deleted (0 on a dry run)
     examples: list[str]
     note: str
@@ -803,6 +804,7 @@ class DedupeOut(BaseModel):
 
 @router.post("/release/dedupe", response_model=DedupeOut)
 def dedupe_new_listings(region: str = "Auckland", dry_run: bool = True,
+                        exclude_only: bool = False,
                         batch_id: int | None = None,
                         _: User = Depends(require_admin),
                         db: Session = Depends(get_db)) -> DedupeOut:
@@ -826,9 +828,13 @@ def dedupe_new_listings(region: str = "Auckland", dry_run: bool = True,
     """
     from dedupe_forsale import dedupe_forsale_batch
 
-    res = dedupe_forsale_batch(db, region=region, batch_id=batch_id, dry_run=dry_run)
+    try:
+        res = dedupe_forsale_batch(db, region=region, batch_id=batch_id, dry_run=dry_run,
+                                   exclude_only=exclude_only)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return DedupeOut(batch_id=res.batch_id, dry_run=res.dry_run, groups=res.groups,
-                     duplicates=res.duplicates, removed=res.removed,
+                     duplicates=res.duplicates, removed=res.removed, excluded=res.excluded,
                      examples=res.examples, note=res.note)
 
 
