@@ -40,7 +40,7 @@ def snapshot(row, filename):
     fields = set(FACTS.values()) | {'address','suburb','district','region','url','slug_id',
         'price_display','price_numeric','sale_method','property_valuation_numeric',
         'property_valuation_low_numeric','property_valuation_high_numeric',
-        'last_updated','listing_date','image_count'}
+        'last_updated','listing_date','image_count','property_valuation_date'}
     return json.dumps({'filename': filename, 'captured_at': datetime.now(timezone.utc).isoformat(),
         'source_date': clean(row.get('last_updated')), 'url': clean(row.get('url')),
         'original': {key: clean(row.get(key)) for key in sorted(fields)}}, allow_nan=False)

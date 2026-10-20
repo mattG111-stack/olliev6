@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from sqlalchemy import text
 from db import SessionLocal, engine
-from models import IngestJob, PortalListing, PropertyForSale, PortalFinding
+from models import IngestJob, ImportBatch, PortalListing, PropertyForSale, PortalFinding
 from portals import hougarden_backfill as source
 from portals.complete import _blank
 from staged_stages import _update
@@ -65,6 +65,16 @@ def run_pending():
             with SessionLocal() as db:
                 job = db.query(IngestJob).filter(IngestJob.filename.like(STAGE+' (batch %'), IngestJob.status.in_(('pending','running','paused'))).order_by(IngestJob.id).first()
                 if job is None:
+                    return
+                batch = db.get(ImportBatch, job.batch_id)
+                if batch is None or batch.status not in ('staged','preview') or batch.is_active:
+                    _update(db, job.id, status='failed', stage='Private review copy required',
+                        error_message='Approved records cannot be enriched in place; saved progress retained. Create a private review copy.')
+                    return
+                busy = db.query(IngestJob.id).filter(IngestJob.batch_id == job.batch_id,
+                    IngestJob.filename == f'price (batch {job.batch_id})',
+                    IngestJob.status.in_(('pending','running'))).first()
+                if busy:
                     return
                 state = json.loads(job.result_json or '{}')
                 core = db.query(IngestJob).filter(IngestJob.batch_id == job.batch_id,

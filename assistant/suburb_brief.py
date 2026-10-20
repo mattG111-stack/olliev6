@@ -64,7 +64,7 @@ def render(suburb, data, listings):
 def load_brief(suburb):
     from db import SessionLocal
     from models import PropertySold as S, PropertyForSale as P
-    from ingest import sold_batch_ids
+    from publication_scope import approved_sold_batch_ids as sold_batch_ids
     from assistant.tools import _active
     from routers.properties import _hide_bad_data
     from sqlalchemy import func
@@ -144,7 +144,7 @@ def direct_comparison(question, history=None):
         return None
     from db import SessionLocal
     from models import PropertySold as S
-    from ingest import sold_batch_ids
+    from publication_scope import approved_sold_batch_ids as sold_batch_ids
     from sqlalchemy import func
     with SessionLocal() as db:
         bids = sold_batch_ids(db, "Auckland")

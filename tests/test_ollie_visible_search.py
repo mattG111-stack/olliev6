@@ -7,7 +7,7 @@ from routers.properties import _hide_bad_data
 
 def test_direct_search_matches_visible_page_and_total(db_session):
     db = db_session
-    b = ImportBatch(batch_type='for_sale', filename='fixture.csv', is_active=True)
+    b = ImportBatch(batch_type='for_sale', filename='fixture.csv', is_active=True, status="published")
     db.add(b); db.flush()
     for i, extra in enumerate([{}, {}, {'is_held':True}, {'link_dead_at':datetime(2026,1,1)}, {'sold_seen_at':datetime(2026,1,1)}, {'floor_area_m2':None}, {'margin':3}]):
         fields=dict(import_batch_id=b.id,address=f'{i} Example Road',suburb='Glen Eden',floor_area_m2=100,asking_price=600000,fair_value=700000,margin=.16,property_type='House',type_of_title='Freehold')

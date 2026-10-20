@@ -125,14 +125,18 @@ def _finish(db: Session, marker: IngestJob, state: dict, region: str) -> None:
 
     batch_id = marker.batch_id
     try:
-        d = dedupe_forsale_batch(db, region=region, batch_id=batch_id, dry_run=False)
-        log.warning("auto_pipeline: batch %s — dedupe removed %s", batch_id, d.removed)
+        d = dedupe_forsale_batch(db, region=region, batch_id=batch_id, dry_run=False, exclude_only=True)
+        log.warning("auto_pipeline: batch %s — dedupe excluded %s", batch_id, d.excluded)
     except Exception:                              # noqa: BLE001
-        log.exception("auto_pipeline: batch %s — dedupe failed (continuing)", batch_id)
+        log.exception("auto_pipeline: batch %s — dedupe failed; stopped for review", batch_id)
+        _save(db, marker, state, status="failed", error_message="Duplicate review failed; preview stopped")
+        return
     try:
         send_to_preview(db, region)
     except Exception:                              # noqa: BLE001
         log.exception("auto_pipeline: batch %s — send_to_preview failed", batch_id)
+        _save(db, marker, state, status="failed", error_message="Preview validation failed")
+        return
     state["step"] = "done"
     _save(db, marker, state, status="completed", stage="done", progress_pct=100,
           completed_at=datetime.now(timezone.utc))

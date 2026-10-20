@@ -21,7 +21,7 @@ from sqlalchemy import and_, func, or_, select
 
 from days_to_sell import observed_days_to_sell
 from db import SessionLocal
-from ingest import sold_batch_ids
+from publication_scope import approved_sold_batch_ids as sold_batch_ids
 from models import (BUDGET_PRICE, ImportBatch, PropertyForSale, PropertyRent,
                       PropertySold)
 from pricing.conversion import conversion_opportunities
@@ -45,7 +45,8 @@ MAX_ROWS = 25
 def _active(session, batch_type: str) -> int | None:
     return session.execute(
         select(ImportBatch.id).where(
-            ImportBatch.is_active, ImportBatch.batch_type == batch_type
+            ImportBatch.is_active, ImportBatch.batch_type == batch_type,
+            ImportBatch.status == "published"
         )
     ).scalar()
 
@@ -856,7 +857,7 @@ def _sold_engine(db, region: str):
     ids = tuple(sorted(b.id for b in db.query(ImportBatch.id).filter(
         ImportBatch.batch_type == BatchType.SOLD.value,
         ImportBatch.region == region,
-        ImportBatch.status.in_(("staged", "preview", "published"))).all()))
+        ImportBatch.status == "published").all()))
     # Fingerprint the CONTENT, not just the batch ids — count + max row id. Batch
     # ids alone are not enough: a fresh database (the tests) or a reset reuses id 1
     # for different data, and keying on ids would then serve a stale engine. Count
@@ -871,7 +872,7 @@ def _sold_engine(db, region: str):
     hit = _ENGINE_CACHE.get(region)
     if hit and hit[0] == sig and (now - hit[1]) < _ENGINE_TTL:
         return hit[2], hit[3]
-    sold = _sold_df(db, region)
+    sold = _sold_df(db, region, published_only=True)
     if sold is None or getattr(sold, "empty", True):
         return None, None
     engine = CompEngine(sold)

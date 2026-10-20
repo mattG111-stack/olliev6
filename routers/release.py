@@ -31,6 +31,7 @@ from runlog import record as _record
 from security import require_admin
 log = logging.getLogger(__name__)
 
+from requested_stages import create_requested_stage
 from staged_stages import (
     _staged_forsale_batch,
     abandon_stage,
@@ -83,7 +84,8 @@ def repair_data_quality(region: str = 'Auckland', admin: User = Depends(require_
     """Reversible repairs only: exclude invalid pins and hold ambiguous bundles."""
     from data_quality import nz_coordinates, multiple_properties, identity_mismatch
     from models import PortalFinding
-    batch = enrichable_forsale_batch(db, region)
+    from release_safety import working_copy
+    batch = working_copy(db, region)
     if batch is None:
         raise HTTPException(409, 'No listing batch to check')
     cleared = held = 0
@@ -491,19 +493,12 @@ class StageStarted(BaseModel):
 @router.post("/release/enrich", response_model=StageStarted)
 def enrich_staged(region: str = "Auckland", admin: User = Depends(require_admin),
                   db: Session = Depends(get_db)) -> StageStarted:
-    """Fill blank floor / land / CV from CoreLogic — staged batch, or the live one.
+    """Fill a private review batch, copying the approved book when needed.
 
-    Re-runnable: a re-run only looks up rows that are STILL missing a
-    pricing-critical field, so a stage that died at 60% resumes from there.
-
-    It used to accept ONLY a staged batch, and publishing flips a batch out of
-    that status — so the moment a load went live it became impossible to
-    bulk-enrich, and the only option left was the per-listing button on a batch
-    of eleven thousand. A published batch with thousands of rows still missing a
-    floor area is exactly the one that needs this most: those rows are held,
-    unpriced, and showing as gaps to customers.
+    The worker persists progress; customers see no change until publication.
     """
-    batch = enrichable_forsale_batch(db, region)
+    from release_safety import working_copy
+    batch = working_copy(db, region)
     if batch is None:
         raise HTTPException(
             status_code=409,
@@ -513,10 +508,9 @@ def enrich_staged(region: str = "Auckland", admin: User = Depends(require_admin)
     # the main way this OOM-killed the container. Return the in-flight job instead.
     if stage_running(db, batch.id, "enrich"):
         raise HTTPException(status_code=409, detail="Enrich is already running for this batch")
-    job = create_stage_job(db, stage="enrich", batch_id=batch.id, region=region,
+    job = create_requested_stage(db, stage="enrich", batch_id=batch.id, region=region,
                            uploaded_by_id=admin.id)
     bid, jid = batch.id, job.id
-    threading.Thread(target=run_enrich_job, args=(jid, bid, region), daemon=True).start()
     return StageStarted(job_id=jid, batch_id=bid, stage="enrich")
 
 
@@ -609,15 +603,15 @@ def restart_stage(stage: str, region: str = "Auckland",
     """
     if stage not in ("enrich", "price"):
         raise HTTPException(status_code=404, detail=f"No stage called {stage!r}")
-    batch = (enrichable_forsale_batch(db, region) if stage == "enrich"
-             else _staged_forsale_batch(db, region))
+    from release_safety import working_copy
+    batch = working_copy(db, region)
     if batch is None:
         raise HTTPException(
             status_code=409,
             detail=f"No for-sale batch to {stage} for {region} — nothing staged "
                    f"and nothing live.")
     stopped = abandon_stage(db, batch.id, stage)
-    job = create_stage_job(db, stage=stage, batch_id=batch.id, region=region,
+    job = create_requested_stage(db, stage=stage, batch_id=batch.id, region=region,
                            uploaded_by_id=admin.id)
     bid, jid = batch.id, job.id
     _record(db, stage=stage, event="restarted", batch_id=bid, job_id=jid,
@@ -625,8 +619,6 @@ def restart_stage(stage: str, region: str = "Auckland",
             detail=(f"{stage} restarted by an operator"
                     + (f"; {stopped} run(s) already in flight were stopped first"
                        if stopped else " (nothing was running)")))
-    fn = run_enrich_job if stage == "enrich" else run_price_job
-    threading.Thread(target=fn, args=(jid, bid, region), daemon=True).start()
     return StageRestarted(job_id=jid, batch_id=bid, stage=stage, stopped=stopped)
 
 
@@ -641,10 +633,9 @@ def price_staged(region: str = "Auckland", admin: User = Depends(require_admin),
         raise HTTPException(status_code=409, detail="No staged for-sale batch to price")
     if stage_running(db, batch.id, "price"):
         raise HTTPException(status_code=409, detail="Re-price is already running for this batch")
-    job = create_stage_job(db, stage="price", batch_id=batch.id, region=region,
+    job = create_requested_stage(db, stage="price", batch_id=batch.id, region=region,
                            uploaded_by_id=admin.id)
     bid, jid = batch.id, job.id
-    threading.Thread(target=run_price_job, args=(jid, bid, region), daemon=True).start()
     return StageStarted(job_id=jid, batch_id=bid, stage="price")
 
 
@@ -659,22 +650,16 @@ def _live_forsale_batch(db: Session, region: str) -> ImportBatch | None:
 @router.post("/release/price-live", response_model=StageStarted)
 def price_live(region: str = "Auckland", admin: User = Depends(require_admin),
                db: Session = Depends(get_db)) -> StageStarted:
-    """Re-price the LIVE (active) for-sale batch — the one customers see.
-
-    Pricing was staged-only, so after filling missing details on listings already
-    on the site (Fill missing details / per-listing enrich) there was no way to push
-    those numbers into the valuation without waiting for the hourly self-heal. This
-    re-runs the same pricing + hold rules over the live batch on demand. Re-runnable;
-    one at a time (a second run on the same batch is refused)."""
-    batch = _live_forsale_batch(db, region)
+    """Price a private review copy of the approved book; never mutate live values."""
+    from release_safety import working_copy
+    batch = working_copy(db, region)
     if batch is None:
         raise HTTPException(status_code=409, detail="No live for-sale batch to re-price")
     if stage_running(db, batch.id, "price"):
         raise HTTPException(status_code=409, detail="Re-price is already running for the live batch")
-    job = create_stage_job(db, stage="price", batch_id=batch.id, region=region,
+    job = create_requested_stage(db, stage="price", batch_id=batch.id, region=region,
                            uploaded_by_id=admin.id)
     bid, jid = batch.id, job.id
-    threading.Thread(target=run_price_job, args=(jid, bid, region), daemon=True).start()
     return StageStarted(job_id=jid, batch_id=bid, stage="price")
 
 
@@ -689,6 +674,12 @@ def send_preview(region: str = "Auckland", admin: User = Depends(require_admin),
     """
     from release import send_to_preview
 
+    from release_safety import validate_release
+    try:
+        validate_release(db, region)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     summary = staged_summary(db, region)
     if not summary.has_staged:
         raise HTTPException(status_code=409, detail="Nothing loaded to preview")
@@ -735,6 +726,12 @@ def publish(region: str = "Auckland", admin: User = Depends(require_admin),
             db: Session = Depends(get_db)) -> dict:
     """Go live. Takes the previewed batch (or a staged one, if preview was
     skipped) and puts it in front of customers, archiving the previous load."""
+    from release_safety import validate_release
+    try:
+        validate_release(db, region)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     summary = staged_summary(db, region)
     if not summary.has_staged:
         raise HTTPException(status_code=409, detail="Nothing staged to publish")
@@ -856,6 +853,8 @@ def edit_listing(listing_id: int, body: ListingPatch, _: User = Depends(require_
     p = db.get(PropertyForSale, listing_id)
     if not p:
         raise HTTPException(status_code=404, detail="Listing not found")
+    from release_safety import require_private_listing
+    require_private_listing(db, listing_id)
     for field, val in body.model_dump(exclude_unset=True).items():
         setattr(p, field, val)
     db.commit(); db.refresh(p)
@@ -869,6 +868,10 @@ def publish_listing(listing_id: int, _: User = Depends(require_admin),
     p = db.get(PropertyForSale, listing_id)
     if not p:
         raise HTTPException(status_code=404, detail="Listing not found")
+    from release import _hold_reason
+    reason = _hold_reason(p)
+    if reason:
+        raise HTTPException(409, f"Cannot publish: {reason}. Correct the facts and reprice first.")
     p.is_held = False
     p.hold_reason = None
     db.commit(); db.refresh(p)
@@ -922,7 +925,7 @@ def hold_listing(listing_id: int, reason: str = "Held by admin",
     if not p:
         raise HTTPException(status_code=404, detail="Listing not found")
     p.is_held = True
-    p.hold_reason = reason
+    p.hold_reason = f"Admin hold: {reason}"
     db.commit(); db.refresh(p)
     return p
 
@@ -996,6 +999,8 @@ def set_listing_lots(listing_id: int, body: LotsIn,
     if p is None:
         raise HTTPException(status_code=404, detail="No such listing")
 
+    from release_safety import require_private_listing
+    require_private_listing(db, listing_id)
     if body.lots is None:
         p.lots_override = None
     else:
@@ -1043,6 +1048,8 @@ def enrich_listing(listing_id: int, _: User = Depends(require_admin),
     """CoreLogic-enrich one listing on demand (fills blank floor/land/CV, corrects
     a wrong CV). Re-price afterwards to re-value it on the filled numbers."""
     from staged_stages import enrich_one
+    from release_safety import require_private_listing
+    require_private_listing(db, listing_id)
     p, status = enrich_one(db, listing_id)
     if p is None:
         raise HTTPException(status_code=404, detail="Listing not found")
@@ -1056,6 +1063,8 @@ def reprice_listing(listing_id: int, region: str = "Auckland",
     """Re-value one listing from its current attributes and re-evaluate its hold —
     if it now clears the $margin floor it drops back into the live feed."""
     from reprice import reprice_one
+    from release_safety import require_private_listing
+    require_private_listing(db, listing_id)
     try:
         p = reprice_one(db, listing_id, region=region)
     except ValueError as e:
@@ -1975,7 +1984,8 @@ def start_hougarden_enrich(region: str = 'Auckland', cap: int = 50000,
     from portals.batch_hougarden import STAGE, MAPPING
     from portals.complete import _blank
     from sqlalchemy import text
-    batch = enrichable_forsale_batch(db, region)
+    from release_safety import working_copy
+    batch = working_copy(db, region)
     if batch is None:
         raise HTTPException(status_code=409, detail='No for-sale batch to enrich')
     if db.get_bind().dialect.name == 'postgresql':
@@ -2051,3 +2061,13 @@ def queue_undo(body: QueueUndoIn, admin: User = Depends(require_admin), db: Sess
 # Explicit desktop-browser observations share the existing admin boundary.
 from portals.browser_enrichment import router as browser_enrichment_router
 router.include_router(browser_enrichment_router)
+
+
+@router.get('/release/hougarden-benchmark')
+def hougarden_benchmark(region: str = 'Auckland', limit: int = Query(50, ge=1, le=200),
+                        _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from hougarden_benchmark import benchmark
+    batch = enrichable_forsale_batch(db, region)
+    if batch is None:
+        return {'batch_id': None, 'matched_properties': 0, 'total_rows': 0, 'rows': [], 'excluded': {}}
+    return benchmark(db, batch, limit)

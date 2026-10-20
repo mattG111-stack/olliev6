@@ -101,7 +101,7 @@ def _listed_keys(db: Session, region: str) -> set[str]:
     b = (db.query(ImportBatch)
          .filter(ImportBatch.batch_type == BatchType.FOR_SALE.value,
                  ImportBatch.region == region,
-                 ImportBatch.is_active.is_(True))
+                 ImportBatch.is_active.is_(True), ImportBatch.status == "published")
          .order_by(ImportBatch.id.desc()).first())
     if b is None:
         return set()

@@ -64,18 +64,11 @@ ALLOWED_TABLES = {
     "properties_for_sale",
     "properties_sold",
     "properties_rent",
-    "portal_listings",
-    "portal_findings",
     # the land under it
     "parcel_cache",
-    "building_overrides",
     # where the data came from and how fresh it is
     "import_batches",
-    "ingest_jobs",
-    "run_events",
     # what people do with it — counts only, no names anywhere in these
-    "agent_contacts",
-    "page_views",
 }
 
 # Matches a table name after FROM / JOIN, with optional schema qualifier.
@@ -107,6 +100,22 @@ def validate(sql: str) -> str:
     if ";" in cleaned:
         raise UnsafeQuery("Only one statement per query. Remove the semicolon.")
 
+    identifiers = re.sub(r"'(?:''|[^'])*'", "''", cleaned)
+    identifiers = re.sub(r'"([a-zA-Z_][\w$]*)"', r'\1', identifiers)
+    # Explicit JOINs make every table reference subject to the allowlist.
+    # Reject comma joins rather than silently ignoring their second table.
+    depth, from_depths = 0, set()
+    for token in re.findall(r"[a-zA-Z_][\w$]*|[(),]", identifiers):
+        upper = token.upper()
+        if token == "(": depth += 1
+        elif token == ")":
+            from_depths.discard(depth)
+            depth -= 1
+        elif upper == "FROM": from_depths.add(depth)
+        elif upper in {"WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "UNION", "EXCEPT", "INTERSECT"}:
+            from_depths.discard(depth)
+        elif token == "," and depth in from_depths:
+            raise UnsafeQuery("Use explicit JOINs rather than comma-separated tables.")
     lowered = cleaned.lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         raise UnsafeQuery("Only SELECT (or WITH ... SELECT) queries are allowed.")
@@ -115,13 +124,13 @@ def validate(sql: str) -> str:
     # mistaken for real tables.
     cte_names = {
         m.group(1).lower()
-        for m in re.finditer(r"\b([a-zA-Z_][\w$]*)\s+as\s*\(", cleaned, re.IGNORECASE)
+        for m in re.finditer(r"\b([a-zA-Z_][\w$]*)\s+as\s*\(", identifiers, re.IGNORECASE)
     }
 
-    referenced = {m.group(1).lower() for m in _TABLE_REF.finditer(cleaned)}
+    referenced = {m.group(1).lower() for m in _TABLE_REF.finditer(identifiers)}
     for ref in referenced:
         bare = ref.split(".")[-1]
-        if bare in cte_names or ref in cte_names:
+        if "." not in ref and ref in cte_names:
             continue
         if bare not in ALLOWED_TABLES:
             raise UnsafeQuery(
@@ -135,44 +144,48 @@ def validate(sql: str) -> str:
 
 
 def scope_live_listings(sql: str, dialect=None) -> str:
-    """Apply the property page's visibility rule before any SQL aggregation.
-
-    A non-recursive CTE shadows the physical table, including references in
-    subqueries and joins. Reuse the actual page predicate rather than keeping
-    a second, gradually diverging list of hidden-row conditions in the prompt.
-    Historical batch metadata remains available through import_batches.
-    """
-    # Ignore literal text when detecting identifiers/control words.
+    """Enforce approved data before aggregation, regardless of generated SQL."""
     identifiers = re.sub(r"'(?:''|[^'])*'", "''", sql)
-    if not re.search(r'\bproperties_for_sale\b', identifiers, re.I):
+    tables = [t for t in ("properties_for_sale", "properties_sold", "properties_rent", "import_batches")
+              if re.search(r"\b" + t + r"\b", identifiers, re.I)]
+    if not tables:
         return sql
     if re.match(r"\s*WITH\s+RECURSIVE\b", identifiers, re.I):
-        raise UnsafeQuery("Use a non-recursive query for current listings.")
-    if re.search(r'[\w\"]\s*\.\s*\"?properties_for_sale\b', identifiers, re.I):
-        raise UnsafeQuery("Use the unqualified properties_for_sale table for current visible listings.")
-    if re.search(r'\bproperties_for_sale\"?\s*(?:\([^)]*\)\s*)?AS\s*\(', identifiers, re.I):
-        raise UnsafeQuery("properties_for_sale is reserved for current visible listings; choose another CTE name.")
-
+        raise UnsafeQuery("Use a non-recursive query for approved records.")
+    for table in tables:
+        if re.search(r'[\w\"]\s*\.\s*\"?' + table + r'\b', identifiers, re.I):
+            raise UnsafeQuery(f"Use the unqualified {table} table for approved records.")
+        if re.search(r'\b' + table + r'\"?\s*(?:\([^)]*\)\s*)?AS\s*\(', identifiers, re.I):
+            raise UnsafeQuery(f"{table} is reserved for approved records; choose another CTE name.")
     from sqlalchemy import select
     from sqlalchemy.dialects import postgresql
     from models import ImportBatch, PropertyForSale
     from routers.properties import _hide_bad_data
-
-    visible = _hide_bad_data(select(text("properties_for_sale.*")).select_from(PropertyForSale)).where(
-        PropertyForSale.import_batch_id.in_(select(ImportBatch.id).where(
-            ImportBatch.is_active.is_(True), ImportBatch.batch_type == "for_sale")))
     dialect = dialect or postgresql.dialect()
-    body = str(visible.compile(dialect=dialect,
-                               compile_kwargs={"literal_binds": True}))
-    # Qualify trusted physical tables so the CTE cannot resolve to itself or
-    # a caller's similarly named CTE. The application uses the default schema.
     schema = "main" if dialect.name == "sqlite" else "public"
-    body = body.replace("FROM properties_for_sale", f"FROM {schema}.properties_for_sale")
-    body = body.replace("FROM import_batches", f"FROM {schema}.import_batches")
-    prefix = f"WITH properties_for_sale AS ({body}) "
+    bodies = []
+    for table in tables:
+        if table == "properties_for_sale":
+            visible = _hide_bad_data(select(text("properties_for_sale.*")).select_from(PropertyForSale)).where(
+                PropertyForSale.import_batch_id.in_(select(ImportBatch.id).where(
+                    ImportBatch.is_active.is_(True), ImportBatch.batch_type == "for_sale",
+                    ImportBatch.status == "published")))
+            body = str(visible.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
+            body = body.replace("FROM properties_for_sale", f"FROM {schema}.properties_for_sale")
+            body = body.replace("FROM import_batches", f"FROM {schema}.import_batches")
+        elif table == "import_batches":
+            body = f"SELECT * FROM {schema}.import_batches WHERE status IN ('published', 'archived')"
+        else:
+            kind = "sold" if table == "properties_sold" else "rent"
+            active = "" if kind == "sold" else " AND is_active = true"
+            body = (f"SELECT * FROM {schema}.{table} WHERE import_batch_id IN "
+                    f"(SELECT id FROM {schema}.import_batches WHERE batch_type = '{kind}' "
+                    f"AND status = 'published'{active})")
+        bodies.append(f"{table} AS ({body})")
+    prefix = "WITH " + ", ".join(bodies)
     if re.match(r"\s*WITH\b", sql, re.I):
-        return prefix.rstrip() + ", " + re.sub(r"^\s*WITH\s+", "", sql, count=1, flags=re.I)
-    return prefix + sql
+        return prefix + ", " + re.sub(r"^\s*WITH\s+", "", sql, count=1, flags=re.I)
+    return prefix + " " + sql
 
 
 def run(sql: str) -> str:
@@ -220,13 +233,13 @@ def distinct_values(table: str, column: str, limit: int = 40) -> str:
     if table == "properties_sold":
         batch = (
             "import_batch_id IN (SELECT id FROM import_batches "
-            "WHERE batch_type = 'sold' AND status IN ('staged', 'preview', 'published'))"
+            "WHERE batch_type = 'sold' AND status = 'published')"
         )
     elif table in ("properties_for_sale", "properties_rent"):
         kind = "rent" if table == "properties_rent" else "for_sale"
         batch = (
             "import_batch_id IN (SELECT id FROM import_batches "
-            f"WHERE is_active AND batch_type = '{kind}')"
+            f"WHERE status = 'published' AND is_active AND batch_type = '{kind}')"
         )
     else:
         batch = "TRUE"
@@ -245,13 +258,13 @@ SCHEMA = """You can query these Postgres tables directly with read-only SQL.
 DATASET SCOPE — imports have different meanings:
 - For-sale and rental imports are snapshots. Use current batches:
     WHERE import_batch_id IN (SELECT id FROM import_batches
-                              WHERE is_active AND batch_type = 'for_sale')
+                              WHERE status = 'published' AND is_active AND batch_type = 'for_sale')
   Use batch_type = 'rent' for properties_rent. Never mix old rental snapshots.
 - Sold imports accumulate transaction history. Do NOT restrict sales to the
   newest or active batch; that would discard earlier sales used by valuations:
     WHERE import_batch_id IN (SELECT id FROM import_batches
-      WHERE batch_type = 'sold' AND status IN ('staged', 'preview', 'published'))
-  These statuses match the valuation engine's eligible sold deliveries.
+      WHERE batch_type = 'sold' AND status = 'published')
+  Only published deliveries are approved for customer answers. Staged data is private.
 - Apply the requested region/suburb and date range as additional filters.
   Counts are records, not necessarily unique properties or transactions.
 
@@ -301,43 +314,14 @@ properties_rent — actual rental listings. THE source for any rent question.
   that is our own estimate for a house that is for sale, not a rental. Use
   this table, and say how many listings the figure came from.
 
-portal_listings — what the portals are advertising that our weekly files have
-  not reached yet, and recent sales they have that our sold files do not.
-  Scraped, and NOT part of the priced dataset until someone approves it.
-  id, source ('oneroof' | 'realestate' | 'trademe'), url, address, suburb,
-  district, property_type, beds, baths, floor_area_m2, land_area_m2
-  kind          'for_sale' (swept daily) | 'sold' (swept weekly)
-  price_numeric, price_display, cv_numeric, land_value_numeric
-  sale_price, sold_date, sale_method, days_on_market
-  price_flag    set when a sale price is far from that suburb's own median
-  zoning, type_of_title, building_age, condition
-  estimate, estimate_low, estimate_high      that portal's own opinion
-  last_sold_price, last_sold_date
-  status        'pending' | 'approved' | 'rejected'
-  listed_date, latitude, longitude, property_id, created_at
-  Treat anything here as a CLAIM, not as our data, and say so when you use it:
-  "a portal is advertising…", never "we have…". status='pending' means nobody
-  has checked it yet.
-
-portal_findings — a portal's figure for a property we already hold.
-  id, property_id, source, field, kind ('fact' | 'estimate')
-  value_num, value_text, current_num, current_text
-  status ('pending' | 'approved' | 'rejected'), created_at
-  kind='estimate' is that portal's valuation and is never an input to ours.
-
 parcel_cache — legal parcel boundaries from LINZ, one per looked-up point.
   id, lat_key, lng_key, status ('linz' | 'none'), area_m2, appellation, ring
   area_m2 is the SURVEYED land area and beats a listing's stated land area
   where they disagree. status='none' means LINZ has no parcel there.
 
-building_overrides — hand-placed building footprints for the shade panel.
-  id, property_id, idx, is_subject, east_m, north_m, width_m, depth_m
-  Neighbouring buildings that cast shade, placed by hand. is_subject marks the
-  property's own dwelling.
-
 import_batches — one row per uploaded file.
   id, batch_type ('for_sale' | 'sold' | 'rent'), region, filename, created_at
-  is_active, status ('staged' | 'published')
+  is_active, status ('published' | 'archived')
   rows_total, rows_inserted, rows_rejected
   note          WHY rows were rejected, in words and biggest first — e.g.
                 "rejected — 4,200 apartments (deliberately excluded); 3,100 no
@@ -345,75 +329,4 @@ import_batches — one row per uploaded file.
                 the answer to "why did a load reject so many": read it out
                 rather than guessing from the counts.
 
-ingest_jobs — one row per uploaded file, for "how fresh is the data" and
-  "did the last load work".
-  id, batch_type, filename, status, progress_pct, stage, rows_total,
-  rows_inserted, rows_rejected, rows_filled, rows_missed, error_message
-
-run_events — WHY a load did what it did. One row per decision, written as the
-  four stages run, in words rather than codes.
-  id, at, batch_id, job_id
-  stage    'load' | 'enrich' | 'price' | 'publish' | 'portals'
-  level    'info' | 'warn' | 'error'
-  event    a stable short code — rows_loaded, rows_rejected, lookups_done,
-           lookups_unreachable, priced, deals_lost_at_step,
-           flag_disagrees_with_figures, published
-  detail   the sentence a person reads. QUOTE THIS. It is already written to be
-           read out, and re-wording it loses the numbers in it.
-  count    how many listings the event covers
-  address  set only when the event is about exactly one listing
-
-  This is the answer to almost every "why" about a load: why so many rejected,
-  why nothing got filled, why the deal count is what it is. Read it in `at`
-  order for one batch_id — the ORDER is the explanation, because a rejection at
-  load is why a suburb is thin at pricing. Do not compute an answer from the
-  listing tables when a run_events row already states it.
-
-agent_contacts — one row each time someone asked to be put in touch about a
-  property. Counts only; no names here.
-  id, property_id, address, suburb, channel ('email' | 'phone'), created_at
-
-page_views — one row per page visit, with how long it was open. Product usage.
-
-Notes that will save you a wrong answer:
-- properties_for_sale.deal_block_reason says, in words, WHY a listing carries
-  no deal signal — no advertised price, a guide price, on the market too long,
-  a discount too large to believe. A blank margin with a reason beside it is a
-  decision; quote the reason instead of saying we could not price it.
-- margin and pred_vs_cv are FRACTIONS (0.15 = 15%), not percentages.
-- margin is VALUE UPLIFT OVER ASKING, not percent below value. To get percent
-  below value: 100.0 * (fair_value - asking_price) / NULLIF(fair_value, 0).
-  To get uplift over asking: 100.0 * (fair_value - asking_price) / NULLIF(asking_price, 0).
-  Return explicit aliases and keep their labels distinct.
-- asking_price can be null; fair_value can be null where we could
-  not value it. Filter with IS NOT NULL when averaging.
-- A sale_price / cv_numeric ratio outside 0.3-3.0 is a broken council record —
-  exclude those when computing anything against CV.
-- properties_sold has no is_underpriced / margin — those are for-sale concepts.
-
-CATEGORICAL VALUES — these will trip you up if you guess. When a name or category
-might not match exactly, call distinct_values(table, column) first, or use ILIKE.
-
-- property_type may use English OR Chinese depending on the import. Call
-  distinct_values('properties_for_sale', 'property_type') before raw type filters.
-  Common equivalents: House / 独立屋, Townhouse / 城市屋 / 排房,
-  Apartment / 公寓, Unit / 单元房, Section / 建地 / Residential - Vacant.
-  Do not filter by bedrooms alone when a user explicitly requests houses.
-- district has exactly 9 values: Auckland City, Franklin, Hauraki Gulf Islands,
-  Manukau City, North Shore City, Papakura, Rodney, Waitakere City, Waiheke Island.
-- suburb is free text — always match with ILIKE '%name%', never '='.
-  ('Flat Bush', 'Browns Bay', 'Mount Albert' — two words, exact spelling matters.)
-- type_of_title may contain readable categories, codes or references depending on
-  the source. Inspect distinct values; never infer tenure from a title reference.
-  Some sold imports use '1.0'=Freehold, '2.0'=Leasehold, '3.0'=Cross-Lease,
-  '4.0'=Unit Title. Verify which representation is actually present.
-- sale_method on properties_sold: 'A - Auction', 'P - Private Treaty(Neg.)',
-  'T - Tender'. Match with LIKE 'A -%' etc.
-- zoning values are like 'Residential - Mixed Housing Suburban Zone',
-  'Residential - Single House Zone'. Use ILIKE '%single house%' to match loosely.
-
-NOT QUERYABLE, and no query will get at them: accounts and login codes, saved
-API keys, the referral programme (promoters, referrals, commissions), other
-people's saved searches, and other people's questions. If a question needs one
-of those, say plainly that it's personal or account data you can't read, and
-offer the nearest thing you CAN answer — don't retry it a different way."""
+"""

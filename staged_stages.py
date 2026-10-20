@@ -286,6 +286,12 @@ def stage_running(db: Session, batch_id: int | None, stage: str) -> bool:
     Comparing a column to None with == is not the same question as IS NULL in
     every dialect, so that case is spelled out rather than left to luck.
     """
+    durable = db.query(IngestJob).filter(IngestJob.batch_id == batch_id,
+        IngestJob.filename == f"{stage} (batch {batch_id})",
+        IngestJob.status.in_(("pending", "running")),
+        IngestJob.result_json.contains('requested_stage')).first()
+    if durable:
+        return True
     q = db.query(IngestJob).filter(IngestJob.stage == stage,
                                    IngestJob.status == "running")
     q = q.filter(IngestJob.batch_id.is_(None) if batch_id is None
@@ -898,8 +904,13 @@ def run_price_job(job_id: int, batch_id: int, region: str) -> None:
                             f"still not flagged — the flag and the figures beside it "
                             f"were written by different runs"))
         db.commit()
+        from release_safety import pricing_fingerprint
+        job=db.get(IngestJob,job_id)
+        payload=json.loads(job.result_json or '{}')
+        payload['review_fingerprint']=pricing_fingerprint(db,batch_id)
         _update(db, job_id, status="completed", stage="done", progress_pct=100,
-                rows_rejected=held, completed_at=datetime.now(timezone.utc))
+                result_json=json.dumps(payload), rows_rejected=held,
+                completed_at=datetime.now(timezone.utc))
     except Exception as e:
         _update(db, job_id, status="failed", stage="error",
                 error_message=f"{type(e).__name__}: {e}\n\n{traceback.format_exc()[:2000]}",

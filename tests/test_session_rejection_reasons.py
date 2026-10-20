@@ -31,3 +31,13 @@ def test_session_failure_diagnostics_never_log_credentials(monkeypatch,caplog,ca
     assert reason in caplog.text
     assert token not in caplog.text and settings.jwt_secret not in caplog.text
     assert err.value.detail=='Could not validate credentials'
+
+
+def test_session_token_survives_fresh_python_processes_without_key_rotation():
+    import os, subprocess, sys
+    environment = dict(os.environ, JWT_SECRET='synthetic-continuity-key-at-least-32-characters',
+                       DATABASE_URL='sqlite:////tmp/apex-session-continuity-synthetic.db')
+    mint = "from security import create_access_token; print(create_access_token(42)[0])"
+    token = subprocess.run([sys.executable,'-c',mint],env=environment,capture_output=True,text=True,check=True).stdout.strip()
+    verify = "import sys,jwt; from config import settings; assert jwt.decode(sys.stdin.read(),settings.jwt_secret,algorithms=[settings.jwt_algorithm])['sub']=='42'"
+    subprocess.run([sys.executable,'-c',verify],input=token,env=environment,capture_output=True,text=True,check=True)

@@ -7,7 +7,7 @@ from models import ImportBatch, PropertyForSale
 
 
 def test_parking_and_age_are_not_presented_as_verified_condition(db_session):
-    batch = ImportBatch(batch_type='for_sale', filename='synthetic.csv', is_active=True)
+    batch = ImportBatch(batch_type='for_sale', filename='synthetic.csv', is_active=True, status="published")
     db_session.add(batch); db_session.flush()
     home = PropertyForSale(import_batch_id=batch.id, floor_area_m2=100, address='1 Synthetic Road',
                            cars=7, building_age='2020s', asking_price=700000)
@@ -95,7 +95,7 @@ def test_followup_refreshes_old_links_even_when_model_calls_no_tools(monkeypatch
 
 
 def test_property_tool_excludes_held_and_inactive_records(db_session):
-    active = ImportBatch(batch_type='for_sale',filename='active',is_active=True)
+    active = ImportBatch(batch_type='for_sale',filename='active',is_active=True, status="published")
     old = ImportBatch(batch_type='for_sale',filename='old',is_active=False)
     db_session.add_all([active,old]); db_session.flush()
     records = [PropertyForSale(import_batch_id=b.id,address='Hidden synthetic',floor_area_m2=100,is_held=held)

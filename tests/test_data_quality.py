@@ -94,8 +94,12 @@ def test_live_report_readonly_and_repair_retains_bad_coordinates(db_session):
     assert p.latitude==27.45 and not p.is_held
     result=repair_data_quality(region='Auckland',admin=SimpleNamespace(id=None),db=db_session)
     assert result['invalid_pins_excluded']==1 and result['ambiguous_listings_held']==1
-    assert p.latitude is None and p.is_held and not good.is_held
-    raw=json.loads(db_session.query(PortalFinding).filter_by(property_id=p.id,field='coordinates').one().extra_json)
+    # Repairs are private until the next approved release.
+    assert p.latitude == 27.45 and not p.is_held
+    draft=db_session.query(ImportBatch).filter_by(status='staged').one()
+    repaired=db_session.query(PropertyForSale).filter_by(import_batch_id=draft.id,address=p.address).one()
+    assert repaired.latitude is None and repaired.is_held and not good.is_held
+    raw=json.loads(db_session.query(PortalFinding).filter_by(property_id=repaired.id,field='coordinates').one().extra_json)
     assert raw['previous_latitude']==27.45 and raw['previous_longitude']==-80.32
     assert repair_data_quality(region='Auckland',admin=SimpleNamespace(id=None),db=db_session)['invalid_pins_excluded']==0
 

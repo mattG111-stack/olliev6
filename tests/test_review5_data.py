@@ -36,7 +36,7 @@ def test_ambiguous_or_invalid_areas_are_not_invented(value):
 @pytest.fixture
 def visibility_rows(db_session):
     db = db_session
-    active = ImportBatch(batch_type="for_sale", region="Auckland", filename="live.csv", is_active=True)
+    active = ImportBatch(batch_type="for_sale", region="Auckland", filename="live.csv", is_active=True, status="published")
     inactive = ImportBatch(batch_type="for_sale", region="Auckland", filename="old.csv", is_active=False)
     db.add_all([active, inactive]); db.flush()
     for overrides in [
@@ -88,8 +88,8 @@ def test_visibility_scope_cannot_be_accidentally_bypassed(query):
         scope_live_listings(query)
 
 
-def test_nonlisting_queries_unchanged():
-    query = "SELECT COUNT(*) FROM properties_sold"
+def test_nonproperty_queries_unchanged():
+    query = "SELECT COUNT(*) FROM parcel_cache"
     assert scope_live_listings(query) == query
 
 
@@ -140,7 +140,7 @@ def test_thin_buy_price_engine_still_excludes_future_sales():
 def test_suburb_medians_do_not_default_to_a_future_year(db_session):
     from models import PropertySold
     from routers.properties import suburb_stats
-    batch = ImportBatch(batch_type="sold", region="Auckland", filename="dates.csv", is_active=True)
+    batch = ImportBatch(batch_type="sold", region="Auckland", filename="dates.csv", is_active=True, status="published")
     db_session.add(batch); db_session.flush()
     for when, price in [("2020-06-01", 800000), ("2099-06-01", 5000000)]:
         db_session.add(PropertySold(import_batch_id=batch.id, region="Auckland",

@@ -6,7 +6,7 @@ from models import ImportBatch, PropertyForSale
 
 
 def seed(db_session):
-    active = ImportBatch(batch_type='for_sale', filename='synthetic.csv', is_active=True)
+    active = ImportBatch(batch_type='for_sale', filename='synthetic.csv', is_active=True, status="published")
     old = ImportBatch(batch_type='for_sale', filename='old.csv', is_active=False)
     db_session.add_all([active, old]); db_session.flush()
     def add(address, **changes):

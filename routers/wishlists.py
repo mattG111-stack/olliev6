@@ -74,7 +74,7 @@ class MatchRow(BaseModel):
 def _active_batch(db: Session, region: str = "Auckland") -> int | None:
     return (db.query(ImportBatch.id)
             .filter(ImportBatch.batch_type == "for_sale", ImportBatch.region == region,
-                    ImportBatch.is_active.is_(True))
+                    ImportBatch.is_active.is_(True), ImportBatch.status == "published")
             .order_by(ImportBatch.id.desc()).limit(1).scalar())
 
 
