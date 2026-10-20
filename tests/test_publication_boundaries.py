@@ -262,3 +262,14 @@ def test_validated_release_replaces_book_atomically_and_keeps_flagged_rows_hidde
     assert result['count']==1 and old.status=='archived' and not old.is_active
     assert review.status=='published' and review.is_active and not good.is_held
     assert bad.is_held and bad.hold_reason=='Missing floor area'
+
+
+@pytest.mark.parametrize('query',[
+    "SELECT query_to_xml('SELECT * FROM properties_sold',true,false,'')",
+    "SELECT dblink('connection','SELECT * FROM users')",
+    "SELECT pg_read_file('/etc/passwd')",
+    'SELECT "query_to_xml"(\'SELECT * FROM properties_sold\',true,false,\'\')',
+])
+def test_dynamic_sql_and_file_functions_cannot_bypass_approved_scopes(query):
+    from assistant.sql import validate,UnsafeQuery
+    with pytest.raises(UnsafeQuery,match='Unsupported SQL'):validate(query)

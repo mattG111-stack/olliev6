@@ -102,6 +102,26 @@ def validate(sql: str) -> str:
 
     identifiers = re.sub(r"'(?:''|[^'])*'", "''", cleaned)
     identifiers = re.sub(r'"([a-zA-Z_][\w$]*)"', r'\1', identifiers)
+    # A read-only transaction still permits functions that execute a supplied
+    # SQL string (query_to_xml/dblink) or read files. Those bypass table CTEs.
+    # Allow only calculation/formatting functions used by market questions.
+    functions = {m.group(1).lower() for m in re.finditer(r"\b([a-zA-Z_][\w$]*)\s*\(", identifiers)}
+    syntax = {"as", "in", "not", "exists", "over", "filter", "using", "group", "values",
+              "from", "join", "where", "and", "or", "on", "select", "when", "then", "else", "case", "distinct", "by"}
+    allowed_functions = {
+        "count", "sum", "avg", "min", "max", "round", "floor", "ceil", "ceiling", "abs",
+        "coalesce", "nullif", "greatest", "least", "lower", "upper", "trim", "btrim", "ltrim", "rtrim",
+        "replace", "regexp_replace", "split_part", "substring", "substr", "concat", "concat_ws", "length",
+        "to_char", "to_date", "date_trunc", "date_part", "make_date", "now", "extract", "cast",
+        "percentile_cont", "percentile_disc", "stddev", "stddev_pop", "stddev_samp", "variance",
+        "row_number", "rank", "dense_rank", "lag", "lead", "first_value", "last_value",
+        "array_agg", "json_agg", "jsonb_agg", "json_build_object", "jsonb_build_object",
+        "json_object_agg", "jsonb_object_agg", "json_build_array", "jsonb_build_array",
+        "to_json", "to_jsonb", "row_to_json", "row", "numeric", "decimal", "varchar",
+    }
+    unsupported = functions - syntax - allowed_functions
+    if unsupported:
+        raise UnsafeQuery("Unsupported SQL function or construct: " + ", ".join(sorted(unsupported)))
     # Explicit JOINs make every table reference subject to the allowlist.
     # Reject comma joins rather than silently ignoring their second table.
     depth, from_depths = 0, set()
