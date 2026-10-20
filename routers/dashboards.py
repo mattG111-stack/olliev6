@@ -29,8 +29,8 @@ from prior_price import ADVERTISED_BASIS
 from security import current_user
 from pricing.conversion import conversion_opportunities
 from pricing.valueadd import by_district
-from periods import _months_range, _period, _shift_period, sold_year_month
-from routers.properties import _SECTION_TYPES, _hide_bad_data
+from periods import _months_range, _period, _shift_period, sold_year_month, future_sale
+from routers.properties import _SECTION_TYPES, _hide_bad_data, _area_values, _public_sold_batches
 
 router = APIRouter(prefix="/api/dashboards", tags=["dashboards"])
 
@@ -573,17 +573,13 @@ def _sold_trend_json(db: Session, suburb: str, region: str,
     Emitted in the same shape as the scraped payload so one component renders
     either: {"points": [{year|month, median, count, change[_pct]}]}.
     """
-    batch_ids = [b.id for b in db.query(ImportBatch.id).filter(
-        ImportBatch.batch_type == BatchType.SOLD.value,
-        ImportBatch.region == region,
-        ImportBatch.status.in_(("staged", "preview", "published")),
-    ).all()]
+    batch_ids = _public_sold_batches(db, region)
     if not batch_ids:
         return None, None, None
     rows = (db.query(PropertySold.sale_price, PropertySold.sold_date,
                      PropertySold.property_type)
             .filter(PropertySold.import_batch_id.in_(batch_ids),
-                    PropertySold.suburb == suburb,
+                    PropertySold.suburb.in_(_area_values(db, PropertySold, batch_ids, "suburb", suburb)),
                     PropertySold.sale_price.isnot(None))
             .all())
     # One kind of home at a time when asked. A median across houses AND
@@ -600,7 +596,7 @@ def _sold_trend_json(db: Session, suburb: str, region: str,
     newest: tuple[int, int] | None = None
     for price, sold_date, _ptype in rows:
         ym = sold_year_month(sold_date)
-        if not ym or not price:
+        if not ym or not price or future_sale(sold_date):
             continue
         by_year.setdefault(ym[0], []).append(float(price))
         by_month.setdefault(f"{ym[0]:04d}-{ym[1]:02d}", []).append(float(price))
@@ -634,7 +630,7 @@ def _sold_trend_json(db: Session, suburb: str, region: str,
             vals = sorted(pooled)
             if len(vals) < _SOLD_TREND_MIN_PER_BUCKET:
                 continue          # too few sales to call a median
-            med = vals[len(vals) // 2]
+            med = statistics.median(vals)
             pt = {
                 key_name: k,
                 "median": med,
@@ -887,20 +883,25 @@ def suburb_trend(
     # page shipped unverified for months. One suburb's listings per week is a
     # few dozen rows — small enough that the database has no advantage here, and
     # being able to test the page is worth more than the micro-optimisation.
-    sql = text(
-        """
-        SELECT ib.id AS batch_id, ib.created_at AS batch_date,
-               p.asking_price, p.market_value
-        FROM import_batches ib
-        JOIN properties_for_sale p ON p.import_batch_id = ib.id
-        WHERE ib.batch_type = 'for_sale' AND ib.region = :region AND p.suburb = :suburb
-              AND """ + _CLEAN_FS_SQL + """
-        ORDER BY ib.created_at ASC;
-        """
-    )
+    public_batches = db.query(ImportBatch.id).filter(
+        ImportBatch.batch_type == BatchType.FOR_SALE.value,
+        ImportBatch.region == region,
+        (ImportBatch.status.in_(("published", "archived"))) | ImportBatch.is_active.is_(True)
+    ).all()
+    batch_ids = [bid for (bid,) in public_batches]
+    spellings = _area_values(db, PropertyForSale, batch_ids, "suburb", suburb)
+    records = _hide_bad_data(db.query(PropertyForSale).filter(
+        PropertyForSale.import_batch_id.in_(batch_ids),
+        PropertyForSale.suburb.in_(spellings))).all()
+    want = ptype.strip().lower() if isinstance(ptype, str) and ptype.strip() else None
+    dates = dict(db.query(ImportBatch.id, ImportBatch.created_at).filter(
+        ImportBatch.id.in_(batch_ids)).all())
     per_batch: dict[int, dict] = {}
-    for batch_id, batch_date, asking, market in db.execute(
-            sql, {"region": region, "suburb": suburb}).fetchall():
+    for p in records:
+        if want and canonical_type(p.property_type).lower() != want:
+            continue
+        batch_id, batch_date = p.import_batch_id, dates[p.import_batch_id]
+        asking, market = p.asking_price, p.market_value
         b = per_batch.setdefault(int(batch_id), {
             "date": batch_date, "asking": [], "market": [], "n": 0})
         b["n"] += 1
@@ -951,19 +952,17 @@ def suburb_trend(
         # Take a handful and choose on CONTENT: the series that reaches the latest
         # year, then the one with the most points, then the lowest id so the answer
         # is the same every time.
-        candidates = db.execute(text(
-            """
-            SELECT id, valuation_trend_yearly_json, valuation_trend_monthly_json
-            FROM properties_for_sale
-            WHERE import_batch_id = :b AND suburb = :s
-              AND (valuation_trend_yearly_json IS NOT NULL OR valuation_trend_monthly_json IS NOT NULL)
-            ORDER BY
-              CASE WHEN valuation_trend_yearly_json IS NOT NULL THEN 1 ELSE 0 END DESC,
-              CASE WHEN valuation_trend_monthly_json IS NOT NULL THEN 1 ELSE 0 END DESC,
-              id ASC
-            LIMIT 40
-            """
-        ), {"b": active_batch_id, "s": suburb}).fetchall()
+        candidates = db.query(PropertyForSale.id,
+            PropertyForSale.valuation_trend_yearly_json,
+            PropertyForSale.valuation_trend_monthly_json).filter(
+                PropertyForSale.import_batch_id == active_batch_id,
+                PropertyForSale.suburb.in_(_area_values(db, PropertyForSale,
+                    active_batch_id, "suburb", suburb)),
+                (PropertyForSale.valuation_trend_yearly_json.isnot(None)) |
+                (PropertyForSale.valuation_trend_monthly_json.isnot(None))
+            ).order_by(PropertyForSale.valuation_trend_yearly_json.isnot(None).desc(),
+                       PropertyForSale.valuation_trend_monthly_json.isnot(None).desc(),
+                       PropertyForSale.id).limit(40).all()
         sample = _best_trend_payload(candidates)
         if sample:
             sample_id = int(sample[0])

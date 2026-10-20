@@ -1067,11 +1067,7 @@ def suburb_stats(suburb: str, region: str = "Auckland",
                            sale_vs_cv=None, effects=[])
     # Every sold batch for the region — sold history accumulates, so keying this
     # to one batch reported a slice of the suburb as the suburb.
-    # Customer summaries use published history, never an unreviewed upload.
-    # is_active supports legacy live batches created before status was recorded.
-    sold_batch_ids = [bid for (bid,) in db.query(ImportBatch.id).filter(
-        ImportBatch.batch_type == BatchType.SOLD.value, ImportBatch.region == region,
-        or_(ImportBatch.status == "published", ImportBatch.is_active.is_(True))).all()]
+    sold_batch_ids = _public_sold_batches(db, region)
     rows = (db.query(PropertySold)
             .filter(PropertySold.import_batch_id.in_(sold_batch_ids),
                     PropertySold.suburb.in_(
@@ -1098,7 +1094,7 @@ def suburb_stats(suburb: str, region: str = "Auckland",
     # — or loaded late — shows the year it actually holds instead of an empty one.
     # Exclude future records before choosing the default year or computing any
     # medians. Otherwise one future row selects an empty/fictional market year.
-    rows = [r for r in rows if not future_sale(r.sold_date)]
+    rows = [r for r in rows if sold_year_month(r.sold_date) and not future_sale(r.sold_date)]
     years_available = sorted({ym[0] for r in rows
                               if (ym := sold_year_month(r.sold_date))}, reverse=True)
     newest_year = years_available[0] if years_available else None
@@ -1341,7 +1337,7 @@ def suburbs(region: str = "Auckland",
         # For-sale is different and stays on the active batch: that one IS a
         # weekly snapshot, and "live" means live now.
         if kind == "sold":
-            batch_ids = live_sold_batch_ids(db, region)
+            batch_ids = _public_sold_batches(db, region)
             batch_id = batch_ids[0] if batch_ids else None
         else:
             batch_ids = [bid] if (bid := _active_batch(db, kind, region)) else []
@@ -1357,7 +1353,7 @@ def suburbs(region: str = "Auckland",
         # build in the first place.
         if district:
             q = q.filter(model.district.in_(
-                _area_values(db, model, batch_id, "district", district)))
+                _area_values(db, model, batch_ids, "district", district)))
         if model is PropertyForSale:
             q = _hide_bad_data(q)
         for name, n in q.group_by(model.suburb).all():
@@ -1625,6 +1621,13 @@ def _hide_bad_data(q):
             PropertyForSale.property_type.in_(_SECTION_TYPES),
         ),
     )
+
+
+def _public_sold_batches(db: Session, region: str) -> list[int]:
+    """Published history for customer charts; working uploads remain private."""
+    return [bid for (bid,) in db.query(ImportBatch.id).filter(
+        ImportBatch.batch_type == BatchType.SOLD.value, ImportBatch.region == region,
+        or_(ImportBatch.status == "published", ImportBatch.is_active.is_(True))).all()]
 
 
 def _area_values(db: Session, model, batch_id: int | list[int], column: str, name: str) -> list[str]:
@@ -2018,7 +2021,7 @@ def map_points(
         # Every live sold batch, like every other reader of sold data. Pinned to
         # the newest one, the map showed a slice: "Sold sale · 111" in the legend
         # beside a panel counting 231 sales in the same suburb.
-        sold_ids = live_sold_batch_ids(db, region)
+        sold_ids = _public_sold_batches(db, region)
         batch_id = sold_ids[0] if sold_ids else None
         if not sold_ids:
             return MapResponse(dataset=dataset, count=0, points=[])
@@ -2034,9 +2037,9 @@ def map_points(
             S.latitude.between(-47.5, -34.0), S.longitude.between(166.0, 179.5),
         )
         if suburb:
-            q = q.filter(S.suburb.in_(_area_values(db, S, batch_id, "suburb", suburb)))
+            q = q.filter(S.suburb.in_(_area_values(db, S, sold_ids, "suburb", suburb)))
         if district:
-            q = q.filter(S.district.in_(_area_values(db, S, batch_id, "district", district)))
+            q = q.filter(S.district.in_(_area_values(db, S, sold_ids, "district", district)))
         if min_beds is not None:
             q = q.filter(S.beds.isnot(None), S.beds >= min_beds)
         if min_price is not None:
