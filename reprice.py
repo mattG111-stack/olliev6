@@ -364,7 +364,7 @@ def reprice_batch(db: Session, batch_id: int, *, region: str = "Auckland",
     return res
 
 
-def reprice_one(db: Session, listing_id: int, *, region: str = "Auckland") -> PropertyForSale | None:
+def reprice_one(db: Session, listing_id: int, *, region: str = "Auckland", commit: bool = True) -> PropertyForSale | None:
     """Re-price a SINGLE listing on demand from its current stored attributes,
     commit, and re-evaluate its hold. Returns the updated row, None if the listing
     doesn't exist. Raises ValueError('no sold batch to price against') when there's
@@ -386,8 +386,11 @@ def reprice_one(db: Session, listing_id: int, *, region: str = "Auckland") -> Pr
     reason = _hold_reason(rec)
     rec.is_held = bool(reason)
     rec.hold_reason = reason
-    db.commit()
-    db.refresh(rec)
+    if commit:
+        db.commit()
+        db.refresh(rec)
+    else:
+        db.flush()
     return rec
 
 

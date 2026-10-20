@@ -90,8 +90,12 @@ def queue(batch_id: int, limit: int = Query(10, ge=1, le=25),
     for f in markers:
         if f.status == 'review':
             raw = json.loads(f.extra_json or '{}')
-            reviews.append({'property_id': f.property_id, 'address': raw.get('address'),
-                            'issues': f.value_text, 'source_url': raw.get('source_url')})
+            proposed = {k: v['value'] for k, v in raw.get('facts', {}).items()}
+            proposed.update({k: raw[k] for k in ('property_type', 'sale_method') if raw.get(k)})
+            reviews.append({'finding_id': f.id, 'property_id': f.property_id, 'address': raw.get('address'),
+                            'issues': f.value_text, 'source_url': raw.get('source_url'),
+                            'previous': raw.get('previous', {}), 'proposed': proposed,
+                            'evidence': raw.get('evidence'), 'observed_at': raw.get('observed_at')})
     rows = db.query(PropertyForSale).filter(
         PropertyForSale.import_batch_id == batch.id, PropertyForSale.id.in_(ids - done)
     ).order_by(case(
@@ -217,3 +221,83 @@ def save(body: SaveObservations, admin: User = Depends(require_admin), db: Sessi
             db.rollback()
             raise HTTPException(503, 'Could not save and price this observation; this row was rolled back')
     return {'batch_id': body.batch_id, 'filled': sum(r['filled'] for r in results), 'results': results}
+
+
+class ReviewCorrection(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    batch_id: int = Field(gt=0)
+    finding_id: int = Field(gt=0)
+
+
+def apply_reviewed_correction(db, p, marker, admin_id, reprice):
+    """Explicit review of retained evidence; never an automatic overwrite."""
+    if marker.status == 'approved':
+        return {'property_id': p.id, 'status': 'already_applied', 'changed': []}
+    if marker.status != 'review':
+        raise HTTPException(409, 'This observation is not awaiting source review')
+    raw = json.loads(marker.extra_json or '{}')
+    item = Observation(**{k: v for k, v in raw.items() if k in Observation.model_fields})
+    validate_observation(p, item)
+    previous = raw.get('previous', {})
+    proposed = {k: f.value for k, f in item.facts.items()}
+    proposed.update({k: getattr(item, k) for k in ('property_type', 'sale_method') if getattr(item, k)})
+    # Also protect the asking price: a concurrent pricing/input edit requires a new review.
+    for key in set(proposed) | {'asking_price'}:
+        if key not in previous or getattr(p, key) != previous[key]:
+            raise HTTPException(409, 'Listing changed since this evidence was saved; collect fresh evidence')
+    expected_hold = 'Source review: Trade Me differs on ' + (marker.value_text or '')
+    if p.hold_reason != expected_hold:
+        raise HTTPException(409, 'Listing hold changed; review the current listing first')
+    changed = []
+    for key, value in proposed.items():
+        if getattr(p, key) == value:
+            continue
+        changed.append(key)
+        setattr(p, key, int(value) if key in ('beds', 'baths', 'cars') else value)
+        db.add(PortalFinding(property_id=p.id, batch_id=p.import_batch_id,
+            source='trademe_browser', field=key, kind='fact', status='approved',
+            value_num=value if key in FIELDS else None,
+            value_text=value if key not in FIELDS else None,
+            extra_json=json.dumps({'url': item.source_url, 'observed_at': item.observed_at.isoformat(),
+                'quote': item.facts[key].quote if key in item.facts else value,
+                'previous': previous[key], 'reviewed_observation_id': marker.id}),
+            decided_by_id=admin_id, decided_at=datetime.now(timezone.utc)))
+    raw['reviewed_correction'] = {'changed': changed, 'admin_id': admin_id,
+                                 'at': datetime.now(timezone.utc).isoformat()}
+    marker.extra_json = json.dumps(raw)
+    marker.status = 'approved'
+    marker.decided_by_id = admin_id
+    marker.decided_at = datetime.now(timezone.utc)
+    p.hold_reason = None
+    db.flush()
+    reprice(db, p.id)
+    # Explicit manual holds must survive a source correction.
+    if previous.get('hold_reason') == 'Held by admin' or (previous.get('hold_reason') or '').startswith('Source review:'):
+        p.is_held = True
+        p.hold_reason = previous['hold_reason']
+    db.commit()
+    return {'property_id': p.id, 'status': 'applied', 'changed': changed,
+            'fair_value': p.fair_value, 'held': p.is_held, 'hold_reason': p.hold_reason}
+
+
+@router.post('/release/browser-enrichment/review')
+def review_correction(body: ReviewCorrection, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    batch, core, ids = scope(db, body.batch_id, lock=True)
+    marker = db.query(PortalFinding).filter_by(id=body.finding_id, batch_id=batch.id,
+        source='trademe_browser', field='browser_observation').with_for_update().one_or_none()
+    if marker is None or marker.property_id not in ids:
+        raise HTTPException(404, 'No saved in-scope browser observation')
+    p = db.query(PropertyForSale).filter_by(id=marker.property_id,
+        import_batch_id=batch.id).populate_existing().with_for_update().one_or_none()
+    if p is None:
+        raise HTTPException(404, 'Listing no longer exists in this batch')
+    from reprice import reprice_one
+    try:
+        return apply_reviewed_correction(db, p, marker, admin.id,
+            lambda session, pid: reprice_one(session, pid, region=batch.region, commit=False))
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(503, 'Could not apply and price this correction; changes were rolled back')
