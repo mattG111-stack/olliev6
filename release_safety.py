@@ -26,18 +26,27 @@ def working_copy(db, region):
     db.add(draft); db.flush()
     fields=[p.key for p in inspect(PropertyForSale).column_attrs if p.key not in ('id','import_batch_id')]
     mapping={}
-    originals = db.query(PropertyForSale).filter_by(import_batch_id=live.id).all()
-    for start in range(0, len(originals), 250):
-        chunk = originals[start:start+250]
+    last_id = 0
+    while True:
+        chunk = (db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == live.id,
+                 PropertyForSale.id > last_id).order_by(PropertyForSale.id).limit(250).all())
+        if not chunk:
+            break
+        last_id = chunk[-1].id
         copies = [PropertyForSale(import_batch_id=draft.id, **{k:getattr(old,k) for k in fields}) for old in chunk]
         db.add_all(copies); db.flush()
         mapping.update({old.id:copy.id for old,copy in zip(chunk,copies)})
+    source_ids=list(mapping)
+    pending=0
     for start in range(0,len(mapping),500):
-        old_ids=list(mapping)[start:start+500]
-        for f in db.query(PortalFinding).filter(PortalFinding.property_id.in_(old_ids)):
+        old_ids=source_ids[start:start+500]
+        for f in db.query(PortalFinding).filter(PortalFinding.property_id.in_(old_ids)).yield_per(250):
             values={p.key:getattr(f,p.key) for p in inspect(PortalFinding).column_attrs
                     if p.key not in ('id','property_id','batch_id')}
             db.add(PortalFinding(property_id=mapping[f.property_id],batch_id=draft.id,**values))
+            pending += 1
+            if pending >= 250:
+                db.flush(); pending=0
     draft.rows_total=draft.rows_inserted=len(mapping)
     db.flush()
     return draft

@@ -239,3 +239,26 @@ def test_map_uses_same_canonical_property_type_as_summary(db_session):
     db.commit()
     result=map_points(dataset='for_sale',region='Auckland',suburb='Riverhead',min_beds=None,limit=20000,db=db,ptype='House')
     assert result.count==2
+
+
+def test_prepare_copy_is_explicit_and_readonly_reports_do_not_create_drafts(db_session):
+    from routers.release import prepare_review_copy, data_quality_report, enrichment_jobs
+    db=db_session;b=batch(db,status='published',active=True);listing(db,b);db.commit()
+    data_quality_report(region='Auckland',limit=50,_=None,db=db)
+    enrichment_jobs(region='Auckland',admin=None,db=db)
+    assert db.query(ImportBatch).count()==1
+    result=prepare_review_copy(region='Auckland',_=None,db=db)
+    assert result['batch_id']!=b.id and result['status']=='staged'
+    assert db.query(IngestJob).count()==0  # preparing never starts paid enrichment
+
+
+def test_validated_release_replaces_book_atomically_and_keeps_flagged_rows_hidden(db_session):
+    from routers.release import publish
+    db=db_session;old=batch(db,status='published',active=True);listing(db,old)
+    review=batch(db);good=listing(db,review);bad=listing(db,review,address='10 Example Road',floor_area_m2=None)
+    review.rows_inserted=2;db.commit();receipt(db,review)
+    result=publish(region='Auckland',admin=SimpleNamespace(id=None),db=db)
+    db.refresh(old);db.refresh(review);db.refresh(good);db.refresh(bad)
+    assert result['count']==1 and old.status=='archived' and not old.is_active
+    assert review.status=='published' and review.is_active and not good.is_held
+    assert bad.is_held and bad.hold_reason=='Missing floor area'

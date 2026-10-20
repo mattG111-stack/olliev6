@@ -2071,3 +2071,14 @@ def hougarden_benchmark(region: str = 'Auckland', limit: int = Query(50, ge=1, l
     if batch is None:
         return {'batch_id': None, 'matched_properties': 0, 'total_rows': 0, 'rows': [], 'excluded': {}}
     return benchmark(db, batch, limit)
+
+
+@router.post('/release/review-copy')
+def prepare_review_copy(region: str = 'Auckland', _: User = Depends(require_admin),
+                        db: Session = Depends(get_db)):
+    from release_safety import working_copy
+    batch = working_copy(db, region)
+    if batch is None:
+        raise HTTPException(409, 'Upload a batch first; there is no approved book to copy.')
+    db.commit()
+    return {'batch_id': batch.id, 'status': batch.status}
