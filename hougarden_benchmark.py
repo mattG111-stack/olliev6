@@ -15,7 +15,7 @@ def benchmark(db, batch, limit=50):
     from addresses import address_key
     evidence = {}
     for finding in db.query(PortalFinding).filter_by(batch_id=batch.id, source='hougarden',
-            field='import_record', status='approved').order_by(PortalFinding.id):
+            field='import_record', status='approved').order_by(PortalFinding.id).yield_per(250):
         try:
             evidence[finding.property_id] = json.loads(finding.extra_json or '{}')
         except (ValueError,TypeError):
@@ -23,7 +23,7 @@ def benchmark(db, batch, limit=50):
     rows = []
     total = 0
     today = datetime.now(timezone.utc).date()
-    for p in db.query(PropertyForSale).filter_by(import_batch_id=batch.id):
+    for p in db.query(PropertyForSale).filter_by(import_batch_id=batch.id).yield_per(250):
         total += 1
         hg = p.third_party_valuation
         if hg is None or not isfinite(hg) or hg <= 0:
