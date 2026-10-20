@@ -59,8 +59,12 @@ def poll_pending(*, sleep=time.sleep):
 
 def dispatch():
     # Keep scheduled collection responsive while a requested fill is running.
-    global _thread
+    global _thread, _stage_thread
     with _thread_lock:
+        if _stage_thread is None or not _stage_thread.is_alive():
+            from requested_stages import poll_requested_stages
+            _stage_thread = threading.Thread(target=poll_requested_stages, daemon=True)
+            _stage_thread.start()
         if _thread is None or not _thread.is_alive():
             _thread = threading.Thread(target=poll_pending, daemon=True)
             _thread.start()
@@ -76,6 +80,7 @@ def dispatch():
 # poll_pending / the scraper worker. run_pending() takes a Postgres advisory lock,
 # so this never double-drains a job the scraper worker is also watching.
 _requested_thread = None
+_stage_thread = None
 
 
 def poll_requested_fills(*, sleep=time.sleep):
@@ -90,8 +95,12 @@ def poll_requested_fills(*, sleep=time.sleep):
 
 
 def dispatch_requested_fills():
-    global _requested_thread
+    global _requested_thread, _stage_thread
     with _thread_lock:
+        if _stage_thread is None or not _stage_thread.is_alive():
+            from requested_stages import poll_requested_stages
+            _stage_thread = threading.Thread(target=poll_requested_stages, daemon=True)
+            _stage_thread.start()
         if _requested_thread is None or not _requested_thread.is_alive():
             _requested_thread = threading.Thread(target=poll_requested_fills, daemon=True)
             _requested_thread.start()

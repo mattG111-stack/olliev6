@@ -49,7 +49,7 @@ def direct_valuation(question, dispatch, history=None):
 def _pool_area_percent(suburb, dispatch):
     from db import SessionLocal
     from models import PropertySold as S
-    from ingest import sold_batch_ids
+    from publication_scope import approved_sold_batch_ids as sold_batch_ids
     from sqlalchemy import func
     with SessionLocal() as db:
         districts = {r[0].strip() for r in db.query(S.district).filter(

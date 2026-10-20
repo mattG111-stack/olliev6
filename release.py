@@ -244,6 +244,8 @@ def hold_flagged_rows(db: Session, batch_id: int | None) -> int:
     held = 0
     for p in db.query(PropertyForSale).filter(PropertyForSale.import_batch_id == batch_id):
         reason = _hold_reason(p)
+        if not reason and p.is_held and (p.hold_reason in ("Hidden by admin", "Held by admin") or (p.hold_reason or "").startswith("Admin hold:")):
+            reason = p.hold_reason
         if reason:
             p.is_held = True
             p.hold_reason = reason
@@ -526,10 +528,10 @@ def publish_release(db: Session, region: str = "Auckland", *, commit: bool = Tru
                 ImportBatch.batch_type == bt, ImportBatch.region == region,
                 ImportBatch.status.in_(WORKING_STATUSES),
                 ImportBatch.id != staged.id).all()):
-            other.status = "published" if bt == BatchType.SOLD.value else "superseded"
-            other.is_active = bt == BatchType.SOLD.value
-            if bt == BatchType.SOLD.value:
-                other.published_at = now
+            # Only the batch shown in Review is approved by this action.
+            # Older working uploads remain private, including sold deliveries.
+            other.status = "superseded"
+            other.is_active = False
         staged.is_active = True
         staged.status = "published"
         staged.published_at = now

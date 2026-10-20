@@ -20,7 +20,8 @@ import media
 from db import get_db
 from days_to_sell import observed_days_to_sell
 from age_trends import age_selling_times
-from ingest import sold_batch_ids as live_sold_batch_ids
+from ingest import sold_batch_ids as private_sold_batch_ids
+from publication_scope import approved_sold_batch_ids
 from external_estimates import homes_estimate
 from propertyvalue import cross_check, gaps as pv_gaps_fn, missing_fills, pv_lookup
 from models import (
@@ -58,15 +59,27 @@ from release import MARGIN_MAX_PCT
 from security import admin_from_header, require_active, require_admin
 
 def exclude_portal_drafts(request: Request, db: Session = Depends(get_db)):
-    """Unpublished portal pricing has its own admin-only review endpoint."""
+    """An ID lookup must not bypass the public list's approval boundary."""
     value = request.path_params.get("property_id")
-    if value is None: return
-    try: property_id = int(value)
-    except (ValueError, TypeError): return
-    draft = db.query(PropertyForSale.id).join(ImportBatch,
-        PropertyForSale.import_batch_id == ImportBatch.id).filter(
-        PropertyForSale.id == property_id, ImportBatch.status == "portal_review").first()
-    if draft: raise HTTPException(status_code=404, detail="Not found")
+    if value is None:
+        return
+    try:
+        property_id = int(value)
+    except (ValueError, TypeError):
+        return
+    row = db.query(PropertyForSale, ImportBatch).join(ImportBatch,
+        PropertyForSale.import_batch_id == ImportBatch.id).filter(PropertyForSale.id == property_id).first()
+    if not row:
+        return
+    p, batch = row
+    if batch.status == "portal_review":
+        raise HTTPException(status_code=404, detail="Not found")
+    if batch.status in ('published', 'archived') and not p.is_held:
+        return
+    preview = request.query_params.get('preview') == '1' or request.headers.get('x-apex-preview') == '1'
+    if preview and admin_from_header(request.headers.get('authorization'), db):
+        return
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 router = APIRouter(prefix="/api/properties", tags=["properties"], dependencies=[Depends(exclude_portal_drafts)])
@@ -468,7 +481,8 @@ def _active_batch(db: Session, batch_type: str, region: str) -> int | None:
             return b.id
     b = (
         db.query(ImportBatch)
-        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region, ImportBatch.is_active.is_(True))
+        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region, ImportBatch.is_active.is_(True),
+                ImportBatch.status == "published")
         .order_by(ImportBatch.id.desc())
         .first()
     )
@@ -1044,6 +1058,7 @@ def suburb_stats(suburb: str, region: str = "Auckland",
     strings would quietly return a fraction of them.
     """
     name = suburb.strip()
+    want = ptype.strip().lower() if isinstance(ptype, str) and ptype.strip() else None
     # Active listings + median asking (live feed only).
     fs_batch = _active_batch(db, "for_sale", region)
     active_listings = 0
@@ -1054,6 +1069,8 @@ def suburb_stats(suburb: str, region: str = "Auckland",
                                     PropertyForSale.suburb.in_(
                                         _area_values(db, PropertyForSale, fs_batch, "suburb", name))))
         live_rows = fq.all()
+        if want:
+            live_rows = [p for p in live_rows if canonical_type(p.property_type).lower() == want]
         asks = [p.asking_price for p in live_rows if p.asking_price]
         active_listings = len(live_rows)
         median_asking = _median(asks)
@@ -1624,10 +1641,13 @@ def _hide_bad_data(q):
 
 
 def _public_sold_batches(db: Session, region: str) -> list[int]:
-    """Published history for customer charts; working uploads remain private."""
-    return [bid for (bid,) in db.query(ImportBatch.id).filter(
-        ImportBatch.batch_type == BatchType.SOLD.value, ImportBatch.region == region,
-        or_(ImportBatch.status == "published", ImportBatch.is_active.is_(True))).all()]
+    return approved_sold_batch_ids(db, region)
+
+
+def live_sold_batch_ids(db: Session, region: str) -> list[int]:
+    # Preview mode is set only by the admin-authenticated router dependency.
+    return (private_sold_batch_ids(db, region) if _PREVIEW.get()
+            else approved_sold_batch_ids(db, region))
 
 
 def _area_values(db: Session, model, batch_id: int | list[int], column: str, name: str) -> list[str]:
@@ -2006,6 +2026,7 @@ def map_points(
     sold_months: int | None = Query(SOLD_MAP_MONTHS, ge=1, le=120),
     limit: int = Query(20000, ge=1, le=30000),
     db: Session = Depends(get_db),
+    ptype: str | None = Query(None, max_length=32),
 ) -> MapResponse:
     """Geocoded points for the map view. Honours the same area/beds/budget/deal
     filters as the list, so the map and the table describe the same population.
@@ -2016,6 +2037,7 @@ def map_points(
     picture of a market, it is a texture. Ignored for dataset=for_sale, where
     every point is live by definition. Pass a bigger number for a longer view;
     the frontend offers 3 / 6 / 12 / 24 / all.""" 
+    want = ptype.strip().lower() if isinstance(ptype, str) and ptype.strip() else None
     P = PropertyForSale
     if dataset == "sold":
         # Every live sold batch, like every other reader of sold data. Pinned to
@@ -2036,6 +2058,10 @@ def map_points(
             # otherwise scatter pins across Europe/India and force a world zoom.
             S.latitude.between(-47.5, -34.0), S.longitude.between(166.0, 179.5),
         )
+        if want:
+            values = [v for (v,) in db.query(S.property_type).filter(S.import_batch_id.in_(sold_ids)).distinct()
+                      if canonical_type(v).lower() == want]
+            q = q.filter(S.property_type.in_(values))
         if suburb:
             q = q.filter(S.suburb.in_(_area_values(db, S, sold_ids, "suburb", suburb)))
         if district:
@@ -2104,6 +2130,10 @@ def map_points(
         P.fair_value, P.market_value, P.opportunity_score_pct, P.beds,
         P.is_underpriced, P.is_subdividable,
     )
+    if want:
+        values = [v for (v,) in db.query(P.property_type).filter(P.import_batch_id == batch_id).distinct()
+                  if canonical_type(v).lower() == want]
+        q = q.filter(P.property_type.in_(values))
     rows = q.limit(limit).all()
     points = [
         MapPoint(

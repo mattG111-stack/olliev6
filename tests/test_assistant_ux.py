@@ -28,7 +28,7 @@ def test_above_value_asking_is_a_negative_discount():
 
 
 def test_property_tool_returns_link_prices_and_cost_assumptions(db_session):
-    batch = ImportBatch(batch_type='for_sale', filename='test.csv', is_active=True)
+    batch = ImportBatch(batch_type='for_sale', filename='test.csv', is_active=True, status="published")
     db_session.add(batch); db_session.flush()
     p = PropertyForSale(import_batch_id=batch.id, floor_area_m2=100, address='Test Road',
                         asking_price=749000, fair_value=881000, best_net_gain=850000)
@@ -84,7 +84,7 @@ def test_background_job_uses_only_current_history(db_session, monkeypatch):
 
 def test_search_distinguishes_result_limit_from_total_matches(db_session):
     from assistant.tools import search_listings
-    batch = ImportBatch(batch_type='for_sale', filename='limit.csv', is_active=True)
+    batch = ImportBatch(batch_type='for_sale', filename='limit.csv', is_active=True, status="published")
     db_session.add(batch); db_session.flush()
     for i in range(3):
         db_session.add(PropertyForSale(import_batch_id=batch.id, address=f'{i} Test Road',

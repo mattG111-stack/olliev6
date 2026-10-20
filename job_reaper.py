@@ -19,6 +19,7 @@ failed one the operator can retry.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,11 @@ def reap_stuck_jobs(db: Session | None = None) -> int:
                       .filter(IngestJob.status.in_(("running", "pending")))
                       .all())
         for j in candidates:
+            try:
+                if json.loads(j.result_json or '{}').get('requested_stage', {}).get('version') == 1:
+                    continue  # Durable worker owns recovery and its bounded attempts.
+            except (ValueError, TypeError, AttributeError):
+                pass
             sound = _last_sound(j)
             if j.status == "running":
                 if sound is not None and sound > run_cutoff:

@@ -211,7 +211,7 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
         import statistics
         from db import SessionLocal
         from models import PropertySold
-        from ingest import sold_batch_ids
+        from publication_scope import approved_sold_batch_ids as sold_batch_ids
         with SessionLocal() as s:
             bids = sold_batch_ids(s, "Auckland")
             rows = [] if not bids else s.query(
@@ -293,7 +293,7 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
         from collections import defaultdict
         from db import SessionLocal
         from models import PropertySold
-        from ingest import sold_batch_ids
+        from publication_scope import approved_sold_batch_ids as sold_batch_ids
         with SessionLocal() as s:
             bids = sold_batch_ids(s, "Auckland")
             mrows = [] if not bids else s.query(

@@ -12,7 +12,7 @@ from sqlalchemy import desc, func, text
 from sqlalchemy.orm import Session
 
 from db import get_db
-from ingest import sold_batch_ids
+from publication_scope import approved_sold_batch_ids as sold_batch_ids
 from models import (
     BatchType,
     ImportBatch,
@@ -148,7 +148,7 @@ MOVERS_SQL = ("""
 def _active(db: Session, batch_type: str, region: str) -> int | None:
     b = (
         db.query(ImportBatch)
-        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region, ImportBatch.is_active.is_(True))
+        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region, ImportBatch.is_active.is_(True), ImportBatch.status == "published")
         .order_by(ImportBatch.id.desc())
         .first()
     )
@@ -886,7 +886,7 @@ def suburb_trend(
     public_batches = db.query(ImportBatch.id).filter(
         ImportBatch.batch_type == BatchType.FOR_SALE.value,
         ImportBatch.region == region,
-        (ImportBatch.status.in_(("published", "archived"))) | ImportBatch.is_active.is_(True)
+        ImportBatch.status.in_(("published", "archived"))
     ).all()
     batch_ids = [bid for (bid,) in public_batches]
     spellings = _area_values(db, PropertyForSale, batch_ids, "suburb", suburb)
@@ -1022,7 +1022,8 @@ def list_batches(
 ) -> list[BatchSummary]:
     rows = (
         db.query(ImportBatch)
-        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region)
+        .filter(ImportBatch.batch_type == batch_type, ImportBatch.region == region,
+                ImportBatch.status.in_(("published", "archived")))
         .order_by(desc(ImportBatch.created_at))
         .all()
     )
@@ -1055,6 +1056,12 @@ def compare_batches(
     db: Session = Depends(get_db),
 ) -> BatchCompareSummary:
     from sqlalchemy import text
+    from fastapi import HTTPException
+    approved = {bid for (bid,) in db.query(ImportBatch.id).filter(
+        ImportBatch.id.in_((a, b)), ImportBatch.batch_type == "for_sale",
+        ImportBatch.status.in_(("published", "archived"))).all()}
+    if a not in approved or b not in approved:
+        raise HTTPException(404, "Published batches not found")
     summary = db.execute(text(
         """
         WITH a AS (SELECT slug_id, asking_price, market_value FROM properties_for_sale

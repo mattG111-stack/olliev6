@@ -32,6 +32,7 @@ exactly what it WOULD remove and writes nothing.
 from __future__ import annotations
 
 import logging
+import re
 import json
 from dataclasses import dataclass, field
 
@@ -109,7 +110,9 @@ def dedupe_forsale_batch(db: Session, *, region: str = "Auckland",
 
     by_key: dict[str, list[PropertyForSale]] = {}
     for p in rows:
-        if multiple_properties(p.address):
+        if multiple_properties(p.address) or not re.search(r"\d", p.address or ""):
+            continue
+        if any(word in (p.address or "").casefold() for word in ("withheld", "地址保密", "保密地址", "undisclosed")):
             continue
         key = address_key(p.address, p.suburb)
         if not key:

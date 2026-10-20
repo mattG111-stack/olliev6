@@ -47,7 +47,8 @@ def check_names(db,names):
         assert [p.batch_id for p in trend.points]==[prev.id,live.id]
         house=suburb_trend(name,'Auckland','House',db)
         assert all(p.listing_count==1 and p.median_asking==1000000 for p in house.points)
-        assert suburb_stats(name,'Auckland',2024,2025,'House',db).sold_count==16
+        house_stats=suburb_stats(name,'Auckland',2024,2025,'House',db)
+        assert house_stats.sold_count==16 and house_stats.active_listings==1 and house_stats.median_asking==1000000
     # Map resolves names across both public batches, keeps private/future out.
     pts=map_points(dataset='sold',region='Auckland',suburb=names[0],min_beds=None,
                    sold_months=None,limit=20000,db=db)

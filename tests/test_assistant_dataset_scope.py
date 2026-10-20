@@ -41,7 +41,7 @@ def test_categories_match_rental_snapshots_and_valuation_history(db_session, mon
     eligible = sold_batch_ids(db, "Auckland")
     assert set(eligible) == {sold_old, sold_live, sold_staged, sold_preview}
     assert json.loads(sql.distinct_values("properties_sold", "suburb")) == [
-        {"value": "Sale suburb", "n": len(eligible)}]
+        {"value": "Sale suburb", "n": 2}]
 
 
 def test_no_active_rental_snapshot_returns_no_categories(db_session, monkeypatch):

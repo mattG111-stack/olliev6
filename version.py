@@ -27,7 +27,7 @@ they were rebuilds during the build-out; 1.0 is the first version of the product
 proper. Do not "fix" the sequence back to 10.0.
 """
 
-VERSION = "1.88-review.1"
+VERSION = "1.89-approval.1"
 
 # The day this build was cut. Shown next to the number, because "v1.1" answers
 # which build and this answers how old it is.
