@@ -1053,8 +1053,9 @@ def suburb_stats(suburb: str, region: str = "Auckland",
                             .filter(PropertyForSale.import_batch_id == fs_batch,
                                     PropertyForSale.suburb.in_(
                                         _area_values(db, PropertyForSale, fs_batch, "suburb", name))))
-        asks = [p.asking_price for p in fq.all() if p.asking_price]
-        active_listings = len(asks)
+        live_rows = fq.all()
+        asks = [p.asking_price for p in live_rows if p.asking_price]
+        active_listings = len(live_rows)
         median_asking = _median(asks)
 
     # Sold data for the empirical stats + effects.
@@ -1066,11 +1067,15 @@ def suburb_stats(suburb: str, region: str = "Auckland",
                            sale_vs_cv=None, effects=[])
     # Every sold batch for the region — sold history accumulates, so keying this
     # to one batch reported a slice of the suburb as the suburb.
-    sold_batch_ids = live_sold_batch_ids(db, region) or [sold_batch]
+    # Customer summaries use published history, never an unreviewed upload.
+    # is_active supports legacy live batches created before status was recorded.
+    sold_batch_ids = [bid for (bid,) in db.query(ImportBatch.id).filter(
+        ImportBatch.batch_type == BatchType.SOLD.value, ImportBatch.region == region,
+        or_(ImportBatch.status == "published", ImportBatch.is_active.is_(True))).all()]
     rows = (db.query(PropertySold)
             .filter(PropertySold.import_batch_id.in_(sold_batch_ids),
                     PropertySold.suburb.in_(
-                        _area_values(db, PropertySold, sold_batch, "suburb", name)),
+                        _area_values(db, PropertySold, sold_batch_ids, "suburb", name)),
                     PropertySold.sale_price.isnot(None))
             .limit(6000).all())
     # isinstance, not truthiness: called straight as a function (which the tests
@@ -1622,7 +1627,7 @@ def _hide_bad_data(q):
     )
 
 
-def _area_values(db: Session, model, batch_id: int, column: str, name: str) -> list[str]:
+def _area_values(db: Session, model, batch_id: int | list[int], column: str, name: str) -> list[str]:
     """Every stored spelling of an area name that means the one asked for.
 
     Suburb and district are matched exactly, and the scraped values are not
@@ -1644,9 +1649,10 @@ def _area_values(db: Session, model, batch_id: int, column: str, name: str) -> l
     if not want:
         return []
     col = getattr(model, column)
+    batch_ids = batch_id if isinstance(batch_id, list) else [batch_id]
     try:
         rows = [v for (v,) in db.query(col)
-                .filter(model.import_batch_id == batch_id).distinct().all() if v]
+                .filter(model.import_batch_id.in_(batch_ids)).distinct().all() if v]
     except Exception:
         return [name]
 
