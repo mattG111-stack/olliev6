@@ -8,7 +8,7 @@ from datetime import date
 import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, func, text
+from sqlalchemy import desc, func, text, select
 from sqlalchemy.orm import Session
 
 from db import get_db
@@ -43,13 +43,11 @@ router = APIRouter(prefix="/api/dashboards", tags=["dashboards"])
 # capitulation and excludes every headline on the batch that prompted this.
 MAX_BELIEVABLE_PRICE_MOVE = 0.50
 
-# Same rule as the browse list (properties._hide_bad_data), expressed as a raw-SQL
-# predicate for the PERCENTILE queries: keep a listing only if it has a floor area,
-# or is a bare-land/section type (which legitimately has none). Drops the ~130
-# dwelling-type-with-no-floor rows so they don't skew medians, the pulse, or counts.
-_CLEAN_FS_SQL = "(is_held = false AND (floor_area_m2 IS NOT NULL OR property_type IN ({})))".format(
-    ", ".join("'{}'".format(t) for t in _SECTION_TYPES)
-)
+# Compile the catalogue's complete visibility predicate for percentile SQL.
+# A hand-written subset drifted: dead adverts, sold rows and placeholder prices
+# were counted in the pulse even though the catalogue correctly hid them.
+_CLEAN_FS_SQL = str(_hide_bad_data(select(PropertyForSale.id)).whereclause.compile(
+    compile_kwargs={"literal_binds": True}))
 
 # "Is this a price a VENDOR NAMED?" — in SQL, once, for both sides of a price
 # comparison. It was written out twice inside the movers query, which is how one
@@ -179,7 +177,7 @@ class MarketPulse(BaseModel):
     total_listings: int
     median_asking: float | None
     median_predicted_dom: float | None
-    listings_change: int | None  # rows_added - rows_removed vs previous batch
+    listings_change: int | None  # change in customer-visible rows vs previous approved batch
     median_asking_change_pct: float | None  # median % change vs previous batch (paired)
 
 
@@ -324,14 +322,16 @@ def today_brief(
     rises: list[PriceMover] = []
 
     if prev_id:
+        listings_change = counts.total_for_sale - _hide_bad_data(
+            db.query(PropertyForSale)).filter(PropertyForSale.import_batch_id == prev_id).count()
         # Diff vs previous batch — single FULL OUTER JOIN pass, PERCENTILE_DISC for speed
         try:
             diff = db.execute(text(
                 """
                 WITH a AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :prev AND slug_id IS NOT NULL),
+                           WHERE import_batch_id = :prev AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
                      b AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :curr AND slug_id IS NOT NULL),
+                           WHERE import_batch_id = :curr AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
                      joined AS (
                        SELECT a.slug_id AS a_slug, b.slug_id AS b_slug,
                               a.asking_price AS pa, b.asking_price AS pb
@@ -352,7 +352,7 @@ def today_brief(
                 removed = int(diff[1] or 0)
                 still = int(diff[2] or 0)
                 week_changes = WeekChanges(new_listings=added, removed_listings=removed, still_on_market=still)
-                listings_change = added - removed
+
                 if diff[3] is not None:
                     median_change_pct = float(diff[3])
         except Exception as e:
@@ -381,7 +381,7 @@ def today_brief(
     # failure into a 500 on the app's landing page, blanking the whole brief
     # instead of just the pulse strip.
     market_pulse = MarketPulse(
-        total_listings=int(pulse_row[0] or 0) if pulse_row and pulse_row[0] is not None else 0,
+        total_listings=counts.total_for_sale,
         median_asking=float(pulse_row[1]) if pulse_row and pulse_row[1] is not None else None,
         median_predicted_dom=float(pulse_row[2]) if pulse_row and pulse_row[2] is not None else None,
         listings_change=listings_change,

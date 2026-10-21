@@ -61,7 +61,7 @@ def render(suburb, data, listings):
     return '\n'.join(out)
 
 
-def load_brief(suburb):
+def load_snapshot(suburb):
     from db import SessionLocal
     from models import PropertySold as S, PropertyForSale as P
     from publication_scope import approved_sold_batch_ids as sold_batch_ids
@@ -77,7 +77,14 @@ def load_brief(suburb):
         batch = _active(db, 'for_sale')
         listings = _hide_bad_data(db.query(P)).filter(P.import_batch_id==batch,
             func.lower(func.trim(P.suburb))==suburb.strip().lower()).count() if batch else None
-    return render(suburb, summarise(rows,today),listings)
+    data = summarise(rows, today)
+    data["listings"] = listings
+    return data
+
+
+def load_brief(suburb):
+    data = load_snapshot(suburb)
+    return render(suburb, data, data["listings"])
 
 
 class SuburbBrief:
@@ -122,25 +129,33 @@ class SuburbBrief:
         block = '\n\n'.join(blocks)
         if '```apex-map' in block:
             text = re.sub(r'(?m)^[ \t]*```apex-map\b[^\n]*\n.*?^[ \t]*```[ \t]*(?:\n|$)', '', text, flags=re.DOTALL)
-        if len(self.suburbs) > 1 and re.fullmatch(r'\s*compare\s+' + re.escape(self.suburbs[0]) + r'\s+(?:and|versus|vs\.?)\s+' + re.escape(self.suburbs[1]) + r'\s*[?.]?\s*', self.question, re.I):
+        if len(self.suburbs) > 1 and comparison_names(self.question):
             return '## Suburb comparison\n\nAll property types; the same 180-day period for each suburb.\n\n' + block
         return text.rstrip() + '\n\n' + block
 
 
-def direct_comparison(question, history=None):
+def comparison_names(question):
     """Fast path only for explicit, unfiltered suburb-statistics comparisons."""
-    if history:
-        return None
     match = re.fullmatch(r"\s*compare\s+([A-Za-z][A-Za-z '\-]{1,70}?)\s+(?:and|versus|vs\.?)\s+([A-Za-z][A-Za-z '\-]{1,70}?)(?:(\s+side by side|\s+using|\s+with|\s+for buying a home|\s*[.:])([\s\S]*))?\s*[?]?\s*", question, re.I)
     if not match:
         return None
     names = [match[1].strip(), match[2].strip()]
     tail = ((match[3] or "") + " " + (match[4] or "")).lower()
     # Anything outside the simple metric request remains on the reasoning path.
-    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare side by using recorded sale include the sample counts count period suburb map once".split())
+    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare side by using recorded sale include the sample counts count period suburb map once put areas in columns column next to each other them two the side by side".split())
     if any(word not in allowed for word in re.findall(r"\w+", tail)):
         return None
     if names[0].casefold() == names[1].casefold():
+        return None
+    return names
+
+
+def direct_comparison(question, history=None):
+    """Explicit, unfiltered comparisons always use one deterministic snapshot."""
+    if history:
+        return None
+    names = comparison_names(question)
+    if not names:
         return None
     from db import SessionLocal
     from models import PropertySold as S
