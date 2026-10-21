@@ -97,6 +97,10 @@ def test_today_change_counts_visible_book_on_both_sides(db_session):
     result = today_brief(region='Auckland', db=db)
     assert result.counts.total_for_sale == result.market_pulse.total_listings == 2
     assert result.market_pulse.listings_change == 1
+    if db.bind.dialect.name == 'postgresql':
+        assert result.week_changes.new_listings == 2
+        assert result.week_changes.removed_listings == 1
+        assert result.week_changes.still_on_market == 0
 
 
 def test_collection_status_does_not_claim_disabled_jobs_are_scheduled(monkeypatch):

@@ -329,9 +329,9 @@ def today_brief(
             diff = db.execute(text(
                 """
                 WITH a AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :prev AND slug_id IS NOT NULL),
+                           WHERE import_batch_id = :prev AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
                      b AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :curr AND slug_id IS NOT NULL),
+                           WHERE import_batch_id = :curr AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
                      joined AS (
                        SELECT a.slug_id AS a_slug, b.slug_id AS b_slug,
                               a.asking_price AS pa, b.asking_price AS pb
