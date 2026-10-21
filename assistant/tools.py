@@ -713,87 +713,40 @@ def find_room_to_add_a_bedroom(limit: int = 10) -> str:
 
 
 def suburb_days_to_sell(suburb: str) -> str:
-    """How long properties take to sell in a suburb, month by month.
-
-    Args:
-        suburb: Suburb name, e.g. "Browns Bay".
-    """
+    """Exact suburb, same deduplicated 180-day sold cohort as the attached panel."""
+    from assistant.suburb_brief import load_snapshot
+    data = load_snapshot(suburb)
+    if data["average"] is not None:
+        return json.dumps({
+            "suburb": suburb, "period_start": str(data["start"]),
+            "period_end": str(data["end"]), "period_days": 180,
+            "sales_with_a_listing_date": data["timing_count"],
+            "average_days_to_sell": data["average"],
+            "recorded_sales": data["count"],
+            "current_visible_listings": data["listings"],
+            "basis": "Dated disclosed sales; duplicates counted once; conflicting prices excluded",
+        })
     with SessionLocal() as s:
-        # Every sold batch, not the newest one. Sold history accumulates, and
-        # resolving "the sold data" as a single batch here answered out of
-        # whichever delivery happened to arrive last — a few hundred rows out
-        # of a hundred thousand, with nothing on screen to say so.
         batches = sold_batch_ids(s, "Auckland")
         if not batches:
             return _no_batch("sold")
-        rows = s.query(PropertySold.sold_date, PropertySold.days_on_market).filter(
+        total = s.query(func.count(PropertySold.id)).filter(
             PropertySold.import_batch_id.in_(batches),
-            PropertySold.suburb.ilike(f"%{suburb}%"),
-            PropertySold.days_on_market.isnot(None),
-            PropertySold.days_on_market > 0,
-        ).all()
-        if not rows:
-            # BEFORE GIVING UP, ASK THE OTHER SOURCE.
-            #
-            # The sold file's listing dates are missing for most of the
-            # history, and this tool used to stop there — "183 sales on file
-            # and I cannot tell you how long they took". The listings we watch
-            # ourselves answer the same question from the other end: appeared
-            # on such a date, stopped being advertised on such a date.
-            seen = observed_days_to_sell(s, suburb=suburb)
-            if seen:
-                return json.dumps({
-                    "suburb": suburb,
-                    "listings_measured": seen.houses,
-                    "median_days_to_sell": seen.median_days,
-                    "average_days_to_sell": seen.average_days,
-                    "fastest": seen.fastest, "slowest": seen.slowest,
-                    "still_on_the_market": seen.watching,
-                }, default=str)
-            # Two very different situations, and the old message covered both
-            # with the same sentence: a suburb we have no sales for at all,
-            # and a suburb whose sales arrived without a listing date. The
-            # first is answered by a spelling; the second cannot be answered
-            # at all, and saying which is the whole difference.
-            total = s.query(func.count(PropertySold.id)).filter(
-                PropertySold.import_batch_id.in_(batches),
-                PropertySold.suburb.ilike(f"%{suburb}%")).scalar() or 0
-            if total:
-                # Both our sources have now been asked and neither can answer,
-                # and no rephrasing changes that: the sold rows carry no listing
-                # date, and nothing we are watching there has come off the
-                # market yet. This is the exact case the internet fallback was
-                # asked for, so it is flagged for it — with what we DO hold led
-                # with, so the answer is ours plus theirs rather than theirs.
-                return _gap(
-                    need=f"a listing date on {suburb}'s sales",
-                    why=(f"{total:,} sales are on file there and none carry one, "
-                         f"and no listing we are watching in {suburb} has come "
-                         f"off the market yet"),
-                    known=f"{total:,} sales on file in {suburb}",
-                    ask=(f"I can't work out days-to-sell for {suburb} from our "
-                         f"own records yet. Want the published market figure "
-                         f"instead, or sale prices and volumes, which I do have?"),
-                    outside_ok=True)
-            names = [n for (n,) in s.query(PropertySold.suburb).filter(
-                PropertySold.import_batch_id.in_(batches)).distinct() if n]
-            options = _near(suburb, names)
-            return _gap(
-                need=f"the right spelling for {suburb!r}",
-                why="no sold records carry that suburb name",
-                ask=(f"I don't have a suburb spelled {suburb!r}. Did you mean "
-                     f"{', '.join(options)}?") if options else
-                    (f"I have no sales recorded under {suburb!r} — which "
-                     f"suburb should I look at?"))
-        doms = sorted(r.days_on_market for r in rows)
-        mid = len(doms) // 2
-        return json.dumps({
-            "suburb": suburb, "sales_with_a_listing_date": len(doms),
-            "median_days_to_sell": doms[mid] if len(doms) % 2 else
-                                   (doms[mid - 1] + doms[mid]) / 2,
-            "average_days_to_sell": round(sum(doms) / len(doms), 1),
-            "fastest": doms[0], "slowest": doms[-1],
-        }, default=str)
+            func.lower(func.trim(PropertySold.suburb)) == suburb.strip().casefold()).scalar() or 0
+        if total:
+            reason = (f"{total:,} sales are on file there and none carry one in the "
+                      f"verified {data['start']}–{data['end']} selling-time cohort")
+            return _gap(need=f"a listing date on {suburb}'s recent sales", why=reason,
+                        known=f"{data['count']:,} dated sales in the past 180 days",
+                        ask=f"Sold timing is unavailable for this period. Want the recorded sale prices and volumes instead?",
+                        outside_ok=True)
+        names = [n for (n,) in s.query(PropertySold.suburb).filter(
+            PropertySold.import_batch_id.in_(batches)).distinct() if n]
+        options = _near(suburb, names)
+        return _gap(need=f"the right spelling for {suburb!r}",
+                    why="no sold records carry that exact suburb name",
+                    ask=(f"I don't have a suburb spelled {suburb!r}. Did you mean {', '.join(options)}?")
+                    if options else f"I have no sales recorded under {suburb!r} — which suburb should I look at?")
 
 
 def _starved(of_type, beds, baths, floor, land, suburb: str, ctype: str) -> str:

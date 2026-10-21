@@ -55,6 +55,7 @@ jobs:
         run: >-
           python -m pytest -o addopts='' -q
           tests/test_publication_boundaries.py tests/test_all_suburb_trends.py
+          tests/test_live_statistics_consistency.py
           tests/test_sold_acceptance.py tests/test_daily_pricing.py
           tests/test_scraped_price_paths.py tests/test_a_guide_price_is_a_real_number.py
           tests/test_durable_schedule.py tests/test_collection_storage.py

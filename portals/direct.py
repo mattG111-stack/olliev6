@@ -99,11 +99,16 @@ def configured(db=None):
 
 
 def status():
-    # Do not expose any URL, username, password or exception containing them.
+    # Effective runtime flags, never secrets. Historical runs do not prove a
+    # schedule is enabled or that the worker has made recent progress.
+    enabled = bool(settings.scraper_enabled)
     return {'configured': configured(), 'proxy_configured': bool(settings.scraper_proxy_urls),
-            'enabled': settings.scraper_enabled, 'review_required': True,
-            'message': 'Ready for a supervised collection test' if configured() else
-                       'Collection disabled or awaiting proxy and source configuration'}
+            'enabled': enabled, 'availability_enabled': bool(settings.scraper_check_listings),
+            'portal_daily_enabled': bool(settings.portals_daily), 'review_required': True,
+            'message': ('Portal collection is disabled in this build. Historical runs are retained; '
+                        'CSV imports and saved data remain available.') if not enabled else
+                       ('Ready for a supervised collection test' if configured() else
+                        'Collection is enabled but proxy/source configuration is incomplete')}
 
 
 def validate_url(url, source):
