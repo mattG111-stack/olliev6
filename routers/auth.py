@@ -152,7 +152,8 @@ def sign_up(body: SignUpIn, db: Session = Depends(get_db)) -> SignUpOut:
     # line is what tells them apart.
     log.warning("account created (self sign-up): %s id=%s status=%s", u.email, u.id, u.status)
     _send_email_code(db, u)                       # kick off email verification
-    token, expires = create_access_token(u.id)
+    token, expires = create_access_token(u.id, db)
+    db.commit()
     return SignUpOut(token=TokenOut(access_token=token, expires_at=expires), user=_me_out(u))
 
 
@@ -188,7 +189,7 @@ def sign_in(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(g
     # require_active, so signing in just lets them reach the onboarding steps.
     if u.status in (UserStatus.REJECTED.value, UserStatus.DEACTIVATED.value):
         raise HTTPException(status_code=403, detail=f"Account {u.status}")
-    token, expires = create_access_token(u.id)
+    token, expires = create_access_token(u.id, db)
     u.last_login_at = datetime.now(timezone.utc)
     u.login_count = (u.login_count or 0) + 1
     db.commit()

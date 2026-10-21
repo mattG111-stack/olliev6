@@ -149,10 +149,17 @@ def find_user_by_email(db: Session, email: str | None) -> User | None:
     return None
 
 
-def create_access_token(user_id: int) -> tuple[str, datetime]:
+def create_access_token(user_id: int, db: Session | None = None) -> tuple[str, datetime]:
     expires = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expiry_minutes)
-    payload = {"sub": str(user_id), "exp": expires, "iat": datetime.now(timezone.utc).timestamp()}
+    issued = datetime.now(timezone.utc)
+    payload = {"sub": str(user_id), "exp": expires, "iat": issued.timestamp()}
+    if db is not None:
+        import secrets
+        payload["sid"] = secrets.token_urlsafe(24)
     token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    if db is not None:
+        from auth_sessions import remember
+        remember(db, token, user_id, issued, expires)
     return token, expires
 
 
@@ -170,15 +177,27 @@ def current_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) ->
     access is gated separately by require_active."""
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id = int(payload["sub"])
+        if payload.get("sid"):
+            from auth_sessions import receipt
+            payload = receipt(db, token)
+            if payload is None:
+                raise _credentials_error()
     except ExpiredSignatureError:
         log.warning("Session rejected: token_expired")
         raise _credentials_error()
     except InvalidSignatureError:
-        log.warning("Session rejected: signature_mismatch")
-        raise _credentials_error()
+        from auth_sessions import receipt
+        payload = receipt(db, token)
+        if payload is None:
+            log.warning("Session rejected: signature_mismatch")
+            raise _credentials_error()
+        log.info("Session validated against server-issued receipt after signer configuration changed")
     except (JWTError, KeyError, ValueError):
         log.warning("Session rejected: invalid_token")
+        raise _credentials_error()
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
         raise _credentials_error()
     user = db.get(User, user_id)
     if user is None:
