@@ -460,7 +460,7 @@ def delete_user(
         raise HTTPException(status_code=409,
                             detail="This is the last active admin — promote another admin first")
 
-    from models import (AgentContact, AppSetting, AssistantLog, BuildingOverride,
+    from models import (AuthSession, AgentContact, AppSetting, AssistantLog, BuildingOverride,
                           Commission, ImportBatch, IngestJob, Promoter, Referral,
                           ReferralClick, VerificationCode, WishList,
                           InterestMemorySetting, PropertyInterest)
@@ -508,10 +508,15 @@ def delete_user(
     # reaches the browser as a bare 500.
     OWNED = ((WishList, "user_id"), (VerificationCode, "user_id"),
              (Referral, "user_id"), (PropertyInterest, "user_id"),
-             (InterestMemorySetting, "user_id"))
-    DETACH = ((AssistantLog, "user_id"), (AgentContact, "user_id"),
-              (ImportBatch, "uploaded_by_id"), (IngestJob, "uploaded_by_id"),
-              (BuildingOverride, "updated_by"), (AppSetting, "updated_by"))
+             (InterestMemorySetting, "user_id"), (AuthSession, "user_id"))
+    # Nullable references are audit/source records, not owned content. Derive
+    # them from metadata so new activity, model-training or review tables cannot
+    # silently make deletion fail. Never auto-delete an unknown non-null owner.
+    from db import Base
+    detach = [(table, column) for table in Base.metadata.sorted_tables
+              for column in table.columns if column.nullable
+              and any(fk.column.table.name == 'users' for fk in column.foreign_keys)]
+
 
     # Each cleanup gets its own savepoint. On Postgres a failed statement poisons
     # the whole transaction, so a table that does not exist on an older database
@@ -525,14 +530,14 @@ def delete_user(
         except Exception as exc:
             log.warning("could not clear %s for user %s: %s: %s",
                         model.__tablename__, user_id, type(exc).__name__, exc)
-    for model, col in DETACH:
+    for table, column in detach:
         try:
             with db.begin_nested():
-                db.query(model).filter(getattr(model, col) == u.id).update(
-                    {col: None}, synchronize_session=False)
+                db.execute(table.update().where(column == u.id).values({column.name: None}))
         except Exception as exc:
-            log.warning("could not detach %s for user %s: %s: %s",
-                        model.__tablename__, user_id, type(exc).__name__, exc)
+            log.warning("could not detach %s.%s for user %s: %s: %s",
+                        table.name, column.name, user_id, type(exc).__name__, exc)
+
 
     email = u.email
     try:

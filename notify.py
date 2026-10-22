@@ -1,11 +1,8 @@
 """Outbound email + SMS for onboarding verification.
 
-Both channels degrade gracefully: if no provider is configured we log the
-message (including the code) to the server instead of sending, so the whole
-signup → verify flow works end-to-end in development with zero external setup.
-
-- Email: Resend (set RESEND_API_KEY). https://resend.com
-- SMS: Twilio (not wired yet — codes are logged until credentials are added).
+Unconfigured or failed providers return False. Message contents, verification
+codes, recipient details and provider response bodies are never written to logs.
+Development tests read synthetic codes from their disposable database.
 """
 from __future__ import annotations
 
@@ -20,10 +17,10 @@ log = logging.getLogger("ollie.notify")
 
 def send_email(to: str, subject: str, html: str, text: str | None = None) -> bool:
     """Send an email via Resend. Returns True if handed off to the provider.
-    With no RESEND_API_KEY set, logs the message and returns False."""
+    With no RESEND_API_KEY set, returns False without logging message contents."""
     key = settings.resend_api_key
     if not key:
-        log.warning("[email:log-only] to=%s subject=%s\n%s", to, subject, text or html)
+        log.warning("Email delivery unavailable: provider is not configured")
         return False
     try:
         r = httpx.post(
@@ -33,20 +30,20 @@ def send_email(to: str, subject: str, html: str, text: str | None = None) -> boo
             timeout=15,
         )
         if r.status_code >= 300:
-            log.error("resend send failed %s: %s", r.status_code, r.text[:300])
+            log.error("Email provider rejected delivery: HTTP %s", r.status_code)
             return False
         return True
     except Exception as e:                       # never let email break the request
-        log.error("resend send error: %s", e)
+        log.error("Email delivery failed: %s", type(e).__name__)
         return False
 
 
 def send_sms(to: str, body: str) -> bool:
     """Send an SMS via Twilio. Returns True if handed off to the provider.
-    Twilio isn't wired yet — for now we always log the code and return False."""
+    Without provider configuration, returns False without logging the message."""
     sid, token, frm = settings.twilio_account_sid, settings.twilio_auth_token, settings.twilio_from_number
     if not (sid and token and frm):
-        log.warning("[sms:log-only] to=%s body=%s", to, body)
+        log.warning("SMS delivery unavailable: provider is not configured")
         return False
     try:
         r = httpx.post(
@@ -56,11 +53,11 @@ def send_sms(to: str, body: str) -> bool:
             timeout=15,
         )
         if r.status_code >= 300:
-            log.error("twilio send failed %s: %s", r.status_code, r.text[:300])
+            log.error("SMS provider rejected delivery: HTTP %s", r.status_code)
             return False
         return True
     except Exception as e:
-        log.error("twilio send error: %s", e)
+        log.error("SMS delivery failed: %s", type(e).__name__)
         return False
 
 

@@ -91,11 +91,10 @@ class Settings(BaseSettings):
     # Stripe and put its id here; without it, checkout can't start.
     stripe_price_id: str = ""
     stripe_webhook_secret: str = ""                # verifies Stripe webhook signatures
-    # Email delivery (Resend). Without a key we log the code to the server instead
-    # of sending — the flow still works end-to-end in dev.
+    # Email delivery (Resend). Without a key delivery is unavailable; verification codes are never logged.
     resend_api_key: str = ""
     email_from: str = "Apex Property <onboarding@resend.dev>"
-    # SMS delivery (Twilio) — not wired yet; phone codes are logged for now.
+    # SMS delivery requires configured Twilio credentials; codes are never logged.
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
