@@ -435,63 +435,66 @@ def suburb_medians(
     """Median asking (for-sale) + median sale (sold) per suburb. Optionally drill
     down by bedroom/bathroom count so the medians are like-for-like — a suburb's
     all-in median blends 2-beds with 5-beds and means little; beds/baths segments
-    it into a comparable population."""
+    it into a comparable population. Sold medians use all approved dated history;
+    asking medians use currently visible advertised prices, not derived guides."""
+    from collections import defaultdict
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import math
+
     fs_id = _active(db, "for_sale", region)
-    sold_id = _active(db, "sold", region)
-    if fs_id is None and sold_id is None:
+    if fs_id is None:
         return []
-
-    # Bed/bath drill-down — applied identically to the for-sale and sold sides.
-    seg = ""
-    params = {"fs_id": fs_id, "sold_id": sold_id or -1, "lim": limit}
+    # One implementation for PostgreSQL and SQLite. The old raw percentile SQL
+    # failed on SQLite and read just the newest sold delivery in production.
+    live = _hide_bad_data(db.query(PropertyForSale.suburb, PropertyForSale.asking_price)).filter(
+        PropertyForSale.import_batch_id == fs_id,
+        PropertyForSale.asking_price >= 10000, PropertyForSale.suburb.isnot(None),
+        text(_REAL_ASKING_SQL))
+    sold = db.query(PropertySold.address, PropertySold.suburb, PropertySold.sold_date,
+                    PropertySold.sale_price, PropertySold.beds, PropertySold.baths).filter(
+        PropertySold.import_batch_id.in_(sold_batch_ids(db, region)),
+        PropertySold.sale_price > 0, PropertySold.suburb.isnot(None))
     if beds is not None:
-        seg += " AND beds = :beds"; params["beds"] = beds
+        live = live.filter(PropertyForSale.beds == beds)
     if baths is not None:
-        seg += " AND baths = :baths"; params["baths"] = baths
-    # Each bed/bath slice is smaller, so relax the "enough listings to mean
-    # something" floor when a segment filter is on.
-    params["minc"] = 2 if (beds is not None or baths is not None) else 5
-
-    rows = []
-    if fs_id is not None:
-        from sqlalchemy import text
-        sql = text(
-            """
-            WITH fs AS (
-                SELECT suburb,
-                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY asking_price) AS median_asking,
-                       COUNT(*) AS listing_count
-                FROM properties_for_sale
-                WHERE import_batch_id = :fs_id AND asking_price >= 10000 AND suburb IS NOT NULL
-                      AND """ + _CLEAN_FS_SQL + seg + """
-                GROUP BY suburb
-            ),
-            sd AS (
-                SELECT suburb,
-                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sale_price) AS median_sale
-                FROM properties_sold
-                WHERE import_batch_id = :sold_id AND sale_price IS NOT NULL AND suburb IS NOT NULL
-                      """ + seg + """
-                GROUP BY suburb
-            )
-            SELECT fs.suburb, fs.median_asking, sd.median_sale, fs.listing_count
-            FROM fs LEFT JOIN sd USING (suburb)
-            WHERE fs.listing_count >= :minc
-            ORDER BY fs.median_asking DESC NULLS LAST
-            LIMIT :lim;
-            """
-        )
-        rows = db.execute(sql, params).fetchall()
-
-    return [
-        SuburbAggregate(
-            suburb=r[0],
-            median_asking=float(r[1]) if r[1] is not None else None,
-            median_sale=float(r[2]) if r[2] is not None else None,
-            listing_count=int(r[3]),
-        )
-        for r in rows
-    ]
+        live = live.filter(PropertyForSale.baths == baths)
+    asking, names = defaultdict(list), {}
+    for suburb, price in live:
+        name = suburb.strip()
+        if not name or not math.isfinite(price):
+            continue
+        key = name.casefold()
+        names.setdefault(key, name)
+        asking[key].append(float(price))
+    # A transaction delivered twice counts once; a separately dated sale stays
+    # separate. Conflicting prices and unknown/future dates cannot set a median.
+    transactions = defaultdict(list)
+    today = datetime.now(ZoneInfo('Pacific/Auckland')).date()
+    for address, suburb, raw_date, price, rooms, bathrooms in sold:
+        try:
+            day = date.fromisoformat(str(raw_date)[:10])
+        except (ValueError, TypeError):
+            continue
+        if day > today or not address or not suburb.strip() or not math.isfinite(price):
+            continue
+        key = (suburb.strip().casefold(), ' '.join(address.casefold().split()), day)
+        transactions[key].append((float(price), rooms, bathrooms))
+    sales = defaultdict(list)
+    for (suburb, _, _), values in transactions.items():
+        prices = {v[0] for v in values}
+        if len(prices) != 1:
+            continue
+        if beds is not None and {v[1] for v in values} != {beds}:
+            continue
+        if baths is not None and {v[2] for v in values} != {baths}:
+            continue
+        sales[suburb].append(next(iter(prices)))
+    minimum = 2 if beds is not None or baths is not None else 5
+    rows = [SuburbAggregate(suburb=names[key], median_asking=statistics.median(prices),
+              median_sale=statistics.median(sales[key]) if sales[key] else None,
+              listing_count=len(prices)) for key, prices in asking.items() if len(prices) >= minimum]
+    return sorted(rows, key=lambda row: (-row.median_asking, row.suburb.casefold()))[:limit]
 
 
 class TrendPoint(BaseModel):
