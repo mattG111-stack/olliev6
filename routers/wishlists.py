@@ -81,18 +81,19 @@ def _active_batch(db: Session, region: str = "Auckland") -> int | None:
 def _prev_batch(db: Session, active_id: int, region: str = "Auckland") -> int | None:
     return (db.query(ImportBatch.id)
             .filter(ImportBatch.batch_type == "for_sale", ImportBatch.region == region,
-                    ImportBatch.id < active_id)
+                    ImportBatch.id < active_id,
+                    ImportBatch.status.in_(("published", "archived")))
             .order_by(ImportBatch.id.desc()).limit(1).scalar())
 
 
 def _match_query(db: Session, wl: WishList, batch_id: int):
-    from routers.properties import _hide_bad_data
+    from routers.properties import _hide_bad_data, _area_values
     P = PropertyForSale
     q = _hide_bad_data(db.query(P).filter(P.import_batch_id == batch_id))
     if wl.district:
-        q = q.filter(P.district == wl.district)
+        q = q.filter(P.district.in_(_area_values(db, P, batch_id, "district", wl.district)))
     if wl.suburb:
-        q = q.filter(P.suburb.ilike(f"%{wl.suburb}%"))
+        q = q.filter(P.suburb.in_(_area_values(db, P, batch_id, "suburb", wl.suburb)))
     if wl.property_category:
         wanted = _CATEGORY_MAP.get(wl.property_category.strip().lower())
         if wanted:
@@ -122,23 +123,23 @@ def _match_query(db: Session, wl: WishList, batch_id: int):
 def _new_slugs(db: Session, wl: WishList, active_id: int) -> set[str]:
     """Slugs of current matches that are new since the reference batch — either a
     brand-new listing, or one whose asking price dropped into the wish list's range."""
-    ref = wl.last_seen_batch_id or _prev_batch(db, active_id)
+    ref = wl.last_seen_batch_id
+    if ref:
+        batch = db.get(ImportBatch, ref)
+        if (not batch or batch.batch_type != 'for_sale' or batch.region != 'Auckland'
+                or batch.status not in ('published', 'archived')):
+            ref = None
+    ref = ref or _prev_batch(db, active_id)
     if not ref or ref >= active_id:
         return set()
-    cur = _match_query(db, wl, active_id).with_entities(
-        PropertyForSale.slug_id, PropertyForSale.asking_price).all()
-    prev = dict(db.query(PropertyForSale.slug_id, PropertyForSale.asking_price)
-                .filter(PropertyForSale.import_batch_id == ref).all())
-    out: set[str] = set()
-    for slug, ask in cur:
-        if not slug:
-            continue
-        if slug not in prev:
-            out.add(slug)                                   # new listing appeared
-        elif (wl.max_price is not None and prev[slug] is not None and ask is not None
-              and prev[slug] > wl.max_price and ask <= wl.max_price):
-            out.add(slug)                                   # price dropped into range
-    return out
+    # Compare matching, visible homes on both approved snapshots. Preview rows
+    # must not suppress a notification or supply an unapproved price baseline.
+    # This also keeps auction/derived budget fallbacks aligned with the search.
+    cur = {slug for (slug,) in _match_query(db, wl, active_id).with_entities(
+        PropertyForSale.slug_id).all() if slug}
+    prev = {slug for (slug,) in _match_query(db, wl, ref).with_entities(
+        PropertyForSale.slug_id).all() if slug}
+    return cur - prev
 
 
 def _to_out(db: Session, wl: WishList, active_id: int | None) -> WishListOut:
