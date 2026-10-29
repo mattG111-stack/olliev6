@@ -20,6 +20,13 @@ def identity(p):
     if re.search(r'\s(?:&|and)\s|\d\s*[-–]\s*\d', p.address.split(',')[0], re.I):
         return None
     key = address_key(p.address, p.suburb)
+    # A generic label such as "Lot 4" or "Stage 2" is not a numbered street
+    # identity. Prefer an absent history to merging different developments.
+    street = key.split('|')[0]
+    if (not re.match(r'^(?:(?:lot|unit|flat)\s+)?\d', street)
+            or len(street.split()) < 2
+            or re.fullmatch(r'(?:lot|stage|unit|section|plot)\s+\S+', street)):
+        return None
     return hashlib.sha256(f'{(p.region or "Auckland").strip().casefold()}|{key}'.encode()).hexdigest()
 
 

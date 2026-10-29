@@ -44,6 +44,7 @@ def test_reduction_retained_across_unchanged_uploads_and_different_source_ids(db
     {'sale_method':'By negotiation'}, {'cv_numeric':1000000},
     {'asking_price':float('inf')}, {'asking_price':100}, {'url':None},
     {'address':'Example Road'}, {'address':'2 & 4 Example Road'},
+    {'address':'Lot 4'}, {'address':'Stage 2'},
 ])
 def test_private_held_derived_placeholder_or_ambiguous_is_not_recorded(db_session, values):
     b,p=make(db_session,1,**values)
@@ -66,6 +67,11 @@ def test_duplicate_exact_identities_are_not_recorded(db_session):
     db.add(P(import_batch_id=b.id,address=p.address,suburb=p.suburb,region=p.region,
         asking_price=900000,asking_basis='advertised',url=p.url,is_held=False));db.flush()
     assert record_batch(db,b.id)==0
+
+
+def test_numbered_one_word_street_is_not_mistaken_for_a_generic_lot(db_session):
+    b,p=make(db_session,1,address='8 Broadway')
+    assert record_batch(db_session,b.id)==1
 
 
 def test_baseline_survives_original_upload_deletion_without_inventing_history(db_session):
