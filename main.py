@@ -80,6 +80,11 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_seed_admin(db)
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
         from asking_history import bootstrap
         retained = bootstrap(db)
         db.commit()

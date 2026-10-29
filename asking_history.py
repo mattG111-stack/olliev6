@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 from zoneinfo import ZoneInfo
+from sqlalchemy.orm import load_only
 
 from addresses import address_key
 from models import AskingPriceObservation as O, ImportBatch, PropertyForSale as P
@@ -53,7 +54,12 @@ def record_batch(db, batch_id):
     existing = {key for key, in db.query(O.identity_key).filter(
         O.batch_id == batch_id, O.observed_at == when)}
     groups = defaultdict(list)
-    for p in db.query(P).filter(P.import_batch_id == batch_id, P.is_held.is_(False)):
+    # A full property includes large source blobs and galleries. Capturing a
+    # baseline must not load those for the entire book during API startup.
+    query = db.query(P).options(load_only(P.id, P.address, P.suburb, P.region,
+        P.asking_price, P.asking_basis, P.cv_numeric, P.valuation_last_sold_value,
+        P.sale_method, P.url)).filter(P.import_batch_id == batch_id, P.is_held.is_(False))
+    for p in query:
         key = identity(p)
         if key:
             groups[key].append(p)
