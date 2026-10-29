@@ -332,7 +332,7 @@ def user_interests(days: int = Query(30, ge=1, le=365),
 
       * their wish lists — a suburb, a price band and a bed count they typed in
         themselves, which is as close to a stated brief as this product gets
-      * the questions they ask Ollie — the suburbs in them, and the last few
+      * the questions they ask Olie — the suburbs in them, and the last few
         verbatim, because "is Glenfield still soft?" says something a filter
         cannot
       * where their time goes — which parts of the product they actually use

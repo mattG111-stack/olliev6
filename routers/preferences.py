@@ -1,6 +1,6 @@
 """What each customer is hunting — read, write, and the fortnightly check.
 
-The questions are asked inside Ollie, not at signup, so this is the API behind a
+The questions are asked inside Olie, not at signup, so this is the API behind a
 conversation rather than behind a form. Three things matter here:
 
   * The counts we quote back ("571 in that range", "9 fit you this morning")
@@ -347,7 +347,7 @@ def preview(
 ) -> PreviewOut:
     """What these criteria are worth today, without saving them.
 
-    Drives both the running total while they choose and the answer Ollie opens
+    Drives both the running total while they choose and the answer Olie opens
     with once they are done.
     """
     batch_id = _batch(db, user)

@@ -193,7 +193,7 @@ def ask_question(body: AskIn, me: User = Depends(require_active),
             pass    # the log is not worth losing the real error over
         raise HTTPException(
             status_code=500,
-            detail=f"Ollie could not answer that: {type(exc).__name__}: {exc}",
+            detail=f"Olie could not answer that: {type(exc).__name__}: {exc}",
         ) from exc
 
     # Store every question + answer — the corpus Ollie learns from.
@@ -242,7 +242,7 @@ ASK_STALE_MINUTES = 15
 # Per turn of client-sent history kept on the row. Twenty turns at this size is
 # a bounded row; uncapped, it is whatever the caller felt like sending.
 HISTORY_CHARS = 4000
-_ABANDONED = ("Ollie was interrupted before he could finish that one — the "
+_ABANDONED = ("Olie was interrupted before he could finish that one — the "
               "server restarted while he was working. Ask it again and he'll "
               "start it fresh.")
 # What each phase is called for the person waiting. Deliberately about their
@@ -399,7 +399,7 @@ def _run_ask_job(ask_id: int, user_id: int) -> None:
             # that is a blank, the page renders an empty bubble, which reads as
             # a broken product rather than as a question that did not land.
             _finish(db, ask_id, ok=False, status="failed",
-                    answer="Ollie came back with nothing on that one. Ask it "
+                    answer="Olie came back with nothing on that one. Ask it "
                            "again, or put it a different way.")
             return
 
@@ -613,7 +613,7 @@ class QuotaOut(BaseModel):
 
 
 class FailureRow(BaseModel):
-    """One question Ollie could not answer, and what actually went wrong."""
+    """One question Olie could not answer, and what actually went wrong."""
     id: int
     at: str
     email: str | None

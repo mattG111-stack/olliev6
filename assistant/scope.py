@@ -1,7 +1,7 @@
 """Shared assistant scope responses and request checks."""
 import re
 
-RENTAL_REPLY = ("Ollie covers buying, selling, property values and sales analytics. "
+RENTAL_REPLY = ("Olie covers buying, selling, property values and sales analytics. "
                 "Rental data is coming soon. For now, ask me about properties for sale, recent sales or market trends.")
 
 

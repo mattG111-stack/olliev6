@@ -39,7 +39,7 @@ PRODUCT = {
         "Underpriced listings surfaced, ranked by the gap to fair value",
         "Subdivision potential worked out per section, with the numbers behind it",
         "Suburb trends: what is selling, at what price, and how fast",
-        "Ask Ollie — plain-English questions about any suburb or listing",
+        "Ask Olie — plain-English questions about any suburb or listing",
         "7-day free trial, card required, cancel any time before it ends",
     ],
 }

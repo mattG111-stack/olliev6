@@ -846,7 +846,7 @@ def value_property(suburb: str, beds: float | None = None,
                    property_type: str = "House") -> str:
     """What would a house like this sell for here?
 
-    The question Ollie could not answer. Every valuation tool it had needed a
+    The question Olie could not answer. Every valuation tool it had needed a
     property_id — an existing row — so "what is a 5 bedroom, 2 bathroom, 270 m²
     house on 810 m² worth in Riverhead" had no tool at all and fell to raw SQL:
     six or seven round-trips guessing at column names, widening filters, and

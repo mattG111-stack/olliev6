@@ -184,7 +184,7 @@ class PageView(Base):
     """One visit to one page, with how long it was open.
 
     Answers which features people actually use, which no other table can: the
-    assistant log shows who asked Ollie something, agent contacts show who
+    assistant log shows who asked Olie something, agent contacts show who
     enquired, and everything else in between was invisible. A feature nobody
     opens and a feature everyone opens and immediately leaves look identical
     without this.
@@ -210,7 +210,7 @@ class PageView(Base):
 
 
 class AssistantLog(Base):
-    """Every question asked of Ollie's assistant, with its answer — the memory the
+    """Every question asked of Olie's assistant, with its answer — the memory the
     assistant learns from. Two uses: (1) the user's own recent Q&A is fed back as
     context so the assistant remembers what they've been exploring across sessions;
     (2) the full log is the review/training corpus for improving answers over time.
@@ -829,7 +829,7 @@ class PropertyRent(_PropertyMixin, Base):
 
 
 class AgentContact(Base):
-    """A user reaching out to Ollie's buyer's agent about a property — logged so
+    """A user reaching out to Olie's buyer's agent about a property — logged so
     the admin dashboard can count enquiries. One row per contact action."""
     __tablename__ = "agent_contacts"
 
@@ -1075,7 +1075,7 @@ class AppSetting(Base):
 
     The assistant's API key lives here rather than on a user row. It used to be
     per-user: every person had to go and get their own Claude or OpenAI key
-    before Ollie would answer anything, which is a wall in front of the feature
+    before Olie would answer anything, which is a wall in front of the feature
     for everyone who is not technical. One key set once by the admin serves the
     whole account, with a daily cap per user so a single enthusiastic afternoon
     cannot run up the bill.
@@ -1635,7 +1635,7 @@ class RunEvent(Base):
     reason, not one per listing, so a 2,141-row load writes tens of rows rather
     than thousands. The per-listing detail already lives on the listing.
 
-    Read it three ways: the JSON endpoint, the Excel download, or Ollie, which
+    Read it three ways: the JSON endpoint, the Excel download, or Olie, which
     can query this table directly and answer "what happened to Tuesday's load"
     without anybody opening a file.
     """

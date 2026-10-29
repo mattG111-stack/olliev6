@@ -18,7 +18,7 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     """Not one of our listings — ask the external sources what they hold.
 
     This is the answer to "find out details on an address that isn't in the
-    system". We do NOT invent an Ollie valuation for a property we do not hold and
+    system". We do NOT invent an Olie valuation for a property we do not hold and
     have not priced against our comps; we report what the outside sources hold —
     CoreLogic's council rating valuation, attributes and last sale, and
     homes.co.nz's estimate — and say plainly whose figure each is. A property not
@@ -75,7 +75,7 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
 
     canon = (rec or {}).get("canonical_address") or address
     lines = [f"**{canon}** isn't one of your current listings — here's what the "
-             f"external sources hold on it (not an Ollie valuation):", ""]
+             f"external sources hold on it (not an Olie valuation):", ""]
 
     if rec:
         lines.append("**CoreLogic (propertyvalue.co.nz)**")
@@ -143,7 +143,7 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     for label, val in (("Council CV", (rec or {}).get("cv")),
                        ("CoreLogic", (rec or {}).get("estimate_mid")),
                        ("homes.co.nz", (homes or {}).get("value")),
-                       ("Ollie (comps)", nums.get("ollie_value")),
+                       ("Olie (comps)", nums.get("ollie_value")),
                        ("Suburb median", nums.get("suburb_median"))):
         try:
             v = float(val)
@@ -155,7 +155,7 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
     if len(tri) >= 2:
         lines += ["", "```apex-chart",
                   json.dumps({"type": "bar", "title": f"What's it worth? — {canon}",
-                              "source": "CoreLogic, homes.co.nz, Ollie comps",
+                              "source": "CoreLogic, homes.co.nz, Olie comps",
                               "unit": "NZD", "data": tri}),
                   "```"]
 
@@ -163,7 +163,7 @@ def _external_address_report(address: str, suburb: str, on_step=None) -> Result:
         tools.append("area_intelligence")
         lines += ["", "---", ""] + area + [""]
 
-    lines.append("_External figures are each source's own. “What Ollie thinks it's "
+    lines.append("_External figures are each source's own. “What Olie thinks it's "
                  "worth” is our independent estimate from comparable sales, not a "
                  "council value or an asking price. Load it as a listing to track it and "
                  "price it against the full batch._")
@@ -188,7 +188,7 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
                                land_area_m2=float(land) if land else None,
                                property_type=str(property_type or "House"))
             if isinstance(v, str) and "is worth about" in v:
-                out += ["**What Ollie thinks it's worth**", v, ""]
+                out += ["**What Olie thinks it's worth**", v, ""]
             # The number itself, for the value-comparison chart — from the same
             # (cached) comp engine, so it agrees with the prose above.
             from db import SessionLocal
@@ -264,7 +264,7 @@ def _area_intelligence(suburb, property_type, beds, baths, floor, land):
                 block += ["", "```apex-chart",
                           json.dumps({"type": "line",
                                       "title": f"{suburb} median sale price by month",
-                                      "source": "Ollie sold data", "unit": "NZD",
+                                      "source": "Olie sold data", "unit": "NZD",
                                       "data": [{"label": m,
                                                 "value": round(statistics.median(by_month[m]))}
                                                for m in months]}),
