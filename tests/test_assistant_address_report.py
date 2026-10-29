@@ -70,7 +70,7 @@ def test_address_not_in_system_uses_external_sources(db_session,monkeypatch):
     assert '/property/' not in result.text
     assert 'CoreLogic' in result.text
     assert '$820,000' in result.text
-    assert 'not an Ollie valuation' in result.text
+    assert 'not an Olie valuation' in result.text
 
 
 def test_invalid_input_cannot_fall_through_to_model():

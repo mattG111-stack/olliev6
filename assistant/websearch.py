@@ -5,7 +5,7 @@
 
 There is a real gap. Rates, LVR rules, a plan change, a council consent fee,
 what the Unitary Plan actually says about a zone — all of it bears on a property
-decision and none of it is in our database. Today Ollie says it cannot help,
+decision and none of it is in our database. Today Olie says it cannot help,
 which is true and useless.
 
 THE HARD PART IS NOT THE SEARCH. It is knowing when NOT to. "Cannot answer" is
@@ -16,7 +16,7 @@ two completely different situations wearing the same words:
 
     We hold exactly that, and the question missed it. The suburb was spelled
     differently, the filters were too tight, the sold file has no listing date.
-    Ollie already handles this: a tool returns a "CANNOT ANSWER YET" block
+    Olie already handles this: a tool returns a "CANNOT ANSWER YET" block
     naming the ONE missing thing, and the answer is to ask for it.
 
 Going to the internet in the second case is worse than saying nothing. It would
@@ -43,7 +43,7 @@ WHY THIS DEGRADES INSTEAD OF FAILING. The search runs on the provider's side,
 declared as a tool block. The machine this was written on cannot reach the API
 to confirm the block's exact shape, and a rejected tool would take down every
 question rather than just this feature. So a refusal that names the tool drops
-it and retries once without it — Ollie loses the lookup and keeps working.
+it and retries once without it — Olie loses the lookup and keeps working.
 """
 from __future__ import annotations
 

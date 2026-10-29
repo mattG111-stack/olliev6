@@ -27,8 +27,8 @@ log = logging.getLogger(__name__)
 # every generated ad and every template says the same thing, and so correcting a
 # claim is one edit rather than a message to twelve influencers.
 PRODUCT = {
-    "name": "Apex Property",
-    "what": "A property research tool for Auckland. It prices every listing against "
+    "name": "Olie.co.nz",
+    "what": "Powered by Apex. A property research tool for Auckland. It prices every listing against "
             "recent comparable sales, so you can see which ones are asking under "
             "what the data says they are worth, and which sections have room to "
             "subdivide.",
@@ -39,7 +39,7 @@ PRODUCT = {
         "Underpriced listings surfaced, ranked by the gap to fair value",
         "Subdivision potential worked out per section, with the numbers behind it",
         "Suburb trends: what is selling, at what price, and how fast",
-        "Ask Ollie — plain-English questions about any suburb or listing",
+        "Ask Olie — plain-English questions about any suburb or listing",
         "7-day free trial, card required, cancel any time before it ends",
     ],
 }

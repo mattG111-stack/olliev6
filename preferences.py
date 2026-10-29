@@ -1,7 +1,7 @@
 """What a customer is hunting for — one definition, every caller.
 
-Asked inside Ollie rather than at signup: nobody is stopped at the door. The
-first time someone opens Ollie he asks what to look for, and every fortnight he
+Asked inside Olie rather than at signup: nobody is stopped at the door. The
+first time someone opens Olie he asks what to look for, and every fortnight he
 asks whether that still holds. The answers hang off the User record, so they
 survive without the customer having to remember to save a search.
 

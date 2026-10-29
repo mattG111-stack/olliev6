@@ -8,7 +8,7 @@
     "i think those questions are only when they go into ollie"
 
 So: not a signup wizard, not a saved search the customer has to remember to
-create — a short conversation the first time they open Ollie, stored against
+create — a short conversation the first time they open Olie, stored against
 their user record, and re-confirmed every fourteen days.
 
 The things that can go wrong here are all quiet ones, which is why they are
@@ -491,7 +491,7 @@ def test_a_suburb_we_cover_is_not_reported_as_a_gap(admin, db_session, world):
 
 
 def test_people_who_were_never_asked_do_not_count_as_refusals(admin, db_session):
-    """The response rate has to be honest: someone who has not opened Ollie yet
+    """The response rate has to be honest: someone who has not opened Olie yet
     has not declined to answer."""
     quiet = User(email="quiet@test.local", password_hash="x",
                  role=UserRole.USER.value, status=UserStatus.APPROVED.value)

@@ -299,7 +299,7 @@ def build(db: Session, region: str = "Auckland") -> bytes:
     # ---- sheet 1: the checks ----
     ws = wb.active
     ws.title = "Checks"
-    ws.append([f"Apex Property — live data check · build {VERSION} · "
+    ws.append([f"Olie.co.nz — live data check · build {VERSION} · "
                f"{datetime.now(timezone.utc):%d/%m/%Y}"])
     ws["A1"].font = Font(bold=True, size=13)
     ws.append([])

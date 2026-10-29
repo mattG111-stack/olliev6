@@ -2,7 +2,7 @@
 
     "we need up to 4 agents looking the more the better"
 
-Ollie is one agent working one question, and for most of what falls through to
+Olie is one agent working one question, and for most of what falls through to
 the web that is right: a rate, an LVR rule, what a zone rule says. One fact,
 one source of record, one search. A second agent would read the same page.
 
@@ -14,15 +14,15 @@ answers the rest badly or not at all. Asked side by side they cost the same
 wall-clock as one.
 
 WHAT MAKES THIS SAFE TO ADD. Each researcher is the same model under the SAME
-rules Ollie is: official sources only, never a figure about a property or a
+rules Olie is: official sources only, never a figure about a property or a
 market we hold data for, never a customer's details. They are given the web
 tool and NOTHING ELSE — no database, no query_data, no valuation engine. That is
 deliberate and it is the whole safety argument: a researcher physically cannot
 reach our data, so it cannot quietly answer a question about our market from
-somebody else's website. Everything about us still comes from Ollie's own tools.
+somebody else's website. Everything about us still comes from Olie's own tools.
 
 They also do not talk to each other and they do not decide anything. Each
-returns a short written answer with its sources, and Ollie writes the reply. A
+returns a short written answer with its sources, and Olie writes the reply. A
 researcher is a reader, not a second opinion.
 
 WHY FOUR AND NOT TEN. Four is the width of a question a person actually asks,
@@ -260,7 +260,7 @@ def research(questions: list[str], *, api_key: str, model: str,
     """Run up to four researchers side by side and return what they found.
 
     Returns text for the model to write from, not JSON to be echoed: the reply
-    is Ollie's to write, and handing back a structured object invites it being
+    is Olie's to write, and handing back a structured object invites it being
     printed at the customer instead.
     """
     asked = [q.strip() for q in (questions or []) if str(q).strip()]

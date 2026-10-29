@@ -1,4 +1,4 @@
-"""When Ollie can't answer, it asks for the one thing that would let it.
+"""When Olie can't answer, it asks for the one thing that would let it.
 
     "if it cant answer it should ask for the gap it has too answer the question"
 

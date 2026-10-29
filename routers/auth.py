@@ -45,14 +45,14 @@ def _next_step(u: User) -> str:
 
 def _send_email_code(db: Session, u: User) -> None:
     code = issue_code(db, u.id, "email")
-    send_email(u.email, "Your Apex Property verification code",
+    send_email(u.email, "Your Olie.co.nz verification code",
                verification_email_html(code, settings.verify_code_ttl_minutes),
-               text=f"Your Apex Property verification code is {code} (valid {settings.verify_code_ttl_minutes} min).")
+               text=f"Your Olie.co.nz verification code is {code} (valid {settings.verify_code_ttl_minutes} min).")
 
 
 def _send_phone_code(db: Session, u: User) -> None:
     code = issue_code(db, u.id, "phone")
-    send_sms(u.phone or "", f"Your Apex Property code is {code}")
+    send_sms(u.phone or "", f"Your Olie.co.nz code is {code}")
 
 
 class SignUpIn(BaseModel):

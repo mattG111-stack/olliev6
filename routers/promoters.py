@@ -257,7 +257,7 @@ def write_ads(body: AdIn, me: User = Depends(require_promoter),
               db: Session = Depends(get_db)) -> dict:
     """Draft three ads with the account's shared AI key.
 
-    Capped per promoter per day, and much more tightly than Ask Ollie: this runs
+    Capped per promoter per day, and much more tightly than Ask Olie: this runs
     on the business's key, and one promoter with an idea and a free evening
     should not be able to spend the whole account's allowance on captions.
     """
