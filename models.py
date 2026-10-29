@@ -43,6 +43,26 @@ class PortalObservation(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class AskingPriceObservation(Base):
+    """Approved advertised prices, retained independently of upload row deletion.
+
+    Batch IDs are evidence references, deliberately not cascading foreign keys.
+    Only publication/bootstrap writes this table; drafts never enter it.
+    """
+    __tablename__ = "asking_price_observations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    identity_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    region: Mapped[str] = mapped_column(String(100), nullable=False)
+    batch_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    property_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    address: Mapped[str] = mapped_column(Text, nullable=False)
+    suburb: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class UserRole(str, Enum):
     USER = "user"
     ADMIN = "admin"

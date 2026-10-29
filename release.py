@@ -501,6 +501,12 @@ def publish_release(db: Session, region: str = "Auckland", *, commit: bool = Tru
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
                    {"key": f"ollie:publish:{region}"})
+    from asking_history import record_batch
+    # Preserve the old approved book before replacement, in the same transaction.
+    for bid, in db.query(ImportBatch.id).filter(ImportBatch.batch_type == 'for_sale',
+            ImportBatch.region == region, ImportBatch.is_active.is_(True),
+            ImportBatch.status == 'published'):
+        record_batch(db, bid)
     now = datetime.now(timezone.utc)
     published = []
     for bt in (BatchType.SOLD.value, BatchType.FOR_SALE.value):
@@ -535,6 +541,9 @@ def publish_release(db: Session, region: str = "Auckland", *, commit: bool = Tru
         staged.is_active = True
         staged.status = "published"
         staged.published_at = now
+        db.flush()
+        if bt == BatchType.FOR_SALE.value:
+            record_batch(db, staged.id)
         _record(db, stage="publish", event="published", batch_id=staged.id,
                 count=staged.rows_inserted, commit=False,
                 detail=(f"{staged.filename} went live — {staged.rows_inserted or 0:,} "

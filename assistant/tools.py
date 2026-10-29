@@ -372,6 +372,9 @@ def search_listings(
             return _which_filter_emptied(s, batch, where)
         import vendor_signals as _vs
 
+        from asking_history import attach
+        attach(s, rows)
+
         def _vendor_label(r):
             return _vs.flags_string(_vs.compute(
                 description=r.description, prior_asking=r.prior_asking_price,
@@ -388,6 +391,8 @@ def search_listings(
             "filters_applied": [label for label, _ in where],
             "listings": [{
                 "id": r.id, "apex_url": f"/property/{r.id}", "address": r.address, "suburb": r.suburb,
+                "asking_price_change": r.asking_price_change,
+                "asking_change_date_basis": "Date recorded by Apex; exact seller change date unknown",
                 "pricing_comparison": _pricing_comparison(r.asking_price, r.fair_value),
                 "sale_method": r.sale_method, "deal_block_reason": r.deal_block_reason,
                 "property_type": r.property_type, "title": r.type_of_title,
@@ -472,7 +477,9 @@ def get_property(property_id: int) -> str:
                 PropertyForSale.id == property_id,
                 PropertyForSale.import_batch_id == active)).first() is None:
             return "This listing is not currently available in the visible active records."
+        from asking_history import evidence
         return json.dumps({
+            "advertised_price_history": evidence(s, p),
             "id": p.id, "apex_url": f"/property/{p.id}", "address": p.address, "suburb": p.suburb,
             "pricing_comparison": _pricing_comparison(p.asking_price, p.fair_value),
             "sale_method": p.sale_method, "deal_block_reason": p.deal_block_reason,

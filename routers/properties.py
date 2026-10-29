@@ -144,6 +144,7 @@ class ForSaleRow(BaseModel):
     asking_basis: str | None = None
     # What the vendor last advertised, and the day we saw it — shown as
     # "was listed at $X on <date>" beside a listing that is now by negotiation.
+    asking_price_change: dict | None = None
     prior_asking_price: float | None = None
     prior_asking_seen_at: datetime | None = None
     market_value: float | None
@@ -1982,6 +1983,8 @@ def list_for_sale(
     sort_col = desc(sort_col) if order_dir == "desc" else sort_col.asc()
     # Push NULLs to the end either way so empty values don't dominate the top.
     rows = q.order_by(sort_col.nullslast()).offset((page - 1) * page_size).limit(page_size).all()
+    from asking_history import attach
+    attach(db, rows)
     return ForSaleList(total=total, page=page, page_size=page_size, rows=rows)
 
 
@@ -2719,6 +2722,8 @@ def get_for_sale(property_id: int, db: Session = Depends(get_db)) -> PropertyFor
             id=r.id, asking_price=r.asking_price, floor_area_m2=r.floor_area_m2,
             days_on_market=r.days_on_market,
         ) for r in related]
+    from asking_history import attach
+    attach(db, [visible])
     return visible
 
 
@@ -2738,6 +2743,7 @@ class HistoryResponse(BaseModel):
     address: str | None
     suburb: str | None
     points: list[HistoryPoint]
+    asking_observations: list[dict] = Field(default_factory=list)
 
 
 class ComparableSale(BaseModel):
@@ -3246,7 +3252,10 @@ def property_history(property_id: int, db: Session = Depends(get_db)) -> History
     else:
         q = q.filter(PropertyForSale.id == property_id)
 
-    rows = q.order_by(ImportBatch.created_at.asc()).all()
+    from asking_history import identity, advertised, evidence
+    # A reused source ID does not establish unit identity across uploads.
+    rows = [r for r in q.order_by(ImportBatch.created_at.asc()).all()
+            if identity(r) is not None and identity(r) == identity(p)]
 
     points: list[HistoryPoint] = []
     for r in rows:
@@ -3257,7 +3266,7 @@ def property_history(property_id: int, db: Session = Depends(get_db)) -> History
             batch_id=batch.id,
             batch_date=batch.created_at.date().isoformat() if batch.created_at else "",
             is_active=batch.is_active,
-            asking_price=r.asking_price,
+            asking_price=r.asking_price if advertised(r) else None,
             market_value=r.fair_value if r.fair_value is not None and r.fair_value > 0 else r.market_value,
             opportunity_score_pct=r.opportunity_score_pct,
             est_weekly_rent=r.est_weekly_rent,
@@ -3266,6 +3275,7 @@ def property_history(property_id: int, db: Session = Depends(get_db)) -> History
 
     return HistoryResponse(
         slug_id=p.slug_id, address=p.address, suburb=p.suburb, points=points,
+        asking_observations=evidence(db, p)['observations'],
     )
 
 

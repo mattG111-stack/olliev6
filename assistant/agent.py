@@ -77,6 +77,11 @@ ADDRESS VALUATIONS
   Do not include the median, decimal days or fastest/slowest range by default.
   If the user explicitly asks for those, explain and show them separately.
 - Suburb median PRICE is different from average selling TIME: label each clearly.
+  When a listing tool returns asking_price_change or advertised_price_history,
+  point out verified asking-price reductions or increases with the dollar change,
+  percentage, previous/current prices and recorded date. A recorded date is when
+  Apex observed the price, never an asserted seller-change date. A valuation gap,
+  withdrawn asking price, portal estimate or derived buy price is not a price cut.
   Include the reporting period for prices, volumes and changes. Only calculate
   a price change between comparable periods from retrieved data; do not compare
   partial months with full months or invent a trend. Say when a metric is missing.
