@@ -874,6 +874,9 @@ def publish_listing(listing_id: int, _: User = Depends(require_admin),
         raise HTTPException(409, f"Cannot publish: {reason}. Correct the facts and reprice first.")
     p.is_held = False
     p.hold_reason = None
+    db.flush()
+    from asking_history import record_batch
+    record_batch(db, p.import_batch_id)
     db.commit(); db.refresh(p)
     return p
 

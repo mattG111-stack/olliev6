@@ -378,5 +378,8 @@ def publish(db, ids, user_id):
     for row,prop in prepared:
         prop.import_batch_id=live.id; row.status='approved'
         row.decided_by_id=user_id; row.decided_at=datetime.now(timezone.utc)
+    db.flush()
+    from asking_history import record_batch
+    record_batch(db, live.id)
     db.commit()
     return len(prepared)

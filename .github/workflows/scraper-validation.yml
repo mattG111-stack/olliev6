@@ -54,7 +54,7 @@ jobs:
       - name: Database, rollback, scheduling and review checks
         run: >-
           python -m pytest -o addopts='' -q
-          tests/test_publication_boundaries.py tests/test_all_suburb_trends.py
+          tests/test_publication_boundaries.py tests/test_asking_history.py tests/test_all_suburb_trends.py
           tests/test_live_statistics_consistency.py tests/test_durable_auth_sessions.py tests/test_suburb_median_endpoint.py tests/test_saved_workflows.py tests/test_notification_privacy.py
           tests/test_sold_acceptance.py tests/test_daily_pricing.py
           tests/test_scraped_price_paths.py tests/test_a_guide_price_is_a_real_number.py

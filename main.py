@@ -80,6 +80,14 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_seed_admin(db)
+        from asking_history import bootstrap
+        retained = bootstrap(db)
+        db.commit()
+        if retained:
+            log.info("Retained %d approved asking-price observations", retained)
+    except Exception:
+        db.rollback()
+        log.exception("Could not initialize approved asking-price history")
     finally:
         db.close()
 
