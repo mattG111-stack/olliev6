@@ -65,9 +65,10 @@ def verification_email_html(code: str, minutes: int) -> str:
     return (
         f'<div style="font-family:system-ui,sans-serif;max-width:440px;margin:0 auto">'
         f'<h2 style="color:#0A8754">Confirm your email</h2>'
-        f'<p>Your Apex Property verification code is:</p>'
+        f'<p>Your Olie.co.nz verification code is:</p>'
         f'<div style="font-size:32px;font-weight:700;letter-spacing:.2em;'
         f'background:#f3f4f6;border-radius:12px;padding:16px;text-align:center">{code}</div>'
         f'<p style="color:#6b7280;font-size:13px">This code expires in {minutes} minutes.</p>'
+        f'<p style="color:#6b7280;font-size:12px">Olie.co.nz · Powered by Apex</p>'
         f'</div>'
     )

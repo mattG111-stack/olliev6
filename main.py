@@ -27,7 +27,7 @@ from version import BUILT_AT, VERSION
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log = logging.getLogger(__name__)
-    log.warning("Apex Property API v%s (built %s) starting", VERSION, BUILT_AT)
+    log.warning("Olie.co.nz API v%s (built %s) starting", VERSION, BUILT_AT)
     # Create any table the models define that the database lacks.
     #
     # The Procfile runs db_bootstrap before uvicorn, which is where this was
@@ -200,9 +200,9 @@ async def lifespan(app: FastAPI):
 _DOCS = (settings.api_docs or "").strip().lower() in ("1", "true", "yes", "on")
 
 app = FastAPI(
-    title="Apex Property API",
+    title="Olie.co.nz API",
     version=VERSION,
-    description="Backend for the Apex Property platform.",
+    description="Backend for the Olie.co.nz platform.",
     lifespan=lifespan,
     docs_url="/docs" if _DOCS else None,
     redoc_url="/redoc" if _DOCS else None,
@@ -716,9 +716,9 @@ def selftest(_: User = Depends(require_admin_dep)) -> Response:
                 else '<span style="color:#D4503E;font-weight:700">FAIL</span>')
 
     html = f"""<!doctype html><meta charset=utf-8>
-<title>Apex Property backend self-test</title>
+<title>Olie.co.nz backend self-test</title>
 <body style="font-family:system-ui,Arial;max-width:720px;margin:40px auto;line-height:1.5">
-<h2>Apex Property backend self-test</h2>
+<h2>Olie.co.nz backend self-test</h2>
 <p>Build marker: <code>{BUILD_MARKER}</code></p>
 <hr>
 <h3>1. Is the pricing fix running? {badge(guard_ok)}</h3>
@@ -749,4 +749,4 @@ def root() -> dict[str, str]:
     # No longer advertises /docs. It used to point at the interactive
     # documentation, which is now off in production — and an address that
     # answers 404 is a worse answer than not mentioning it.
-    return {"name": "Apex Property API"}
+    return {"name": "Olie.co.nz API"}

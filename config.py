@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""                # verifies Stripe webhook signatures
     # Email delivery (Resend). Without a key delivery is unavailable; verification codes are never logged.
     resend_api_key: str = ""
-    email_from: str = "Apex Property <onboarding@resend.dev>"
+    email_from: str = "Olie.co.nz <onboarding@resend.dev>"
     # SMS delivery requires configured Twilio credentials; codes are never logged.
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
