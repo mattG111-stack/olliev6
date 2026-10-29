@@ -91,6 +91,7 @@ class OptionsOut(BaseModel):
 
 
 class PreviewRow(BaseModel):
+    asking_price_change: dict | None = None
     id: int
     address: str | None
     suburb: str | None
@@ -373,6 +374,9 @@ def preview(
                      PropertyForSale.asking_price.isnot(None))
             .order_by(gap.desc()).limit(PREVIEW_ROWS).all())
 
+    from asking_history import attach
+    attach(db, rows)
+
     return PreviewOut(
         matches=matches,
         in_budget=in_budget,
@@ -382,6 +386,7 @@ def preview(
         rows=[
             PreviewRow(
                 id=r.id, address=r.address, suburb=r.suburb, beds=r.beds,
+                asking_price_change=getattr(r, "asking_price_change", None),
                 asking_price=r.asking_price, fair_value=r.fair_value,
                 margin_dollars=(
                     float(r.fair_value) - float(r.asking_price)

@@ -549,3 +549,34 @@ def test_saved_brief_is_untrusted_context_not_verified_features():
     assert "never silently relax" in guidance
     assert prefs.clean_brief('{bad') == {}
     assert prefs.clean_brief({"must_haves": 12, "unknown": "ignored"}) == {}
+
+
+def test_personal_preview_shares_retained_approved_price_changes(customer, world, db_session):
+    """The home brief uses the same exact-property evidence as the listing."""
+    from asking_history import record_batch
+    from sqlalchemy import select
+    db = db_session
+    p = db.execute(select(PropertyForSale).where(
+        PropertyForSale.import_batch_id == world.id,
+        PropertyForSale.address == "1 Cheap Street")).scalar_one()
+    old = ImportBatch(batch_type="for_sale", region="Auckland", filename="old.csv",
+                      status="archived", is_active=False,
+                      created_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    db.add(old); db.flush()
+    db.add(PropertyForSale(import_batch_id=old.id, address=p.address, suburb=p.suburb,
+                          region="Auckland", asking_price=1_100_000,
+                          asking_basis="advertised", cv_numeric=850_000,
+                          sale_method="fixed", url="https://example.com/exact", is_held=False))
+    world.created_at = datetime(2026, 10, 8, tzinfo=timezone.utc)
+    p.asking_basis = "advertised"; p.sale_method = "fixed"
+    p.url = "https://example.com/exact"
+    db.flush()
+    record_batch(db, old.id); record_batch(db, world.id); db.commit()
+    c, _ = customer
+    result = c.post("/api/preferences/preview", json={"suburbs":["Remuera"]})
+    assert result.status_code == 200, result.text
+    rows = result.json()["rows"]
+    row = next(r for r in rows if r["id"] == p.id)
+    assert row["asking_price_change"]["current_price"] == p.asking_price
+    assert row["asking_price_change"]["change_dollars"] == p.asking_price - 1_100_000
+    assert all(r["address"] != "5 Held Back Lane" for r in rows)
