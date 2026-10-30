@@ -2338,6 +2338,7 @@ class ScenarioIn(BaseModel):
     raw_land_rate: float | None = None       # $/m² of land inside the parent title
     market_ratio: float | None = None        # scales council values to market
     build_rate: float | None = None          # $/m² replacement build cost
+    townhouse_build_rate: float | None = Field(default=None, gt=0, allow_inf_nan=False)  # construction $/m² ex GST
     holding_rate: float | None = None        # finance/holding per year on project cost
     holding_years: float | None = None       # how long the money is tied up
     contingency_rate: float | None = None    # contingency on the development spend
@@ -2436,6 +2437,7 @@ def subdivision_scenario(
         section_rate=body.section_rate if body.section_rate else None,
         incidentals_per_section=_pick(body.incidentals_per_section, 0.0),
         build_rate=_pick(body.build_rate, defaults.build_rate),
+        townhouse_build_rate=_pick(body.townhouse_build_rate, defaults.townhouse_build_rate),
         holding_rate=_pick(body.holding_rate, defaults.holding_rate),
         holding_years=_pick(body.holding_years, defaults.holding_years),
         contingency_rate=_pick(body.contingency_rate, defaults.contingency_rate),
@@ -2553,6 +2555,7 @@ def subdivision_scenario(
             "market_ratio": (p.buy_price / p.cv_numeric)
                             if (p.buy_price and p.cv_numeric) else None,
             "build_rate": defaults.build_rate,
+            "townhouse_build_rate": defaults.townhouse_build_rate,
             "holding_rate": defaults.holding_rate,
             "holding_years": defaults.holding_years,
             "contingency_rate": defaults.contingency_rate,
