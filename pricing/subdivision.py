@@ -40,6 +40,13 @@ from pricing.comps import parse_area_series
 ROAD_ALLOWANCE = 0.10        # legacy flat figure; superseded by _road_allowance()
 SERVICES_PER_SECTION = 130_000   # earthworks + roads + 3-waters + power + consent, per lot
 BUILD_RATE_PER_M2 = 2_800    # replacement build cost $/m² — values the retained house's building
+# Independent construction assumption: changing a retained building's value
+# must not change the cost of constructing new townhouses (or vice versa).
+# $2,800 preserves existing default results and falls within Creston's October
+# 2026 standard-townhouse range, $2,300–$2,950/m² excluding GST, building only.
+# Source: https://www.crestonproperty.co.nz/build-cost-estimate
+# Site works, contributions, fees, finance and contingency remain separate.
+TOWNHOUSE_BUILD_RATE_PER_M2 = 2_800
 HOLDING_RATE = 0.07          # finance/holding, PER YEAR, on (buy + services)
 HOLDING_YEARS = 1.0          # money tied up ~1 year before the build sells (editable per deal)
 CONTINGENCY_RATE = 0.03      # contingency on the development spend (editable per deal)
@@ -334,6 +341,11 @@ class SubdivisionAssumptions:
     improvement_value: float | None = None               # what the buildings are worth
     raw_land_rate: float | None = None                   # $/m² of land INSIDE the parent title
     market_ratio: float | None = None                    # scales council values to market
+    townhouse_build_rate: float = TOWNHOUSE_BUILD_RATE_PER_M2  # construction only, $/m² ex GST
+
+    def __post_init__(self):
+        if not math.isfinite(self.townhouse_build_rate) or self.townhouse_build_rate <= 0:
+            raise ValueError("Townhouse construction rate must be positive and finite")
 
     def merged_rate(self, suburb_rate: float | None) -> float:
         if self.section_rate and self.section_rate > 0:
@@ -478,7 +490,7 @@ def _terrace_development(
 
     # Revenue is the market sale price of each finished terrace ($/m² of floor);
     # the land is already paid for via `buy`, so it is a cost, not a revenue line.
-    build_per = THAB_TERRACE_FLOOR * ap.build_rate
+    build_per = THAB_TERRACE_FLOOR * ap.townhouse_build_rate
     sale_per = THAB_TERRACE_FLOOR * THAB_TERRACE_SALE_PER_M2
     gross = n * sale_per
     build_total = n * build_per

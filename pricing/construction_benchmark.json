@@ -1,0 +1,15 @@
+{
+  "source": "Creston Property",
+  "url": "https://www.crestonproperty.co.nz/build-cost-estimate",
+  "source_rate_month": "2026-10",
+  "reviewed_on": "2026-10-30",
+  "currency": "NZD",
+  "region": "Auckland",
+  "building_type": "standard specification townhouse",
+  "basis": "construction only, excluding GST",
+  "rate_per_m2_low": 2300,
+  "rate_per_m2_high": 2950,
+  "indicative_third_level_extra_per_m2": 150,
+  "separate_allowances": ["demolition", "civils", "drainage", "driveways", "landscaping", "contributions", "connections", "design", "consents"],
+  "application": "Reference range for scenario inputs; not a quote. No automatic storey uplift, size or scale discount. Existing default 2800 retained. Excludes land, finance, selling costs and contingency. Does not establish GST treatment for an entire project."
+}
