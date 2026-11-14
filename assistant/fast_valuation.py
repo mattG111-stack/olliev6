@@ -146,9 +146,11 @@ def listed_valuation(record):
     change=(record.get("advertised_price_history") or {}).get("latest_change") or {}
     before=amount(change.get("previous_price"));after=amount(change.get("current_price"))
     if before and after and before != after:
-        from datetime import datetime
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
         try:
-            observed=datetime.fromisoformat(str(change.get("recorded_at")).replace("Z","+00:00")).date().isoformat()
+            stamp=datetime.fromisoformat(str(change.get("recorded_at")).replace("Z","+00:00"))
+            observed=(stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Pacific/Auckland")).date().isoformat()
         except (TypeError,ValueError):observed=None
         if observed:
             lines += ["",f"**Recorded asking-price {'reduction' if after<before else 'increase'}:** {money(before)} → {money(after)} ({abs(after/before-1)*100:.1f}%). Observed {observed}; the seller's exact change date is unknown."]

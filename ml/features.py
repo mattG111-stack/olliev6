@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from periods import sold_year_month
+from periods import sold_year_month, future_sale
 from pricing.glm import canonical_type
 
 # Columns arrive under the scraper's names or the tidy ones depending on who
@@ -163,8 +163,11 @@ def usable(df: pd.DataFrame, training: bool = True) -> pd.Series:
         return has_cv
     price = col(df, "price")
     ratio = price / cv.replace(0, np.nan)
-    return (price.notna() & (price > MIN_PRICE) & has_cv
-            & ratio.between(*SANE_CV_RATIO))
+    keep = price.notna() & (price > MIN_PRICE) & has_cv & ratio.between(*SANE_CV_RATIO)
+    for name in ("sold_date", "sold_listing_date"):
+        if name in df.columns:
+            keep &= ~df[name].map(future_sale).astype(bool)
+    return keep
 
 
 def build(df: pd.DataFrame, medians: dict[str, float] | None = None,
