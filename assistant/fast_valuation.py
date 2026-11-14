@@ -127,10 +127,11 @@ def listed_valuation(record):
         except (TypeError, ValueError):return None
     value=amount(record.get("our_value"));cv=amount(record.get("cv"));asking=amount(record.get("asking"))
     if value is None:return None
+    value=math.ceil(value/10000)*10000
     money=lambda n: "$"+format(n,",.0f")
     lines=[f"## {cell(record.get('address'))}, {cell(record.get('suburb'))}",
-        "**Apex estimate: "+money(math.ceil(value/10000)*10000)+"**", "",
-        "| Property | Recorded details |", "|---|---|",
+        "**Apex estimate: "+money(value)+"**", "",
+        "| Recorded fact | Details |", "|---|---|",
         f"| Bedrooms / bathrooms | {cell(record.get('beds'))} / {cell(record.get('baths'))} |",
         f"| Floor / land area | {cell(record.get('floor_m2'))} m² / {cell(record.get('land_m2'))} m² |",
         f"| Asking price | {money(asking) if asking else 'Not advertised'} |",
@@ -142,6 +143,15 @@ def listed_valuation(record):
     if asking:
         gap=value-asking
         lines += [f"{money(abs(gap))} {'above' if gap>=0 else 'below'} the asking price."]
+    change=(record.get("advertised_price_history") or {}).get("latest_change") or {}
+    before=amount(change.get("previous_price"));after=amount(change.get("current_price"))
+    if before and after and before != after:
+        from datetime import datetime
+        try:
+            observed=datetime.fromisoformat(str(change.get("recorded_at")).replace("Z","+00:00")).date().isoformat()
+        except (TypeError,ValueError):observed=None
+        if observed:
+            lines += ["",f"**Recorded asking-price {'reduction' if after<before else 'increase'}:** {money(before)} → {money(after)} ({abs(after/before-1)*100:.1f}%). Observed {observed}; the seller's exact change date is unknown."]
     lines += ["",f"[View property details](/property/{int(record['id'])})"]
     try:lines += ["",load_brief(record["suburb"])]
     except Exception:lines += ["", "Recent suburb sales and selling-time data are temporarily unavailable."]
