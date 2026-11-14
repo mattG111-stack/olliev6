@@ -1375,7 +1375,8 @@ def suburbs(region: str = "Auckland",
         if model is PropertyForSale:
             q = _hide_bad_data(q)
         for name, n in q.group_by(model.suburb).all():
-            clean = (name or "").strip()
+            from suburbs import canonical_suburb
+            clean = canonical_suburb(name or "")
             if not clean:
                 continue
             key = clean.lower()
@@ -1669,7 +1670,8 @@ def _area_values(db: Session, model, batch_id: int | list[int], column: str, nam
     the column in trim()/lower() — which defeats the index and, for trim(), is
     not spelled the same on every database.
     """
-    want = (name or "").strip().lower()
+    from suburbs import canonical_suburb
+    want = canonical_suburb(name or "").lower() if column == "suburb" else (name or "").strip().lower()
     if not want:
         return []
     col = getattr(model, column)
@@ -1680,7 +1682,7 @@ def _area_values(db: Session, model, batch_id: int | list[int], column: str, nam
     except Exception:
         return [name]
 
-    hits = [v for v in rows if v.strip().lower() == want]
+    hits = [v for v in rows if (canonical_suburb(v).lower() if column == "suburb" else v.strip().lower()) == want]
     if hits:
         return hits
 
@@ -2429,6 +2431,7 @@ def subdivision_scenario(
 
     ap = SubdivisionAssumptions(
         services_per_section=_pick(body.services_per_section, defaults.services_per_section),
+        terrace_services_per_unit=body.services_per_section,
         selling_pct=_pick(body.selling_pct, defaults.selling_pct),
         acquisition_pct=_pick(body.acquisition_pct, defaults.acquisition_pct),
         refurb_allowance=_pick(body.refurb_allowance, defaults.refurb_allowance),
@@ -2459,6 +2462,9 @@ def subdivision_scenario(
         assumptions=ap,
         lots_override=body.lots,
     )
+
+    demolish = bool(sd.demolish)
+    full = demolish or not has_dwelling or sd.section_value_method == "thab_terraces"
 
     # Re-derive the individual lines so the UI can show the workings. In whole-site
     # mode there is no retained house: every lot sells as a section, and a house
@@ -2496,22 +2502,15 @@ def subdivision_scenario(
         if buy and building_value is not None and rate and retained_land is not None:
             house_resale = ((retained_land * rate + building_value)
                             * ap.house_resale_pct) - ap.refurb_allowance
-    selling_cost = (sd.gross_sales * ap.selling_pct) if sd.gross_sales is not None else None
-    acquisition_cost = (buy * ap.acquisition_pct) if buy else None
-    holding_cost = ((buy + sd.services_cost) * ap.holding_rate * ap.holding_years) if buy else None
-    incidentals_cost = addl * ap.incidentals_per_section
-
-    # Reconstruct the contingency and GST lines so the workings tie back to the
-    # stored net (compute() applies both internally after the base profit).
-    contingency_cost = None
-    gst_cost = None
-    if sd.gross_sales is not None and buy:
-        base_profit = (sd.gross_sales - buy - sd.services_cost - (selling_cost or 0)
-                       - (acquisition_cost or 0) - incidentals_cost
-                       - (demolition_cost or 0) - (holding_cost or 0))
-        contingency_cost = ap.contingency_rate * (sd.services_cost + (holding_cost or 0)
-                                                  + (demolition_cost or 0) + incidentals_cost)
-        gst_cost = ap.gst_rate * max(base_profit - contingency_cost, 0.0)
+    # Use the engine's actual selected strategy ledger, never a second formula.
+    costs = sd.costs
+    selling_cost = costs.get("selling_cost")
+    acquisition_cost = costs.get("acquisition_cost")
+    holding_cost = costs.get("holding_cost")
+    incidentals_cost = costs.get("incidentals_cost", 0.0)
+    demolition_cost = costs.get("demolition_cost")
+    contingency_cost = costs.get("contingency_cost")
+    gst_cost = costs.get("gst_cost")
 
     return ScenarioOut(
         sections=sd.sections, max_addl_lots=sd.max_addl_lots, section_rate=rate,
@@ -2538,7 +2537,7 @@ def subdivision_scenario(
         is_terrace=(sd.section_value_method == "thab_terraces"),
         dwellings=sd.dwellings,
         defaults={
-            "services_per_section": defaults.services_per_section,
+            "services_per_section": (50_000 if sd.section_value_method == "thab_terraces" else defaults.services_per_section),
             "selling_pct": defaults.selling_pct,
             "acquisition_pct": defaults.acquisition_pct,
             "refurb_allowance": defaults.refurb_allowance,

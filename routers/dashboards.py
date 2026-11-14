@@ -326,26 +326,34 @@ def today_brief(
             db.query(PropertyForSale)).filter(PropertyForSale.import_batch_id == prev_id).count()
         # Diff vs previous batch — single FULL OUTER JOIN pass, PERCENTILE_DISC for speed
         try:
-            diff = db.execute(text(
-                """
-                WITH a AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :prev AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
-                     b AS (SELECT slug_id, asking_price FROM properties_for_sale
-                           WHERE import_batch_id = :curr AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
-                     joined AS (
-                       SELECT a.slug_id AS a_slug, b.slug_id AS b_slug,
-                              a.asking_price AS pa, b.asking_price AS pb
-                       FROM a FULL OUTER JOIN b ON a.slug_id = b.slug_id
-                     )
-                SELECT
-                    COUNT(*) FILTER (WHERE a_slug IS NULL AND b_slug IS NOT NULL) AS added,
-                    COUNT(*) FILTER (WHERE a_slug IS NOT NULL AND b_slug IS NULL) AS removed,
-                    COUNT(*) FILTER (WHERE a_slug IS NOT NULL AND b_slug IS NOT NULL) AS both,
-                    PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY (pb - pa) / NULLIF(pa, 0))
-                      FILTER (WHERE pa IS NOT NULL AND pb IS NOT NULL) AS median_change
-                FROM joined
-                """
-            ), {"prev": prev_id, "curr": batch_id}).fetchone()
+            if db.get_bind().dialect.name == "sqlite":
+                previous = dict(_hide_bad_data(db.query(PropertyForSale.slug_id, PropertyForSale.asking_price)).filter(PropertyForSale.import_batch_id == prev_id, PropertyForSale.slug_id.isnot(None)).all())
+                current = dict(_hide_bad_data(db.query(PropertyForSale.slug_id, PropertyForSale.asking_price)).filter(PropertyForSale.import_batch_id == batch_id, PropertyForSale.slug_id.isnot(None)).all())
+                shared = previous.keys() & current.keys()
+                changes = sorted((current[k]-previous[k])/previous[k] for k in shared if previous[k] and current[k] is not None)
+                diff = (len(current.keys()-previous.keys()), len(previous.keys()-current.keys()), len(shared), changes[(len(changes)-1)//2] if changes else None)
+            else:
+                diff = db.execute(text(
+                    """
+                    WITH a AS (SELECT slug_id, asking_price FROM properties_for_sale
+                               WHERE import_batch_id = :prev AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
+                         b AS (SELECT slug_id, asking_price FROM properties_for_sale
+                               WHERE import_batch_id = :curr AND slug_id IS NOT NULL AND """ + _CLEAN_FS_SQL + """),
+                         joined AS (
+                           SELECT a.slug_id AS a_slug, b.slug_id AS b_slug,
+                                  a.asking_price AS pa, b.asking_price AS pb
+                           FROM a FULL OUTER JOIN b ON a.slug_id = b.slug_id
+                         )
+                    SELECT
+                        COUNT(*) FILTER (WHERE a_slug IS NULL AND b_slug IS NOT NULL) AS added,
+                        COUNT(*) FILTER (WHERE a_slug IS NOT NULL AND b_slug IS NULL) AS removed,
+                        COUNT(*) FILTER (WHERE a_slug IS NOT NULL AND b_slug IS NOT NULL) AS both,
+                        PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY (pb - pa) / NULLIF(pa, 0))
+                          FILTER (WHERE pa IS NOT NULL AND pb IS NOT NULL) AS median_change
+                    FROM joined
+                    """
+                ), {"prev": prev_id, "curr": batch_id}).fetchone()
+
 
             if diff:
                 added = int(diff[0] or 0)

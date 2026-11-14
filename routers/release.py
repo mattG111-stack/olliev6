@@ -1799,7 +1799,7 @@ def ml_train(region: str = "Auckland", user: User = Depends(require_admin),
             try:
                 _update(s, job_id, status="running", stage="reading sales",
                         progress_pct=10)
-                sold = _sold_df(s, region)
+                sold = _sold_df(s, region, published_only=True)
                 if sold is None or sold.empty:
                     raise ValueError(f"no sold data loaded for {region}")
                 _update(s, job_id, status="running",

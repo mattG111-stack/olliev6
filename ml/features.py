@@ -77,7 +77,9 @@ def col(df: pd.DataFrame, name: str) -> pd.Series:
     """A numeric column under whichever spelling this frame uses."""
     for c in ALIASES.get(name, (name,)):
         if c in df.columns:
-            return pd.to_numeric(df[c], errors="coerce")
+            values = pd.to_numeric(df[c], errors="coerce")
+            if name == "land": values = values.where(values >= 30)
+            return values
     return pd.Series(np.nan, index=df.index, dtype="float64")
 
 

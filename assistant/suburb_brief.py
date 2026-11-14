@@ -68,15 +68,16 @@ def load_snapshot(suburb):
     from assistant.tools import _active
     from routers.properties import _hide_bad_data
     from sqlalchemy import func
+    from suburbs import suburb_aliases
     today = datetime.now(ZoneInfo('Pacific/Auckland')).date()
     with SessionLocal() as db:
         bids = sold_batch_ids(db, 'Auckland')
         rows = db.query(S.address,S.sold_date,S.sale_price,S.days_on_market).filter(
             S.import_batch_id.in_(bids),
-            func.lower(func.trim(S.suburb)) == suburb.strip().lower()).all() if bids else []
+            func.lower(func.trim(S.suburb)).in_(suburb_aliases(suburb))).all() if bids else []
         batch = _active(db, 'for_sale')
         listings = _hide_bad_data(db.query(P)).filter(P.import_batch_id==batch,
-            func.lower(func.trim(P.suburb))==suburb.strip().lower()).count() if batch else None
+            func.lower(func.trim(P.suburb)).in_(suburb_aliases(suburb))).count() if batch else None
     data = summarise(rows, today)
     data["listings"] = listings
     return data
@@ -96,8 +97,10 @@ class SuburbBrief:
     def wrap(self, dispatch):
         def call(name, arguments):
             result = dispatch(name, arguments)
-            if name in ('search_listings', 'get_property'):
+            if name in ('search_listings','get_property'):
                 self.property_results = True
+            if name == 'search_listings':
+                self.search_results = True
             suburb = None
             if name in ('suburb_days_to_sell', 'value_property', 'search_listings'):
                 suburb = arguments.get('suburb')
@@ -118,7 +121,7 @@ class SuburbBrief:
         return call
 
     def append(self, text):
-        if not self.suburb or getattr(self, 'property_results', False):
+        if not self.suburb or getattr(self, 'search_results', False) or (getattr(self, 'property_results', False) and len(self.suburbs)>1):
             return text
         blocks = []
         for suburb in (self.suburbs or [self.suburb])[:3]:

@@ -228,12 +228,15 @@ def _sold_df(db: Session, region: str, *, published_only: bool = False) -> pd.Da
                             PortalListing.price_flag.isnot(None), PortalListing.price_flag != '')}
         records = (row for row in q if identity({'address': row.address,
                    'suburb': row.suburb, 'sold_date': row.sold_date}) not in disputed)
-    return pd.DataFrame.from_records(
+    frame = pd.DataFrame.from_records(
         list(records),
         columns=["address", "suburb", "district", "property_type", "key_bedrooms",
                  "key_bathrooms", "key_floor_area", "key_land_area",
                  "price_numeric", "cv_numeric", "land_value_numeric",
                  "type_of_title", "sold_date", "days_on_market"])
+    from suburbs import canonical_suburb
+    frame["suburb"] = frame["suburb"].map(canonical_suburb)
+    return frame
 
 
 def _rent_rates(db: Session, region: str) -> RentRates | None:

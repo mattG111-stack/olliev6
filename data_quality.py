@@ -125,6 +125,9 @@ def checks(p):
             if getattr(p, field, None) is None:
                 missing.append(label)
     issues = ['Missing ' + x for x in missing]
+    from development_evidence import issue as parcel_issue
+    parcel = parcel_issue(getattr(p,"address",None),getattr(p,"land_area_m2",None),getattr(p,"cv_numeric",None))
+    if parcel: issues.append(parcel)
     if not getattr(p,'address',None) or not getattr(p,'suburb',None):
         issues.append('Missing address/suburb — exact property match unavailable')
     for field,label in [('building_age','building age'),('type_of_title','title'),('zoning','zoning')]:

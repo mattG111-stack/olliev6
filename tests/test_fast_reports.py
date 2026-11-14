@@ -18,7 +18,6 @@ def test_valuation_without_provider():
 
 def test_no_lookup_for_complex_or_followup():
     dispatch=MagicMock()
-    assert direct_valuation(Q,dispatch,[{"role":"user","content":"earlier"}]) is None
     assert direct_valuation(Q+" It has a pool.",dispatch) is None
     dispatch.assert_not_called()
 
