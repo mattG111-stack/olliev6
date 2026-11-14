@@ -282,6 +282,15 @@ def report_client_error(body: ClientErrorIn, request: Request,
             "occurrences": getattr(b, "occurrences", None)}
 
 
+@admin_router.get("/learning")
+def learning_status(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Supervised suggestions; training never changes reports or production code."""
+    _ensure_table()
+    from ml.bug_learning import learn
+    rows = db.query(BugReport).order_by(BugReport.id.desc()).limit(2000).all()
+    return learn(rows)
+
+
 @admin_router.get("", response_model=list[BugOut])
 def list_bugs(status: str | None = Query(None), _: User = Depends(require_admin),
               db: Session = Depends(get_db)) -> list[BugOut]:

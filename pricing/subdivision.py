@@ -29,7 +29,7 @@ $850/m² as a fallback when the suburb has neither.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -266,6 +266,7 @@ class Subdivision:
     # there was no second option — a bare site has nothing to retain.
     alternative_strategy: str | None = None
     alternative_profit: float | None = None
+    costs: dict[str, float] = field(default_factory=dict)
 
 
 def _has_dwelling(beds, baths, floor_area=None, improvement_value=None) -> bool:
@@ -307,6 +308,7 @@ class SubdivisionAssumptions:
     them per property (see the /subdivision-scenario endpoint) to run their own
     numbers without the stored batch values changing.
     """
+    terrace_services_per_unit: float | None = None
     services_per_section: float = SERVICES_PER_SECTION   # consent + dev contribution + services
     selling_pct: float = SELLING_PCT                     # real-estate cost per site sold
     acquisition_pct: float = ACQUISITION_PCT             # legal/finance on the purchase
@@ -482,14 +484,15 @@ def _terrace_development(
     sale_per = THAB_TERRACE_FLOOR * THAB_TERRACE_SALE_PER_M2
     gross = n * sale_per
     build_total = n * build_per
-    services = n * THAB_SERVICES_PER_UNIT
+    services = n * (ap.terrace_services_per_unit if ap.terrace_services_per_unit is not None else THAB_SERVICES_PER_UNIT)
+    incidentals = n * ap.incidentals_per_section
     demolition = ap.demolition_allowance if has_dwelling else 0.0
     selling = gross * ap.selling_pct
     acquisition = buy * ap.acquisition_pct
     holding = (buy + build_total + services) * ap.holding_rate * ap.holding_years
-    profit = gross - buy - build_total - services - selling - acquisition - demolition - holding
+    profit = gross - buy - build_total - services - selling - acquisition - demolition - holding - incidentals
 
-    contingency = ap.contingency_rate * (build_total + services + holding + demolition)
+    contingency = ap.contingency_rate * (build_total + services + holding + demolition + incidentals)
     gst = ap.gst_rate * max(profit - contingency, 0.0)
     profit = profit - contingency - gst
 
@@ -506,6 +509,11 @@ def _terrace_development(
         # THAB row, which is the shape of the +52% bias in the validation report.
         max_addl_lots=float(n - 1), section_price_per_m2=round(section_rate),
         section_value_method="thab_terraces", services_cost=dev_cost,
+        demolish=has_dwelling,
+        costs=dict(services_cost=build_total + services, selling_cost=selling,
+            acquisition_cost=acquisition, incidentals_cost=incidentals,
+            demolition_cost=demolition, holding_cost=holding,
+            contingency_cost=contingency, gst_cost=gst),
         total_subdivided_value=round(gross), best_strategy=strategy,
         best_net_gain=round(profit),
         subdivision_premium=round(profit) if profit > 0 else None,
@@ -535,6 +543,10 @@ def compute(
     rule = Z.lookup(zone)
     if rule is None or rule.min_lot_m2 is None:
         return _not_subdividable(zone, None)
+
+    from development_evidence import issue as parcel_issue
+    if parcel_issue(address, land_area, cv):
+        return _not_subdividable(zone, float(rule.min_lot_m2), "unverified_parcel")
 
     # Excluded location — checked before any maths so no figure is ever produced.
     addr = str(address).strip().lower() if address else ""
@@ -736,6 +748,7 @@ def compute(
 
     alternative_strategy: str | None = None
     alternative_profit: float | None = None
+    costs: dict[str, float] = field(default_factory=dict)
 
     if not has_dwelling:
         # Nothing to keep and nothing to knock down: a bare section or building
@@ -832,6 +845,16 @@ def compute(
         best_net_gain=round(profit) if profit is not None else None,
         subdivision_premium=round(profit) if (profit is not None and profit > 0) else None,
         implausible=suspect,
+        costs=(dict(services_cost=subdivision_cost,
+            selling_cost=gross_sales * ap.selling_pct,
+            acquisition_cost=buy * ap.acquisition_pct,
+            incidentals_cost=incidentals, demolition_cost=demolition_cost,
+            holding_cost=holding_cost,
+            contingency_cost=ap.contingency_rate * (subdivision_cost + holding_cost + demolition_cost + incidentals),
+            gst_cost=ap.gst_rate * max(gross_sales - buy - subdivision_cost - gross_sales * ap.selling_pct
+                - buy * ap.acquisition_pct - incidentals - demolition_cost - holding_cost
+                - ap.contingency_rate * (subdivision_cost + holding_cost + demolition_cost + incidentals), 0.0))
+            if gross_sales is not None and buy is not None else {}),
         demolish=demolish,
         alternative_strategy=alternative_strategy,
         # Blanked with the rest when the sanity check failed: an alternative we

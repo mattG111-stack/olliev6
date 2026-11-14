@@ -37,18 +37,22 @@ def check_names(db,names):
                     address=f'{kind} Test Road',property_type=kind,floor_area_m2=100,
                     asking_price=asking,market_value=asking,is_held=False))
     db.commit()
+    from suburbs import canonical_suburb
+    from collections import Counter
+    groups=Counter(canonical_suburb(x).casefold() for x in names)
     for name in names:
+        copies=groups[canonical_suburb(name).casefold()]
         stats=suburb_stats(name,'Auckland',2025,2025,None,db)
         trend=suburb_trend(name,'Auckland',None,db)
         yearly=json.loads(trend.sold_yearly_json)['points']
-        assert stats.sold_count==8 and stats.median_sold==1100000
-        assert stats.median_days==50 and stats.active_listings==2
-        assert [(p['count'],p['median']) for p in yearly]==[(8,1100000),(8,1100000)]
+        assert stats.sold_count==8*copies and stats.median_sold==1100000
+        assert stats.median_days==50 and stats.active_listings==2*copies
+        assert [(p['count'],p['median']) for p in yearly]==[(8*copies,1100000),(8*copies,1100000)]
         assert [p.batch_id for p in trend.points]==[prev.id,live.id]
         house=suburb_trend(name,'Auckland','House',db)
-        assert all(p.listing_count==1 and p.median_asking==1000000 for p in house.points)
+        assert all(p.listing_count==copies and p.median_asking==1000000 for p in house.points)
         house_stats=suburb_stats(name,'Auckland',2024,2025,'House',db)
-        assert house_stats.sold_count==16 and house_stats.active_listings==1 and house_stats.median_asking==1000000
+        assert house_stats.sold_count==16*copies and house_stats.active_listings==copies and house_stats.median_asking==1000000
     # Map resolves names across both public batches, keeps private/future out.
     pts=map_points(dataset='sold',region='Auckland',suburb=names[0],min_beds=None,
                    sold_months=None,limit=20000,db=db)

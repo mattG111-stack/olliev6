@@ -96,6 +96,15 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    with SessionLocal() as quality_db:
+        try:
+            from development_evidence import repair_stored_signals
+            count = repair_stored_signals(quality_db)
+            if count: log.warning("Withheld %d unverified development signals; original facts retained", count)
+        except Exception:
+            quality_db.rollback()
+            log.exception("Could not apply development evidence checks")
+
     # Say, in the boot log, whether this deploy can actually serve — and if not,
     # which part is wrong. Three days of instability had four different causes
     # and not one of them announced itself; each cost a round of guessing before

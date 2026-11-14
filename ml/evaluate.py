@@ -174,10 +174,15 @@ def should_ship(report: dict) -> tuple[bool, str]:
     Returned as (verdict, sentence) so the sentence can be shown to whoever
     pressed the button. "No" is a normal outcome and reads like one.
     """
+    import math
+    if report.get("forward_cut_month") is None:
+        return False, "No genuine forward holdout was available. Model remains in review."
     f = report.get("forward") or {}
     n = f.get("n") or 0
     m, cv, eng = f.get("model"), f.get("raw_cv"), f.get("engine")
 
+    if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in (m, cv, eng)):
+        return False, "Missing or invalid held-out model/baseline scores. Model remains in review."
     if n < MIN_TEST_ROWS or m is None:
         return False, (f"Not enough recent sales to judge it on — {n} held out, "
                        f"need {MIN_TEST_ROWS}. Nothing changed.")

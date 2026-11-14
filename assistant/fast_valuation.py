@@ -7,9 +7,7 @@ from assistant.record_report import cell
 from assistant.suburb_brief import load_brief
 
 def direct_valuation(question, dispatch, history=None):
-    if history:
-        return None
-    match = re.fullmatch(r"\s*what is\s+(\d[^,\n?]{2,150}),\s*([A-Za-z][A-Za-z '\-]{1,80}?)\s+worth\?\s*", question, re.I)
+    match = re.fullmatch(r"\s*what is\s+(\d[^,\n?]{2,150}),\s*([A-Za-z][A-Za-z '\-]{1,80}?)\s+worth\?\s*(?:Include recent nearby sales and average selling time\.?)?\s*", question, re.I)
     if not match:
         return None
     address, suburb = match.groups()
@@ -17,7 +15,18 @@ def direct_valuation(question, dispatch, history=None):
         data = json.loads(dispatch("find_address", {"address":address.strip(), "suburb":suburb.strip()}))
     except (ValueError, TypeError):
         return None
-    if not isinstance(data, dict) or not data.get("not_in_our_data"):
+    if not isinstance(data, dict):
+        return None
+    live = data.get("on_the_market_now") or []
+    if len(live) == 1 and live[0].get("id"):
+        try:
+            record = json.loads(dispatch("get_property", {"property_id": live[0]["id"]}))
+            return listed_valuation(record)
+        except (TypeError, ValueError):
+            return None
+    if not data.get("not_in_our_data"):
+        return None
+    if history:
         return None
     estimate = data.get("apex_estimate") or {}
     rec = data.get("corelogic") or {}
@@ -105,3 +114,35 @@ def direct_pool_followup(question, dispatch, history):
         return None
     return Result(text=f"## {cell(address)}, {cell(suburb)}\n\n**Updated Apex estimate: $" + format(value,",.0f") + "**\n\nSwimming pool: confirmed by you. Includes an assumed pool adjustment; whether the base estimate already includes it is unverified.",
                   tools_used=["find_address","renovation_value_by_district","pool_policy_adjustment"])
+
+
+def listed_valuation(record):
+    """Numeric subject facts are rendered by code, never paraphrased by a model."""
+    if not isinstance(record, dict) or not record.get("id"):
+        return None
+    def amount(value):
+        try:
+            n=float(str(value).replace("$", "").replace(",", ""))
+            return n if math.isfinite(n) and n>0 else None
+        except (TypeError, ValueError):return None
+    value=amount(record.get("our_value"));cv=amount(record.get("cv"));asking=amount(record.get("asking"))
+    if value is None:return None
+    money=lambda n: "$"+format(n,",.0f")
+    lines=[f"## {cell(record.get('address'))}, {cell(record.get('suburb'))}",
+        "**Apex estimate: "+money(math.ceil(value/10000)*10000)+"**", "",
+        "| Property | Recorded details |", "|---|---|",
+        f"| Bedrooms / bathrooms | {cell(record.get('beds'))} / {cell(record.get('baths'))} |",
+        f"| Floor / land area | {cell(record.get('floor_m2'))} m² / {cell(record.get('land_m2'))} m² |",
+        f"| Asking price | {money(asking) if asking else 'Not advertised'} |",
+        f"| Council valuation | {money(cv) if cv else 'Unavailable'} |",
+        f"| Comparable sales used | {cell(record.get('comps_used'))} |"]
+    if cv:
+        delta=(value/cv-1)*100
+        lines += ["",f"The Apex estimate is {abs(delta):.1f}% {'above' if delta>0 else 'below' if delta<0 else 'equal to'} the recorded CV."]
+    if asking:
+        gap=value-asking
+        lines += [f"{money(abs(gap))} {'above' if gap>=0 else 'below'} the asking price."]
+    lines += ["",f"[View property details](/property/{int(record['id'])})"]
+    try:lines += ["",load_brief(record["suburb"])]
+    except Exception:lines += ["", "Recent suburb sales and selling-time data are temporarily unavailable."]
+    return Result(text="\n".join(lines), tools_used=["find_address","get_property","suburb_snapshot"])

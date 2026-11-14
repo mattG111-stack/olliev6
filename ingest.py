@@ -295,6 +295,13 @@ def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in _SLUGGED_LOCATION_COLUMNS:
         if col in out.columns:
             out[col] = out[col].map(_deslug)
+    if "suburb" in out.columns:
+        from suburbs import canonical_suburb
+        out["suburb"] = out["suburb"].map(canonical_suburb)
+    # A source warning is evidence of an unknown area, not a small parcel.
+    if "area_suspect" in out.columns and "key_land_area" in out.columns:
+        bad = out["area_suspect"].fillna("").astype(str).str.contains("land_placeholder", case=False)
+        out.loc[bad, "key_land_area"] = None
     return out
 
 
