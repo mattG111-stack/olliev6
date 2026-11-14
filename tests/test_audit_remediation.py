@@ -64,6 +64,6 @@ def test_derived_repair_is_reversible_and_idempotent(db_session):
 def test_displayed_rounded_estimate_drives_comparisons(monkeypatch):
     import assistant.fast_valuation as f
     monkeypatch.setattr(f,'load_brief',lambda s:'')
-    answer=listed_valuation(dict(id=1,address='22 Michaels Avenue',suburb='Ellerslie',our_value='$2,438,223',cv='$2,500,000',asking='$1,740,000',advertised_price_history={'latest_change':{'previous_price':1798000,'current_price':1740000,'recorded_at':'2026-11-10T04:00:00+00:00'}}))
+    answer=listed_valuation(dict(id=1,address='22 Michaels Avenue',suburb='Ellerslie',our_value='$2,438,223',cv='$2,500,000',asking='$1,740,000',advertised_price_history={'latest_change':{'previous_price':1798000,'current_price':1740000,'recorded_at':'2026-11-09T21:00:00+00:00'}}))
     assert '$2,440,000' in answer.text and '2.4% below' in answer.text and '$700,000 above' in answer.text
     assert '$1,798,000 → $1,740,000' in answer.text and 'Observed 2026-11-10' in answer.text
