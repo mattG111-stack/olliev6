@@ -145,7 +145,7 @@ def comparison_names(question):
     names = [match[1].strip(), match[2].strip()]
     tail = ((match[3] or "") + " " + (match[4] or "")).lower()
     # Anything outside the simple metric request remains on the reasoning path.
-    allowed = set("for buying a home show recent sales median prices average selling time current listings and how are changing volumes with maps price trends compare side by using recorded sale include the sample counts count period suburb map once put areas in columns column next to each other them two the side by side".split())
+    allowed = set("for buying a home show recent sales median prices average selling time days to sell current listings and how are changing volumes with maps price trends compare side by using recorded sale include the sample counts count period suburb map once put areas in columns column next to each other them two the side by side".split())
     if any(word not in allowed for word in re.findall(r"\w+", tail)):
         return None
     if names[0].casefold() == names[1].casefold():
@@ -155,8 +155,8 @@ def comparison_names(question):
 
 def direct_comparison(question, history=None):
     """Explicit, unfiltered comparisons always use one deterministic snapshot."""
-    if history:
-        return None
+    # Explicit suburb names and metric-only requests define a fresh scope,
+    # including when asked after a property question.
     names = comparison_names(question)
     if not names:
         return None
@@ -164,11 +164,12 @@ def direct_comparison(question, history=None):
     from models import PropertySold as S
     from publication_scope import approved_sold_batch_ids as sold_batch_ids
     from sqlalchemy import func
+    from suburbs import suburb_aliases
     with SessionLocal() as db:
         bids = sold_batch_ids(db, "Auckland")
         for name in names:
             if not db.query(S.id).filter(S.import_batch_id.in_(bids),
-                    func.lower(func.trim(S.suburb)) == name.casefold()).first():
+                    func.lower(func.trim(S.suburb)).in_(suburb_aliases(name))).first():
                 return None
     from concurrent.futures import ThreadPoolExecutor
     try:
