@@ -1,5 +1,6 @@
 """Conservative aliases: preserve unknown locations instead of guessing."""
-ALIASES={"auckland cent":"Auckland Central","auckland cental":"Auckland Central",
+ALIASES={"kumeū":"Kumeu","kumeu":"Kumeu","hill park":"Hillpark","hillpark":"Hillpark",
+ "tōtara park":"Totara Park","totara park":"Totara Park","auckland cent":"Auckland Central","auckland cental":"Auckland Central",
  "auckland centra":"Auckland Central","auckland central":"Auckland Central",
  "st heliers":"Saint Heliers","saint heliers":"Saint Heliers",
  "st johns":"Saint Johns","saint johns":"Saint Johns",

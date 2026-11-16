@@ -281,9 +281,15 @@ def build(db: Session, region: str = "Auckland") -> bytes:
                      ImportBatch.region == region,
                      ImportBatch.is_active.is_(True))
              .order_by(ImportBatch.id.desc()).first())
+    from sqlalchemy import inspect
+    from sqlalchemy.orm import load_only
+    # Export only scalar fields used below; never fetch source blobs/galleries.
+    mapped = {c.key for c in inspect(PropertyForSale).column_attrs}
+    needed = {attr for _, attr in COLUMNS} | {"valuation_last_sold_value"}
+    columns = [getattr(PropertyForSale, k) for k in sorted(needed & mapped)]
     rows: list[PropertyForSale] = []
     if batch is not None:
-        rows = (db.query(PropertyForSale)
+        rows = (db.query(PropertyForSale).options(load_only(*columns))
                 .filter(PropertyForSale.import_batch_id == batch.id)
                 .order_by(PropertyForSale.id.asc()).all())
     for p in rows:

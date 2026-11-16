@@ -111,3 +111,28 @@ def test_collection_status_does_not_claim_disabled_jobs_are_scheduled(monkeypatc
     assert result['enabled'] is False and result['availability_enabled'] is False
     assert result['portal_daily_enabled'] is False
     assert 'disabled' in result['message']
+
+
+def test_explicit_comparison_after_property_question_uses_shared_snapshot():
+    from assistant.agent import Turn
+    question = 'Compare Riverhead and Kumeu side by side: median sale price, recorded sales, average days to sell, and current listings.'
+    history = [Turn(role='user', content='Is 22 Michaels Avenue priced well?')]
+    with patch('db.SessionLocal', return_value=MagicMock()), patch('publication_scope.approved_sold_batch_ids', return_value=[1]), patch('assistant.suburb_brief.load_brief', side_effect=lambda s: 'Verified '+s) as loader:
+        answer = direct_comparison(question, history)
+    assert answer is not None and answer.tools_used == ['suburb_snapshot']
+    assert [c.args[0] for c in loader.call_args_list] == ['Riverhead', 'Kumeu']
+    assert 'Verified Riverhead' in answer.text and 'Verified Kumeu' in answer.text
+
+
+def test_filtered_comparison_after_history_still_needs_filtered_evidence():
+    with patch('assistant.suburb_brief.load_brief') as loader:
+        assert direct_comparison('Compare Riverhead and Kumeu: 4 bedroom houses', [object()]) is None
+        loader.assert_not_called()
+
+
+def test_confirmed_suburb_aliases_share_query_names():
+    from suburbs import canonical_suburb, suburb_aliases
+    assert canonical_suburb('Hill Park') == 'Hillpark'
+    assert canonical_suburb('Tōtara Park') == 'Totara Park'
+    assert canonical_suburb('Kumeū') == 'Kumeu'
+    assert set(suburb_aliases('Hillpark')) == {'hill park','hillpark'}
